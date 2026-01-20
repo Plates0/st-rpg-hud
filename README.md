@@ -33,7 +33,7 @@ Go into the regex folder → install it → go back to SillyTavern → Extension
 - world_time MUST be an object (NOT a string).
 
 Required format example (minified; spacing not required):
-<rpg_state>{"name":"{{user}}","hp_curr":100,"hp_max":100,"mp_curr":100,"mp_max":100,"meters":[],"stats":{"atk":10,"matk":10,"def":0,"satk":0,"sdef":0},"inventory":["Sky Striker Deck MATK+50 [X]"],"skills":["Analyze (MP-10) Reveals Weakness"],"passives":[],"masteries":[],"quests":[],"env_effects":[],"status_effects":[],"dankcoin":0,"location":"Fantialand, Main Gate","world_time":{"month":"Jan","day":1,"clock":"10:00"},"combat":{"active":false,"round":1},"vehicle":null,"party":[],"enemies":[],"npcs":[]}</rpg_state>
+<rpg_state>{"name":"{{user}}","hp_curr":0,"hp_max":0,"mp_curr":0,"mp_max":0,"meters":[],"stats":{"atk":0,"matk":0,"def":0,"satk":0,"sdef":0},"inventory":[],"skills":[],"passives":[],"masteries":[],"quests":[],"env_effects":[],"status_effects":[],"dankcoin":0,"location":"","world_time":{"month":"Jan","day":1,"clock":"10:00"},"combat":{"active":false,"round":1},"vehicle":null,"party":[],"enemies":[],"npcs":[]}</rpg_state>
 
 Notes:
 - meters is OPTIONAL; omit or use [] if none.
