@@ -113,6 +113,8 @@ Meters (shields/temp HP/sanity/hunger/stamina/etc):
 - meters max can exceed 100; do not clamp.
 - Add/remove meters as the scene requires.
 
+- HP/MP are authoritative. Do not infer or regenerate them. Only change HP/MP when an explicit event occurs (damage, heal, regen tick), and reflect the change in <rpg_state>.
+
 ## Base/Mod/Buff Math (REQUIRED)
 
 If any [X] gear modifies a stat/max, output it as:
