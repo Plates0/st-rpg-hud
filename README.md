@@ -15,6 +15,9 @@ https://github.com/Plates0/st-rpg-hud
 - Ensure your character / system prompt outputs exactly one <rpg_state>...</rpg_state> block at the end of each assistant reply.
 - Open the ⚙️ settings on the HUD for Scan/Edit/Reset and appearance options.
 
+## Enabling/Disabling
+- I got too lazy to create a menu directly in the extensions tab, so you'll just have to enable/disable it via extensions -> manage extension -> uncheck/check RPG HUD.
+
 ## RPG Guideline
 - If you're using this with Dankholme RPG, simply copy the current RPG Toggle, disable it, then replace the copy with this guideline:
 
