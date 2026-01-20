@@ -147,7 +147,7 @@ HUD adaptation:
 </Spaceship Guidelines>
 
 <Mecha Guidelines>
-If a party member is in a mecha/exosuit, remove their personal skills/other stats focus and use the Mecha's stats/skills instead.
+If a party member is in a mecha/exosuit, disable (DON'T REMOVE) their personal skills/other stats focus and use the Mecha's stats/skills instead.
 
 HUD adaptation:
 - Set that entity’s vehicle.active=true and vehicle.type="mecha"
