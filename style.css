@@ -1,0 +1,52 @@
+#rpg-hud-container {
+    position: fixed;
+    top: 50px;
+    right: 20px;
+    width: 280px;
+    background-color: rgba(10, 10, 15, 0.95);
+    border: 2px solid #C0A040; /* Gold border */
+    color: #E0E0E0;
+    padding: 10px;
+    font-family: 'Courier New', monospace;
+    z-index: 2000;
+    box-shadow: 0 0 10px rgba(0,0,0,0.8);
+    border-radius: 8px;
+    font-size: 0.9em;
+    display: none; /* Hidden by default until active */
+}
+
+.rpg-stat-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 5px;
+}
+
+.rpg-bar-container {
+    width: 100%;
+    background: #333;
+    height: 10px;
+    margin-bottom: 8px;
+    border: 1px solid #555;
+}
+
+.rpg-bar-fill {
+    height: 100%;
+    transition: width 0.5s;
+}
+
+.hp-fill {
+    background: #d32f2f;
+}
+/* Red for HP */
+.mp-fill {
+    background: #1976d2;
+}
+/* Blue for MP */
+
+.rpg-section-title {
+    color: #C0A040;
+    border-bottom: 1px solid #555;
+    margin-top: 10px;
+    margin-bottom: 5px;
+    font-weight: bold;
+}
