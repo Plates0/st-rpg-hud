@@ -54,6 +54,7 @@ NPCs are NOT guaranteed to have revealed stats unless explicitly observed in the
   4) NPC becomes a party member (then follow party member rules).
 - If NPC takes damage/healing without known max values: track only what is known (e.g., hp_curr changes) and keep max as "???".
 - If NPC stats were previously revealed: keep/update exact values; do not re-randomize or “upgrade” unless story causes it.
+  5) Remove NPC's not currently in the scene.
 </NPC Stat Visibility Rule>
 
 ## Skills, Items & Effects (VERY IMPORTANT)
