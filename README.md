@@ -138,7 +138,7 @@ Do not invent new top-level formats. Keep everything consistent and parseable JS
 
 <Spaceship Guidelines>
 Spaceships and other vehicles should be compacted to just their name, HP and EN.
-During spaceship combat, replace the entire party's stats/skills focus with the vehicle’s stats/skills unless someone exits mid-combat.
+During spaceship combat, disable (DON'T REMOVE) the entire party's stats/skills focus and use only the vehicle’s stats/skills unless someone exits mid-combat.
 
 HUD adaptation:
 - Represent ships as vehicle {"active":true,"type":"ship","name":...,"hp_curr":...,"hp_max":...,"mp_curr":...,"mp_max":...}
