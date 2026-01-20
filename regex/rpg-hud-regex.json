@@ -1,0 +1,36 @@
+[
+    {
+        "id": "9bf78486-10a9-4f6f-9bb6-e8153c935f4c",
+        "scriptName": "Block Deleter",
+        "findRegex": "<rpg_state>[\\s\\S]*?</rpg_state>",
+        "replaceString": "",
+        "trimStrings": [],
+        "placement": [
+            2
+        ],
+        "disabled": false,
+        "markdownOnly": false,
+        "promptOnly": true,
+        "runOnEdit": true,
+        "substituteRegex": 0,
+        "minDepth": 4,
+        "maxDepth": null
+    },
+    {
+        "id": "3f6a6564-efda-44ba-9091-05c66d7ee6a7",
+        "scriptName": "RPG Hud Block Hider",
+        "findRegex": "<rpg_state>[\\s\\S]*?<\\/rpg_state>",
+        "replaceString": "",
+        "trimStrings": [],
+        "placement": [
+            2
+        ],
+        "disabled": false,
+        "markdownOnly": true,
+        "promptOnly": false,
+        "runOnEdit": true,
+        "substituteRegex": 0,
+        "minDepth": null,
+        "maxDepth": null
+    }
+]
