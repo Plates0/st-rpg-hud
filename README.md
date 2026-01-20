@@ -9,7 +9,7 @@ https://github.com/Plates0/st-rpg-hud
 (Optional) specify a branch or tag (e.g. v1.0.0).
 
 ## IMPORTANT
-**MAKE SURE TO DOWNLOAD AND ENABLE THE REGEX'S TO HIDE THE JSON AND SAVE TOKENS**
+**MAKE SURE TO DOWNLOAD AND ENABLE THE REGEX SCRIPTS TO HIDE THE JSON AND SAVE TOKENS**
 Go into the regex folder → install it → go back to SillyTavern → Extensions → Regex → import → select the installed file (enable them if they aren't already enabled).
 
 ## Usage
