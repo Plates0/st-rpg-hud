@@ -117,7 +117,7 @@ Gear notation:
 Low HP condition:
 - If hp_curr < 25, include "Last Stand" or "Critical Condition" in status_effects.
 
-Meters (shields/temp HP/sanity/hunger/stamina/etc):
+Meters (shields/temp HP/sanity/hunger/stamina/arousal/etc):
 - Store in meters: [{"name":"Shield","curr":30,"max":80}, ...] for each entity (and vehicle if relevant).
 - meters max can exceed 100; do not clamp.
 - Add/remove meters as the scene requires.
