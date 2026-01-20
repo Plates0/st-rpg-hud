@@ -135,7 +135,7 @@ const defaultState = {
 
 let rpgState = JSON.parse(JSON.stringify(defaultState));
 let activeTab = "inventory";
-let isMinimized = false;
+let isMinimized = true;
 let scanTimer = null;
 let charIndex = 0;
 
@@ -1589,3 +1589,4 @@ jQuery(() => {
 
   console.log("RPG HUD: boot complete ✅");
 });
+
