@@ -19,6 +19,7 @@ https://github.com/Plates0/st-rpg-hud
 - If you're using this with Dankholme RPG, simply copy the current RPG Toggle, disable it, then replace the copy with this guideline:
 
 ---
+```
 <RPG Guidelines>
 
 <RPG_STATE FORMAT (REQUIRED)>
@@ -177,5 +178,6 @@ Begin all combat with the following, edit the party and opponent as required. De
 **ROUND 1**
 
 </RPG Guidelines>
+```
 ---
 - Otherwise, create a new lorebook entry, paste it into the box, check Non-recursable, Prevent further recursion, set the order to be very high, and set it as always active (blue dot).
