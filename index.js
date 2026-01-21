@@ -157,6 +157,10 @@ const defaultUiSettings = {
   fontPreset: "retro_mono", // one of: retro_mono, modern_mono, ui_sans, big_sans, story_serif
   fontFamily: "'Courier New', Courier, monospace",
   fontScale: 1.0, // 0.85 - 1.15
+
+  // NEW: persistent HUD size
+  hudWidth: 280,
+  hudHeight: 0, // 0 = auto
 };
 
 let uiSettings = (() => {
@@ -927,8 +931,26 @@ function renderRPG() {
     return;
   }
 
-  // Make container a positioning context for the settings button/panel + coin
-  container.style.cssText = `position: fixed; top: 50px; right: 20px; width: 280px; background: rgba(10, 10, 15, 0.95); border: 2px solid #C0A040; color: #E0E0E0; padding: 10px 10px 46px 10px; z-index: 9999; font-family: ${FONT_FAMILY}; font-size: ${FONT_SIZE}; display: block !important; border-radius: ${BOX_RADIUS}; box-shadow: 0 0 10px #000; box-sizing:border-box; contain: layout paint;`;
+// Make container a positioning context for the settings button/panel + coin
+const hudW = Math.max(220, Number(uiSettings.hudWidth) || 280);
+const hudH = Math.max(0, Number(uiSettings.hudHeight) || 0);
+
+container.style.cssText = `position: fixed; top: 50px; right: 20px;
+  width: ${hudW}px;
+  ${hudH ? `height:${hudH}px;` : ""}
+  background: rgba(10, 10, 15, 0.95);
+  border: 2px solid #C0A040; color: #E0E0E0;
+  padding: 10px 10px 46px 10px;
+  z-index: 9999;
+  font-family: ${FONT_FAMILY};
+  font-size: ${FONT_SIZE};
+  display: block !important;
+  border-radius: ${BOX_RADIUS};
+  box-shadow: 0 0 10px #000;
+  box-sizing:border-box;
+  contain: layout paint;
+  overflow: hidden;`;
+
   applyHudTypography(container);
   container.onclick = null;
 
@@ -1173,8 +1195,47 @@ function renderRPG() {
 
       <div style="position:absolute; right:10px; bottom:10px; font-size:0.8em; color:#FFD700;">💰 ${escHtml(coin)}</div>
 
+      <div id="rpg-resize-left" title="Resize"
+        style="position:absolute; left:-8px; top:0; bottom:0; width:16px;
+          cursor:ew-resize; z-index:200000; background:transparent; touch-action:none;"></div>
+          
       ${settingsPanelHtml}
     `;
+
+    // --- LEFT RESIZE HANDLE (Pointer Events: mouse + touch + pen) ---
+{
+  const handle = container.querySelector("#rpg-resize-left");
+  if (handle) {
+    handle.addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+
+      // capture pointer so we keep receiving move events even if finger leaves the handle
+      handle.setPointerCapture?.(ev.pointerId);
+
+      const startX = ev.clientX;
+      const startW = container.getBoundingClientRect().width;
+
+      const onMove = (e) => {
+        const dx = e.clientX - startX; // moving right = +
+        const newW = Math.max(220, Math.min(700, startW - dx)); // grow LEFT
+        uiSettings.hudWidth = Math.round(newW);
+        container.style.width = uiSettings.hudWidth + "px";
+      };
+
+      const onUp = () => {
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+        document.removeEventListener("pointercancel", onUp);
+        saveUiSettings();
+      };
+
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp);
+      document.addEventListener("pointercancel", onUp);
+    });
+  }
+}
 
     // Restore tab-strip scroll after rerender, and keep it updated
 {
