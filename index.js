@@ -138,6 +138,7 @@ let activeTab = "inventory";
 let isMinimized = false;
 let scanTimer = null;
 let charIndex = 0;
+let tabStripScrollLeft = 0; // <-- remember horizontal scroll position of the tab bar
 
 // Settings panel state
 let isSettingsOpen = false;
@@ -1082,6 +1083,13 @@ function renderRPG() {
     `
       : "";
 
+      // Save current tab-strip horizontal scroll before rerender nukes the DOM
+      {
+        const prevStrip = container.querySelector("#rpg-tab-strip");
+        if (prevStrip) tabStripScrollLeft = prevStrip.scrollLeft;
+      }
+
+
     container.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; padding-bottom:5px; border-bottom:1px solid ${borderColor}; min-height:24px;">
         <div style="display:flex; align-items:center; gap:6px; min-width:0;">
@@ -1132,7 +1140,7 @@ function renderRPG() {
         </div>
       </div>
 
-      <div style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid #555; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
+      <div id="rpg-tab-strip" style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid #555; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
         <div id="tab-party" style="${tabStyle("party")}">Party</div>
         <div id="tab-inv" style="${tabStyle("inventory")}">Items</div>
         <div id="tab-skill" style="${tabStyle("skills")}">Skills</div>
@@ -1167,6 +1175,19 @@ function renderRPG() {
 
       ${settingsPanelHtml}
     `;
+
+    // Restore tab-strip scroll after rerender, and keep it updated
+{
+  const newStrip = container.querySelector("#rpg-tab-strip");
+  if (newStrip) {
+    requestAnimationFrame(() => {
+      newStrip.scrollLeft = tabStripScrollLeft;
+    });
+    newStrip.onscroll = () => {
+      tabStripScrollLeft = newStrip.scrollLeft;
+    };
+  }
+}
 
     bindJumpLinks();
 
