@@ -135,7 +135,7 @@ const defaultState = {
 
 let rpgState = JSON.parse(JSON.stringify(defaultState));
 let activeTab = "inventory";
-let isMinimized = true;
+let isMinimized = false;
 let scanTimer = null;
 let charIndex = 0;
 
@@ -144,6 +144,9 @@ let isSettingsOpen = false;
 
 // Track where the latest <rpg_state> came from so SAVE can rewrite it.
 let lastRpgMsgIndex = -1;
+
+// Auto-rewrite <rpg_state> back into the chat when we had to repair JSON
+const AUTO_REWRITE_ON_REPAIR = true;
 
 // --- UI SETTINGS (font + scale) ---
 // Stored separately from RPG state (does NOT go into <rpg_state>)
@@ -261,6 +264,105 @@ function getActiveData() {
   }
 
   return { root, display, type, isVehicle };
+}
+
+function getActivePointerInfo() {
+  const party = Array.isArray(rpgState.party) ? rpgState.party : [];
+  const enemies = Array.isArray(rpgState.enemies) ? rpgState.enemies : [];
+  const npcs = Array.isArray(rpgState.npcs) ? rpgState.npcs : [];
+
+  if (charIndex === 0) return { type: "player", idx: -1, name: rpgState?.name || "Player" };
+
+  let pointer = charIndex - 1;
+
+  if (pointer < party.length) {
+    const unit = party[pointer];
+    return { type: "party", idx: pointer, name: unit?.name || "Party Member" };
+  }
+  pointer -= party.length;
+
+  if (pointer < enemies.length) {
+    const unit = enemies[pointer];
+    return { type: "enemy", idx: pointer, name: unit?.name || "Enemy" };
+  }
+  pointer -= enemies.length;
+
+  if (pointer < npcs.length) {
+    const unit = npcs[pointer];
+    return { type: "npc", idx: pointer, name: unit?.name || "NPC" };
+  }
+
+  return { type: "player", idx: -1, name: rpgState?.name || "Player" };
+}
+
+function confirmDanger(title, detail) {
+  // Double-confirm to avoid accidental nukes
+  const a = confirm(`⚠️ ${title}\n\n${detail}\n\nThis cannot be undone.`);
+  if (!a) return false;
+  const b = confirm(`⚠️ FINAL WARNING\n\nProceed with:\n${detail}\n\nClick OK to confirm permanently.`);
+  return b;
+}
+
+function removeActiveCharacter(e) {
+  if (e) e.stopPropagation();
+
+  const info = getActivePointerInfo();
+  if (info.type === "player") {
+    alert("You can't delete the player. (Use Reset if needed.)");
+    return;
+  }
+
+  const label =
+    info.type === "party" ? "party member" :
+    info.type === "enemy" ? "enemy" :
+    "NPC";
+
+  const ok = confirmDanger(
+    "DELETE CHARACTER",
+    `Remove ${label} "${info.name}" from <rpg_state>?`
+  );
+  if (!ok) return;
+
+  if (info.type === "party") rpgState.party.splice(info.idx, 1);
+  if (info.type === "enemy") rpgState.enemies.splice(info.idx, 1);
+  if (info.type === "npc") rpgState.npcs.splice(info.idx, 1);
+
+  // safest: return to player view after removal
+  charIndex = 0;
+  isSettingsOpen = false;
+  renderRPG();
+
+  const wrote = writeStateBackToChatMessage(rpgState);
+  if (!wrote) console.warn("RPG HUD: couldn't write back <rpg_state> after removal");
+}
+
+function clearArray(type, e) {
+  if (e) e.stopPropagation();
+
+  const label =
+    type === "party" ? "ALL party members" :
+    type === "enemy" ? "ALL enemies" :
+    "ALL NPCs";
+
+  const ok = confirmDanger(
+    "CLEAR ARRAY",
+    `Clear ${label} from <rpg_state>?`
+  );
+  if (!ok) return;
+
+  if (type === "party") rpgState.party = [];
+  if (type === "enemy") rpgState.enemies = [];
+  if (type === "npc") rpgState.npcs = [];
+
+  // if you were looking at that group, go back to player
+  const info = getActivePointerInfo();
+  if (info.type !== "player" && info.type === type) charIndex = 0;
+
+  isSettingsOpen = false;
+  renderRPG();
+
+  const wrote = writeStateBackToChatMessage(rpgState);
+  if (!wrote) console.warn("RPG HUD: couldn't write back <rpg_state> after clearing");
 }
 
 function charIndexFor(type, i) {
@@ -434,14 +536,13 @@ function renderEnemySummary() {
 // --- PARTY TAB (mini HP/MP bars) ---
 function renderMiniUnitBars(list, options = {}) {
   const {
-  title = "Units",
-  titleColor = "#C0A040",
-  barHpColor = "#4caf50",
-  barMpColor = "#1976d2",
-  emptyText = "None",
-  jumpType = null, // "party" | "npc" | "enemy"
-} = options;
-
+    title = "Units",
+    titleColor = "#C0A040",
+    barHpColor = "#4caf50",
+    barMpColor = "#1976d2",
+    emptyText = "None",
+    jumpType = null, // "party" | "npc" | "enemy"
+  } = options;
 
   if (!Array.isArray(list) || list.length === 0) {
     return `
@@ -460,13 +561,11 @@ function renderMiniUnitBars(list, options = {}) {
 
       const nameHtml =
         absIdx !== null
-            ? `<span class="rpg-jump" data-idx="${absIdx}"
+          ? `<span class="rpg-jump" data-idx="${absIdx}"
                     style="cursor:pointer; text-decoration:underline; text-decoration-color:#555;">
                  ${name}
                </span>`
-            : `<span>${name}</span>`;
-  
-
+          : `<span>${name}</span>`;
 
       const hpCurr = safeParseFloat(target?.hp_curr, 0);
       const hpMax = safeParseFloat(target?.hp_max, 0);
@@ -591,6 +690,7 @@ function findLatestRpgMessageIndex(chat) {
   return -1;
 }
 
+
 function writeStateBackToChatMessage(stateObj) {
   const context = SillyTavern.getContext();
   const chat = context?.chat;
@@ -606,8 +706,9 @@ function writeStateBackToChatMessage(stateObj) {
   const regex = /<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i;
   if (!regex.test(msg.mes)) return false;
 
-  const json = JSON.stringify(stateObj, null, 2);
-  const newBlock = `<rpg_state>\n${json}\n</rpg_state>`;
+  // ✅ Minified JSON to avoid whitespace token bloat
+  const json = JSON.stringify(stateObj);
+  const newBlock = `<rpg_state>${json}</rpg_state>`;
   msg.mes = msg.mes.replace(regex, newBlock);
 
   try {
@@ -694,6 +795,23 @@ function metersToEditorText(meters) {
     .join("\n");
 }
 
+function isLegacyBondKey(k) {
+  const key = String(k ?? "")
+    .replace(/\u00a0/g, " ")
+    .trim();
+  // matches: "Bond", "Kita Bond", "Kita Bond ", "Kita Bond:", etc.
+  return /bond\s*:?\s*$/i.test(key) && key.toLowerCase() !== "bond";
+}
+
+function scrubLegacyBondKeys(obj) {
+  if (!obj || typeof obj !== "object") return;
+  for (const k of Object.keys(obj)) {
+    if (isLegacyBondKey(k)) delete obj[k];
+  }
+}
+
+
+
 function saveEditor() {
   const { root, display } = getActiveData();
   const getEl = (id) => document.getElementById(id);
@@ -755,7 +873,11 @@ function saveEditor() {
   display.passives = getList("edit-passives");
   display.masteries = getList("edit-mastery");
 
-  if (getEl("edit-bond")) root.bond = getVal("edit-bond");
+  if (getEl("edit-bond")) {
+  root.bond = clamp(getVal("edit-bond"), 0, 100);
+  scrubLegacyBondKeys(root);
+}
+
 
   if (getEl("edit-vehicle-active")) {
     const isActive = getEl("edit-vehicle-active").checked;
@@ -915,9 +1037,16 @@ function renderRPG() {
           <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Actions</div>
 
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-bottom:12px;">
-            <button id="rpg-settings-edit" style="background:#333; border:1px solid #4FC3F7; color:#4FC3F7; cursor:pointer; padding:8px 10px; font-weight:bold;">✏️ Edit</button>
-            <button id="rpg-settings-scan" style="background:#333; border:1px solid #C0A040; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold;">↻ Scan</button>
-            <button id="rpg-settings-reset" style="background:#b71c1c; border:1px solid #ff5252; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold; grid-column:1 / span 2;">X Reset</button>
+             <button id="rpg-settings-edit" style="background:#333; border:1px solid #4FC3F7; color:#4FC3F7; cursor:pointer; padding:8px 10px; font-weight:bold;">✏️ Edit</button>
+             <button id="rpg-settings-scan" style="background:#333; border:1px solid #C0A040; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold;">↻ Scan</button>
+
+             <button id="rpg-settings-remove" style="background:#333; border:1px solid #ff9800; color:#ffcc80; cursor:pointer; padding:8px 10px; font-weight:bold;">🗑️ Remove</button>
+             <button id="rpg-settings-clear-npcs" style="background:#333; border:1px solid #00e5ff; color:#b3f5ff; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 NPCs</button>
+
+             <button id="rpg-settings-clear-enemies" style="background:#333; border:1px solid #ff5252; color:#ffd0d0; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 Enemies</button>
+             <button id="rpg-settings-clear-party" style="background:#333; border:1px solid #C0A040; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 Party</button>
+
+             <button id="rpg-settings-reset" style="background:#b71c1c; border:1px solid #ff5252; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold; grid-column:1 / span 2;">X Reset</button>
           </div>
 
         <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Appearance</div>
@@ -941,7 +1070,6 @@ function renderRPG() {
         <input id="rpg-font-scale" type="range" min="0.85" max="1.15" step="0.01"
                 style="width:100%; margin-top:6px;">
         </div>
-
 
           <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Notes</div>
           <div style="font-size:0.75em; color:#777; line-height:1.3;">
@@ -970,8 +1098,8 @@ function renderRPG() {
       <div style="background:rgba(255,255,255,0.05); padding:5px; border-radius:4px; margin-bottom:5px; font-size:0.85em; text-align:center;">
         <div style="color:#fff; font-weight:bold;">📍 ${escHtml(rpgState.location)}</div>
         <div style="color:#aaa; font-size:0.9em;">📅 ${escHtml(time.month)} ${escHtml(time.day)} &nbsp;|&nbsp; ⏰ ${escHtml(
-      time.clock
-    )}</div>
+          time.clock
+        )}</div>
         ${combatLine}
       </div>
 
@@ -1073,42 +1201,46 @@ function renderRPG() {
         checkMessage(true);
       });
       bind("rpg-settings-reset", resetRPG);
+      bind("rpg-settings-remove", removeActiveCharacter);
+      bind("rpg-settings-clear-npcs", (e) => clearArray("npc", e));
+      bind("rpg-settings-clear-enemies", (e) => clearArray("enemy", e));
+      bind("rpg-settings-clear-party", (e) => clearArray("party", e));
 
       const overlay = document.getElementById("rpg-settings-overlay");
       if (overlay) overlay.onclick = (e) => e.stopPropagation();
 
       // Font preset + size slider (live apply)
-        try {
+      try {
         const presetEl = document.getElementById("rpg-font-preset");
         const scaleEl = document.getElementById("rpg-font-scale");
         const scaleLabel = document.getElementById("rpg-font-scale-label");
 
         if (presetEl) {
-            presetEl.value = uiSettings.fontPreset || "retro_mono";
-            presetEl.onchange = () => {
+          presetEl.value = uiSettings.fontPreset || "retro_mono";
+          presetEl.onchange = () => {
             uiSettings.fontPreset = presetEl.value;
             uiSettings.fontFamily = fontPresetToFamily(uiSettings.fontPreset);
             saveUiSettings();
             applyHudTypography(container);
-            };
+          };
         }
 
         if (scaleEl) {
-            scaleEl.value = String(uiSettings.fontScale || 1.0);
-            const updateLabel = () => {
+          scaleEl.value = String(uiSettings.fontScale || 1.0);
+          const updateLabel = () => {
             if (scaleLabel) scaleLabel.textContent = `${Math.round((Number(scaleEl.value) || 1) * 100)}%`;
-            };
-            updateLabel();
+          };
+          updateLabel();
 
-            // oninput = smooth live changes while sliding
-            scaleEl.oninput = () => {
+          // oninput = smooth live changes while sliding
+          scaleEl.oninput = () => {
             uiSettings.fontScale = Number(scaleEl.value) || 1.0;
             saveUiSettings();
             applyHudTypography(container);
             updateLabel();
-            };
+          };
         }
-        } catch {}
+      } catch {}
     }
   } catch (e) {
     container.innerHTML = `<div style="color:red; font-size:0.8em;">⚠️ Crash: ${escHtml(
@@ -1245,17 +1377,17 @@ function renderEditor() {
 
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:5px; margin-bottom:10px;">
         <div><div style="${labelStyle()}">${escHtml(isVehicle ? "Hull" : "HP")} Curr</div><input id="edit-hp-curr" type="text" value="${escAttr(
-    display.hp_curr
-  )}" style="width:100%; background:#222; color:white;"></div>
+          display.hp_curr
+        )}" style="width:100%; background:#222; color:white;"></div>
         <div><div style="${labelStyle()}">${escHtml(isVehicle ? "Hull" : "HP")} Max</div><input id="edit-hp-max" type="text" value="${escAttr(
-    display.hp_max
-  )}" style="width:100%; background:#222; color:white;"></div>
+          display.hp_max
+        )}" style="width:100%; background:#222; color:white;"></div>
         <div><div style="${labelStyle()}">${escHtml(isVehicle ? "En/Mp" : "MP")} Curr</div><input id="edit-mp-curr" type="text" value="${escAttr(
-    display.mp_curr
-  )}" style="width:100%; background:#222; color:white;"></div>
+          display.mp_curr
+        )}" style="width:100%; background:#222; color:white;"></div>
         <div><div style="${labelStyle()}">${escHtml(isVehicle ? "En/Mp" : "MP")} Max</div><input id="edit-mp-max" type="text" value="${escAttr(
-    display.mp_max
-  )}" style="width:100%; background:#222; color:white;"></div>
+          display.mp_max
+        )}" style="width:100%; background:#222; color:white;"></div>
       </div>
 
       <div style="margin-bottom:10px; border-top:1px dashed #444; padding-top:8px;">
@@ -1354,13 +1486,85 @@ function findLatestRpgBlock(chat) {
 
 function sanitizeJsonText(raw) {
   if (typeof raw !== "string") return "";
+
   return raw
-    .replace(/```json/g, "")
+    .replace(/```json/gi, "")
     .replace(/```/g, "")
     .replace(/\u00a0/g, " ")
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
     .replace(/,\s*}/g, "}")
-    .replace(/,\s*]/g, "]");
+    .replace(/,\s*]/g, "]")
+    .trim();
 }
+
+function patchArrayField(text, fieldName, patchFn) {
+  const key = `"${fieldName}":`;
+  const i = text.indexOf(key);
+  if (i < 0) return text;
+
+  const start = text.indexOf("[", i);
+  if (start < 0) return text;
+
+  // find matching closing ] with simple depth counter
+  let depth = 0;
+  let end = -1;
+  for (let p = start; p < text.length; p++) {
+    const ch = text[p];
+    if (ch === "[") depth++;
+    else if (ch === "]") {
+      depth--;
+      if (depth === 0) { end = p; break; }
+    }
+  }
+  if (end < 0) return text;
+
+  const before = text.slice(0, start);
+  const arr = text.slice(start, end + 1);
+  const after = text.slice(end + 1);
+
+  return before + patchFn(arr) + after;
+}
+
+/**
+ * Attempts to repair common model-broken JSON patterns:
+ * - missing commas between values
+ * - stray quotes around numbers: "day":"1,  or  1"
+ * Returns a "best effort" JSON string.
+ */
+function repairJsonText(raw) {
+  let t = sanitizeJsonText(raw);
+
+  // 1) Fix the common inventory break: ... [X],"Next" -> ... [X]","Next"
+  t = t.replace(/\[X\]\s*,\s*"/g, '[X]","');
+
+  // 2) Fix accidental commas INSIDE quoted time/month strings
+  t = t.replace(/("clock"\s*:\s*")([^"]*?),(")/g, '$1$2$3');
+  t = t.replace(/("month"\s*:\s*")([^"]*?),(")/g, '$1$2$3');
+
+  // 3) Fix quoted numbers
+  t = t.replace(/:\s*"(\s*-?\d+(?:\.\d+)?\s*)"\s*(?=[,}\]])/g, ":$1");
+
+  // 3.5) Fix stray quote after numbers: "day":1","clock" -> "day":1,"clock"
+  t = t.replace(/(-?\d+(?:\.\d+)?)"\s*(?=\s*,\s*")/g, "$1");
+
+  // 4) Fix missing closing quotes between string elements in common string-arrays
+  const fixBrokenArrayStrings = (arrBody) =>
+    arrBody.replace(/([^"])\s*,\s*"/g, '$1","');
+
+  t = patchArrayField(t, "skills", fixBrokenArrayStrings);
+  t = patchArrayField(t, "inventory", fixBrokenArrayStrings);
+  t = patchArrayField(t, "passives", fixBrokenArrayStrings);
+  t = patchArrayField(t, "quests", fixBrokenArrayStrings);
+  t = patchArrayField(t, "env_effects", fixBrokenArrayStrings);
+  t = patchArrayField(t, "status_effects", fixBrokenArrayStrings);
+
+  // 5) Strip trailing commas
+  t = t.replace(/,\s*}/g, "}").replace(/,\s*]/g, "]");
+
+  return t;
+}
+
 
 function normalizeMeters(meters) {
   if (!Array.isArray(meters)) return [];
@@ -1407,6 +1611,33 @@ function normalizeEntity(entity, defaultTemplate = {}) {
   if ("extra_2" in out.stats) delete out.stats.extra_2;
 
   out.dankcoin = toNumberOr(out.dankcoin ?? 0, 0);
+
+    // ---- bond compatibility ----
+  // Canonical: bond
+  // Legacy: "<Name> Bond", "Bond", "Bond:", etc.
+  const hasCanonicalBond =
+    Object.prototype.hasOwnProperty.call(e, "bond") ||
+    Object.prototype.hasOwnProperty.call(e, "Bond");
+
+  // If incoming did NOT explicitly provide bond, try to migrate from legacy keys
+  if (!hasCanonicalBond) {
+    const legacyKey = Object.keys(e).find(isLegacyBondKey);
+    if (legacyKey) {
+      const v = Number(e[legacyKey]);
+      if (Number.isFinite(v)) out.bond = v;
+    } else if (Object.prototype.hasOwnProperty.call(e, "Bond")) {
+      const v = Number(e.Bond);
+      if (Number.isFinite(v)) out.bond = v;
+    }
+  }
+
+  // Always delete legacy keys (prevents token bloat)
+  scrubLegacyBondKeys(out);
+  if ("Bond" in out) delete out.Bond;
+
+  // Clamp final bond
+  const b = Number(out.bond);
+  out.bond = Number.isFinite(b) ? clamp(b, 0, 100) : 0;
 
   // Meters
   out.meters = normalizeMeters(out.meters);
@@ -1523,28 +1754,77 @@ function applyRpgState(nextState) {
 
 const checkMessage = async (manual = false) => {
   if (manual) console.log("RPG HUD: Manual Scan...");
+
   const context = SillyTavern.getContext();
   const chat = context?.chat;
-  if (!chat || chat.length === 0) return;
+  if (!Array.isArray(chat) || chat.length === 0) return;
 
   const rawBlock = findLatestRpgBlock(chat);
-if (!rawBlock) {
-  if (manual) console.warn("RPG HUD: no <rpg_state> block found in recent messages");
-  return;
-}
+  console.log("RPG HUD: lastRpgMsgIndex =", lastRpgMsgIndex);
+  console.log("RPG HUD: msg.is_user =", chat[lastRpgMsgIndex]?.is_user);
+  console.log("RPG HUD: msg preview =", (chat[lastRpgMsgIndex]?.mes || "").slice(0, 220));
+  console.log("RPG HUD: rawBlock preview =", String(rawBlock).slice(0, 220));
+  if (!rawBlock) {
+    if (manual) console.warn("RPG HUD: no <rpg_state> block found in recent messages");
+    return;
+  }
 
+  // 1) try parse as-is
+  let jsonText = sanitizeJsonText(rawBlock);
   try {
-    const jsonText = sanitizeJsonText(rawBlock);
     const parsed = JSON.parse(jsonText);
 
     const normalized = normalizeFullState(parsed);
     applyRpgState(normalized);
-
     renderRPG();
-  } catch (e) {
-    if (manual) console.error("RPG HUD Parse Error", e);
+
+    // Only rewrite on manual scan (not every auto scan)
+    if (manual) {
+      const ok = writeStateBackToChatMessage(rpgState);
+      if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after manual scan");
+    }
+    return;
+  } catch (e1) {
+    // continue to repair attempt
   }
+
+// 2) repair then parse
+try {
+  jsonText = repairJsonText(rawBlock);
+
+  // ✅ DEBUG: show the repaired text near where it breaks
+if (manual) {
+  const inv = jsonText.indexOf('"inventory"');
+  if (inv !== -1) console.warn("RPG HUD: repaired around inventory:", jsonText.slice(inv, inv + 220));
+
+  const wt = jsonText.indexOf('"world_time"');
+  if (wt !== -1) console.warn("RPG HUD: repaired world_time:", jsonText.slice(Math.max(0, wt - 40), wt + 200));
+}
+
+
+  const parsed2 = JSON.parse(jsonText);
+
+  const normalized2 = normalizeFullState(parsed2);
+  applyRpgState(normalized2);
+  renderRPG();
+
+  if (manual || AUTO_REWRITE_ON_REPAIR) {
+    const ok = writeStateBackToChatMessage(rpgState);
+    if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after repair");
+  }
+} catch (e2) {
+  if (manual) {
+    console.error("RPG HUD Parse Error", e2);
+    const msg = String(e2?.message || "");
+    const m = msg.match(/column\s+(\d+)/i);
+    const col = m ? Number(m[1]) : 190;
+    const start = Math.max(0, col - 120);
+    const end = Math.min(jsonText.length, col + 120);
+    console.warn("RPG HUD: JSON around error:", jsonText.slice(start, end));
+  }
+}
 };
+
 
 // --- 7. OBSERVER ---
 const setupObserver = () => {
@@ -1589,4 +1869,3 @@ jQuery(() => {
 
   console.log("RPG HUD: boot complete ✅");
 });
-
