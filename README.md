@@ -228,22 +228,6 @@ Notes:
 - party/enemies/npcs are arrays of character objects (same shape as player, minus party/enemies/npcs fields).
 </RPG_STATE FORMAT (REQUIRED)>
 
-<NPC Stat Visibility Rule>
-NPCs are NOT guaranteed to have revealed stats unless explicitly observed in the story or directly present in-context. Therefore:
-- NPCs ONLY (not party members, not enemies):
-  - Default their stats to unknown placeholders until revealed.
-  - Use "???" for unknown numeric values (hp_curr, hp_max, mp_curr, mp_max, meters curr/max, and all stats).
-  - Do NOT invent ATK/MATK/DEF/SATK/SDEF, HP/MP caps, meters, skills, passives, inventory, or resistances.
-- You MAY fill in (or start generating) NPC stats ONLY if at least one happens (Excluding bond: always include bond if you are using bond on that NPC):
-  1) NPC enters combat (listed as participant or takes/receives a combat action),
-  2) Something directly changes NPC values (HP/MP drain, healing, shields/temp HP meters, buffs/debuffs, etc),
-  3) The story explicitly reveals a value,
-  4) NPC becomes a party member (then follow party member rules).
-- If NPC takes damage/healing without known max values: track only what is known (e.g., hp_curr changes) and keep max as "???".
-- If NPC stats were previously revealed: keep/update exact values; do not re-randomize or “upgrade” unless story causes it.
-  5) Remove NPC's not currently in the scene.
-</NPC Stat Visibility Rule>
-
 ## Skills, Items & Effects (VERY IMPORTANT)
 
 When listing skills, items, or passives, ALWAYS include their effects inline.
