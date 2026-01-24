@@ -208,7 +208,7 @@ For BOSS BATTLES only: multiply boss maximum HP by the amount of party members a
 
 </RPG Guidelines>
 ```
-Guideline is still being worked on, if the above is having trouble outputtinf an rpg_state block, attempt using this one:
+Guideline is still being worked on, if the above is having trouble outputting an rpg_state block, attempt using this one:
 ```
 <RPG Guidelines>
 
