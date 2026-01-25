@@ -218,6 +218,13 @@ function toNumberOr(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function parseBondValue(v) {
+  const s = String(v ?? "").trim().toLowerCase();
+  if (s === "∞" || s === "infinity" || s === "inf") return 101; // sentinel for infinity
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function safeParseFloat(v, fallback = 0) {
   const n = parseFloat(v);
   return Number.isFinite(n) ? n : fallback;
@@ -695,6 +702,31 @@ function findLatestRpgMessageIndex(chat) {
   return -1;
 }
 
+function exportStateForChat(stateObj) {
+  // deep clone so we don't mutate live state
+  const o = JSON.parse(JSON.stringify(stateObj));
+
+  const visit = (x) => {
+    if (!x || typeof x !== "object") return;
+
+    // Convert bond >= 101 into the infinity symbol string
+    if (Object.prototype.hasOwnProperty.call(x, "bond")) {
+      const b = parseBondValue(x.bond);
+      x.bond = b >= 101 ? "∞" : b;
+    }
+
+    // Walk children
+    for (const k of Object.keys(x)) {
+      const v = x[k];
+      if (Array.isArray(v)) v.forEach(visit);
+      else if (v && typeof v === "object") visit(v);
+    }
+  };
+
+  visit(o);
+  return o;
+}
+
 
 function writeStateBackToChatMessage(stateObj) {
   const context = SillyTavern.getContext();
@@ -712,7 +744,8 @@ function writeStateBackToChatMessage(stateObj) {
   if (!regex.test(msg.mes)) return false;
 
   // ✅ Minified JSON to avoid whitespace token bloat
-  const json = JSON.stringify(stateObj);
+  const exportObj = exportStateForChat(stateObj);
+  const json = JSON.stringify(exportObj);
   const newBlock = `<rpg_state>${json}</rpg_state>`;
   msg.mes = msg.mes.replace(regex, newBlock);
 
@@ -879,7 +912,7 @@ function saveEditor() {
   display.masteries = getList("edit-mastery");
 
   if (getEl("edit-bond")) {
-  root.bond = clamp(getVal("edit-bond"), 0, 100);
+  root.bond = clamp(parseBondValue(getEl("edit-bond").value), 0, 101);
   scrubLegacyBondKeys(root);
 }
 
@@ -1014,9 +1047,18 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
     let bondHtml = "";
     if ((type === "party" || type === "npc") && !isVehicle) {
-      let bond = safeParseFloat(root.bond, 0);
-      bond = clamp(bond, 0, 100);
-      bondHtml = `<div style="display:flex; justify-content:space-between; font-size:0.8em; margin-top:5px;"><span style="color:#f48fb1;">❤️ Bond</span> <span>${bond}/100</span></div><div style="width:100%; background:#333; height:4px; margin-bottom:5px; border-radius:${BAR_RADIUS}; overflow:hidden;"><div style="height:100%; background:#f06292; width:${bond}%"></div></div>`;
+      let bond = parseBondValue(root.bond);
+      bond = clamp(bond, 0, 101);
+
+      const bondLabel = bond >= 101 ? "∞" : String(bond);
+      const bondPct = bond >= 101 ? 100 : bond;
+
+      bondHtml = `<div style="display:flex; justify-content:space-between; font-size:0.8em; margin-top:5px;">
+        <span style="color:#f48fb1;">❤️ Bond</span> <span>${bondLabel}/100</span>
+      </div>
+      <div style="width:100%; background:#333; height:4px; margin-bottom:5px; border-radius:${BAR_RADIUS}; overflow:hidden;">
+        <div style="height:100%; background:#f06292; width:${bondPct}%"></div>
+      </div>`;
     }
 
     const metersHtml = renderMeters(display.meters);
@@ -1198,7 +1240,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       <div id="rpg-resize-left" title="Resize"
         style="position:absolute; left:-8px; top:0; bottom:0; width:16px;
           cursor:ew-resize; z-index:200000; background:transparent; touch-action:none;"></div>
-          
+
       ${settingsPanelHtml}
     `;
 
@@ -1419,8 +1461,8 @@ function renderEditor() {
 
   let bondInput = "";
   if ((type === "party" || type === "npc") && !isVehicle) {
-    bondInput = `<div style="margin-bottom:10px;"><div style="${labelStyle()}">Bond (0-100)</div><input id="edit-bond" type="number" value="${escAttr(
-      root.bond || 0
+    bondInput = `<div style="margin-bottom:10px;"><div style="${labelStyle()}">Bond (0-100)</div><input id="edit-bond" type="text" value="${escAttr(
+      (root.bond ?? 0)
     )}" style="width:100%; background:#222; color:white;"></div>`;
   }
 
@@ -1718,8 +1760,9 @@ function normalizeEntity(entity, defaultTemplate = {}) {
   if ("Bond" in out) delete out.Bond;
 
   // Clamp final bond
-  const b = Number(out.bond);
-  out.bond = Number.isFinite(b) ? clamp(b, 0, 100) : 0;
+  const b = parseBondValue(out.bond);
+  out.bond = clamp(b, 0, 101);
+
 
   // Meters
   out.meters = normalizeMeters(out.meters);
