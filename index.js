@@ -758,6 +758,100 @@ function writeStateBackToChatMessage(stateObj) {
 }
 
 // --- 3. ACTIONS ---
+function insertLastStateIntoNarrative(e) {
+  if (e) e.stopPropagation();
+  const stateString = `<rpg_state>${JSON.stringify(rpgState, null, 2)}</rpg_state>`;
+  const $input = $('#send_textarea');
+  if ($input.length) {
+    let currentVal = $input.val().trim();
+    currentVal += (currentVal ? '\n\n' : '') + stateString; // Add spacing for readability
+    $input.val(currentVal);
+    $input.trigger('input'); // Update textarea height and trigger any listeners
+    // Optional: Focus the input and scroll to the bottom
+    $input.focus();
+    $input[0].scrollTop = $input[0].scrollHeight;
+  } else {
+    console.warn("RPG HUD: Could not find #send_textarea");
+    alert("Could not find the chat input box. Make sure you're in a chat session.");
+  }
+  // Optional: Close settings after insertion
+  isSettingsOpen = false;
+  renderRPG();
+}
+
+function remindStateInLastMessage(e) {
+  if (e) e.stopPropagation();
+
+  if (Object.keys(rpgState).length === 0 || !rpgState) {
+    alert("No valid RPG state to remind. Scan or generate one first.");
+    return;
+  }
+
+  // 1. Get the current chat
+  const context = SillyTavern.getContext();
+  const chat = context?.chat;
+  if (!Array.isArray(chat) || chat.length === 0) {
+    alert("No chat history found.");
+    return;
+  }
+
+  // 2. Look at the VERY LAST message
+  const lastMsgIndex = chat.length - 1;
+  const lastMsg = chat[lastMsgIndex];
+
+  // 3. Prepare the new state block
+  const exportObj = exportStateForChat(rpgState);
+  const json = JSON.stringify(exportObj);
+  const newBlock = `<rpg_state>${json}</rpg_state>`;
+  const regex = /<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i;
+
+  // 4. Case A: The last message is from the AI
+  if (lastMsg && !lastMsg.is_user) {
+    if (confirm("Append/Update <rpg_state> in the last AI message?")) {
+      
+      // If tag exists, replace it
+      if (regex.test(lastMsg.mes)) {
+        lastMsg.mes = lastMsg.mes.replace(regex, newBlock);
+      } 
+      // If tag is missing, append it
+      else {
+        lastMsg.mes = (lastMsg.mes + "\n\n" + newBlock).trim();
+      }
+
+      // Save changes to SillyTavern
+      if (window.saveChat) {
+        window.saveChat();
+        // Update the internal index tracker since we just wrote to the last msg
+        lastRpgMsgIndex = lastMsgIndex; 
+        alert("State successfully injected into the last AI message.");
+      } else {
+        console.warn("RPG HUD: window.saveChat not available.");
+      }
+      
+      // Refresh UI
+      isSettingsOpen = false;
+      renderRPG();
+      return;
+    }
+  }
+
+  // 5. Case B: The last message was you (User), or you declined the AI overwrite
+  // Fallback to searching history for ANY tag to update (old behavior)
+  const success = writeStateBackToChatMessage(rpgState);
+
+  if (success) {
+    checkMessage(true);
+    alert("Updated an OLD <rpg_state> found further back in history.");
+  } else {
+    // 6. Case C: No tags found anywhere, and last msg wasn't suitable
+    insertLastStateIntoNarrative();
+    alert("Last message was yours (or no tags found). Inserted state into your input box instead.");
+  }
+
+  isSettingsOpen = false;
+  renderRPG();
+}
+
 function resetRPG(e) {
   if (e) e.stopPropagation();
   if (confirm("Reset all RPG stats to zero?")) {
@@ -1110,7 +1204,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
              <button id="rpg-settings-clear-enemies" style="background:#333; border:1px solid #ff5252; color:#ffd0d0; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 Enemies</button>
              <button id="rpg-settings-clear-party" style="background:#333; border:1px solid #C0A040; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 Party</button>
-
+			 <button id="rpg-settings-insert" style="background:#333; border:1px solid #4CAF50; color:#A5D6A7; cursor:pointer; padding:8px 10px; font-weight:bold;">Insert State</button>
+             <button id="rpg-settings-remind" style="background:#333; border:1px solid #9C27B0; color:#E1BEE7; cursor:pointer; padding:8px 10px; font-weight:bold;">Remind State</button>
              <button id="rpg-settings-reset" style="background:#b71c1c; border:1px solid #ff5252; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold; grid-column:1 / span 2;">X Reset</button>
           </div>
 
@@ -1329,6 +1424,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       bind("rpg-settings-clear-npcs", (e) => clearArray("npc", e));
       bind("rpg-settings-clear-enemies", (e) => clearArray("enemy", e));
       bind("rpg-settings-clear-party", (e) => clearArray("party", e));
+	  bind("rpg-settings-insert", insertLastStateIntoNarrative);
+      bind("rpg-settings-remind", remindStateInLastMessage);
 
       const overlay = document.getElementById("rpg-settings-overlay");
       if (overlay) overlay.onclick = (e) => e.stopPropagation();
