@@ -6,7 +6,7 @@ Shows an RPG HUD panel that reads a single <rpg_state> JSON block from chat and 
 SillyTavern → Extensions → Install extension → paste this repo URL:
 https://github.com/Plates0/st-rpg-hud
 
-(Optional) specify a branch or tag (e.g. v1.0.0).
+(Optional) specify a branch (e.g. main or dev).
 
 ## IMPORTANT
 **MAKE SURE TO DOWNLOAD AND ENABLE THE REGEX SCRIPTS TO HIDE THE JSON AND SAVE TOKENS (Also read the RPG Guideline section)**
