@@ -217,9 +217,39 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+function isInfinityToken(v) {
+  const s = String(v ?? "").trim().toLowerCase();
+  if (s === "∞" || s === "inf" || s === "infinity" || s === "+inf" || s === "+infinity") return true;
+  return isHugeNumber(v);
+}
+
+function safeParseFloatOrInf(v, fallback = 0) {
+  if (isInfinityToken(v)) return Number.POSITIVE_INFINITY;
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function toNumberOr(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function percentFrom(currRaw, maxRaw) {
+  const curr = safeParseFloatOrInf(currRaw, 0);
+  const max  = safeParseFloatOrInf(maxRaw, 0);
+
+  // If either side is Infinity, show a full bar (visual “cap”)
+  if (!Number.isFinite(curr) || !Number.isFinite(max)) return 100;
+
+  if (max <= 0) return 0;
+  return clamp((curr / max) * 100, 0, 100);
+}
+
+const INF_THRESHOLD = 999999999; // treat this and above as infinity
+
+function isHugeNumber(v) {
+  const n = Number(String(v ?? "").trim());
+  return Number.isFinite(n) && n >= INF_THRESHOLD;
 }
 
 function parseBondValue(v) {
@@ -533,7 +563,7 @@ function renderEnemySummary() {
 
     const hpCurr = safeParseFloat(target?.hp_curr, 0);
     const hpMax = safeParseFloat(target?.hp_max, 0);
-    const hpPercent = hpMax > 0 ? (hpCurr / hpMax) * 100 : 0;
+    const hpPercent = percentFrom(target?.hp_curr, target?.hp_max);
     const barColor = enemy?.vehicle && enemy.vehicle.active ? "#AB47BC" : "#d32f2f";
 
     html += `
@@ -594,8 +624,8 @@ function renderMiniUnitBars(list, options = {}) {
       const mpCurr = safeParseFloat(target?.mp_curr, 0);
       const mpMax = safeParseFloat(target?.mp_max, 0);
 
-      const hpPct = hpMax > 0 ? (hpCurr / hpMax) * 100 : 0;
-      const mpPct = mpMax > 0 ? (mpCurr / mpMax) * 100 : 0;
+      const hpPct = percentFrom(target?.hp_curr, target?.hp_max);
+      const mpPct = percentFrom(target?.mp_curr, target?.mp_max);
 
       const hpColor = unit?.vehicle && unit.vehicle.active ? "#AB47BC" : barHpColor;
 
@@ -676,13 +706,14 @@ function renderMeters(meters) {
       const curr = m.curr ?? m.value ?? 0;
       const max = m.max ?? 100;
 
-      const currNum = safeParseFloat(curr, 0);
-      const maxNum = safeParseFloat(max, 0);
-
-      if (maxNum <= 0) return "";
-
-      const pct = clamp((currNum / maxNum) * 100, 0, 100);
       const c = meterColorByName(name);
+
+      // only hide the meter if max is a real finite <= 0
+      const maxNum = safeParseFloatOrInf(max, 0);
+      if (Number.isFinite(maxNum) && maxNum <= 0) return "";
+
+      const pct = percentFrom(curr, max);
+
 
       return `
         <div style="margin-top:4px;">
@@ -1141,13 +1172,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         ? `<span style="color:#ff5252; font-weight:bold;">${display.status_effects.map((s) => escHtml(s)).join(", ")}</span>`
         : `<span style="color:#69f0ae;">Healthy</span>`;
 
-    const hpMaxNum = safeParseFloat(display.hp_max, 0);
-    const mpMaxNum = safeParseFloat(display.mp_max, 0);
-    const hpCurrNum = safeParseFloat(display.hp_curr, 0);
-    const mpCurrNum = safeParseFloat(display.mp_curr, 0);
-
-    const hpPercent = hpMaxNum > 0 ? (hpCurrNum / hpMaxNum) * 100 : 0;
-    const mpPercent = mpMaxNum > 0 ? (mpCurrNum / mpMaxNum) * 100 : 0;
+    const hpPercent = percentFrom(display.hp_curr, display.hp_max);
+    const mpPercent = percentFrom(display.mp_curr, display.mp_max);
 
     let bondHtml = "";
     if ((type === "party" || type === "npc") && !isVehicle) {
