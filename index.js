@@ -149,6 +149,10 @@ let lastRpgMsgIndex = -1;
 // Auto-rewrite <rpg_state> back into the chat when we had to repair JSON
 const AUTO_REWRITE_ON_REPAIR = true;
 
+// Disable or Enable Auto-Injection of the last <rpg_state> tags. This acts as a Response Interceptor. If you use the Interceptor, the AI will see the stats twice if they are already in the last message of the chat. 
+// Most modern LLMs (Claude, GPT-4, etc.) handle this fine and actually appreciate the "reminder," but smaller models might get confused. This allows the user to turn it on or off.
+let autoInjectState = false; // Default to OFF
+
 // --- UI SETTINGS (font + scale) ---
 // Stored separately from RPG state (does NOT go into <rpg_state>)
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
@@ -219,9 +223,15 @@ function toNumberOr(value, fallback = 0) {
 }
 
 function parseBondValue(v) {
-  const s = String(v ?? "").trim().toLowerCase();
+  let s = String(v ?? "").trim();
+
+  // Remove any trailing /100 fraction (common LLM mistake)
+  s = s.replace(/\/100$/i, '');
+
+  s = s.toLowerCase();
+
   if (s === "∞" || s === "infinity" || s === "inf") return 101; // sentinel for infinity
-  const n = Number(v);
+  const n = Number(s);
   return Number.isFinite(n) ? n : 0;
 }
 
@@ -1206,6 +1216,10 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
              <button id="rpg-settings-clear-party" style="background:#333; border:1px solid #C0A040; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 Party</button>
 			 <button id="rpg-settings-insert" style="background:#333; border:1px solid #4CAF50; color:#A5D6A7; cursor:pointer; padding:8px 10px; font-weight:bold;">Insert State</button>
              <button id="rpg-settings-remind" style="background:#333; border:1px solid #9C27B0; color:#E1BEE7; cursor:pointer; padding:8px 10px; font-weight:bold;">Remind State</button>
+			 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px;">
+    			<span title="Automatically reminds the AI of stats on every message">Auto-Inject Prompt</span>
+   			 <input type="checkbox" id="rpg-settings-autoinject" ${autoInjectState ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
+		  </div>
              <button id="rpg-settings-reset" style="background:#b71c1c; border:1px solid #ff5252; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold; grid-column:1 / span 2;">X Reset</button>
           </div>
 
@@ -1464,9 +1478,9 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       } catch {}
     }
   } catch (e) {
-    container.innerHTML = `<div style="color:red; font-size:0.8em;">⚠️ Crash: ${escHtml(
+    container.innerHTML = `<div style="color:#ff5252; padding:10px;">HUD crashed: ${escHtml(
       e.message
-    )} <br><button id="rpg-hard-reset">Reset</button></div>`;
+    )}<br><button id="rpg-hard-reset">Hard Reset</button></div>`;
     document.getElementById("rpg-hard-reset").onclick = resetRPG;
     console.error(e);
   }
@@ -1756,20 +1770,26 @@ function patchArrayField(text, fieldName, patchFn) {
 function repairJsonText(raw) {
   let t = sanitizeJsonText(raw);
 
-  // 1) Fix the common inventory break: ... [X],"Next" -> ... [X]","Next"
+  // Existing fixes (keep all of them)
   t = t.replace(/\[X\]\s*,\s*"/g, '[X]","');
-
-  // 2) Fix accidental commas INSIDE quoted time/month strings
   t = t.replace(/("clock"\s*:\s*")([^"]*?),(")/g, '$1$2$3');
   t = t.replace(/("month"\s*:\s*")([^"]*?),(")/g, '$1$2$3');
-
-  // 3) Fix quoted numbers
   t = t.replace(/:\s*"(\s*-?\d+(?:\.\d+)?\s*)"\s*(?=[,}\]])/g, ":$1");
-
-  // 3.5) Fix stray quote after numbers: "day":1","clock" -> "day":1,"clock"
   t = t.replace(/(-?\d+(?:\.\d+)?)"\s*(?=\s*,\s*")/g, "$1");
+  t = t.replace(/:\s*(-?\d+(?:\.\d+)?)\s*"\s*([,}\]])/g, ':$1$2');
+  t = t.replace(/"(day|month|clock)"\s*:\s*"([^"]*)"/g, '"$1": $2');
 
-  // 4) Fix missing closing quotes between string elements in common string-arrays
+  // NEW: Quote unquoted month/clock values (e.g. "month": Jan -> "month": "Jan")
+  // Matches alphanumeric month names and time-like clock values (e.g. 23:05, 7:00 AM)
+  t = t.replace(/"(month|clock)"\s*:\s*([a-zA-Z]+(?:\s*[a-zA-Z]+)?|[\d:]+(?:\s*[AP]M)?)\s*([,}])/g, '"$1": "$2"$3');
+
+  // NEW: Extra fix for day if stray quote after number (e.g. "day":1" -> "day":1)
+  t = t.replace(/"day"\s*:\s*(\d+)\s*"\s*([,}]|)/g, '"day": $1$2');
+
+  // Bond fraction fix (from previous)
+  t = t.replace(/"bond"\s*:\s*(?:"?\s*(\d+(?:\.\d+)?)\s*\/\s*100\s*"?)/g, '"bond":$1');
+
+  // Array string fixes
   const fixBrokenArrayStrings = (arrBody) =>
     arrBody.replace(/([^"])\s*,\s*"/g, '$1","');
 
@@ -1780,8 +1800,9 @@ function repairJsonText(raw) {
   t = patchArrayField(t, "env_effects", fixBrokenArrayStrings);
   t = patchArrayField(t, "status_effects", fixBrokenArrayStrings);
 
-  // 5) Strip trailing commas
+  // Trailing commas
   t = t.replace(/,\s*}/g, "}").replace(/,\s*]/g, "]");
+  t = t.replace(/,\s*([\]}])/g, '$1');
 
   return t;
 }
@@ -1856,6 +1877,12 @@ function normalizeEntity(entity, defaultTemplate = {}) {
   scrubLegacyBondKeys(out);
   if ("Bond" in out) delete out.Bond;
 
+  // Additional explicit fallback for "Bond"
+  if (!("bond" in out) && "Bond" in out) {
+    out.bond = parseBondValue(out.Bond);
+    delete out.Bond;
+  }
+
   // Clamp final bond
   const b = parseBondValue(out.bond);
   out.bond = clamp(b, 0, 101);
@@ -1928,7 +1955,11 @@ function normalizeFullState(parsed) {
   player.env_effects = Array.isArray(mergedTop.env_effects) ? mergedTop.env_effects : base.env_effects;
 
   player.location = mergedTop.location ?? base.location;
-  player.world_time = { ...base.world_time, ...(mergedTop.world_time || {}) };
+player.world_time = {
+  month: String(mergedTop.world_time?.month ?? "Jan").replace(/^"|"$/g, ''), // strip any extra quotes
+  day: toNumberOr(mergedTop.world_time?.day ?? 1),
+  clock: String(mergedTop.world_time?.clock ?? "12:00").replace(/^"|"$/g, '')
+};
 
   // Combat
   if (mergedTop.combat && typeof mergedTop.combat === "object") {
@@ -2008,6 +2039,7 @@ const checkMessage = async (manual = false) => {
     return;
   } catch (e1) {
     // continue to repair attempt
+    if (manual) console.log("RPG HUD: Initial parse failed, attempting repair...");
   }
 
 // 2) repair then parse
@@ -2021,6 +2053,9 @@ if (manual) {
 
   const wt = jsonText.indexOf('"world_time"');
   if (wt !== -1) console.warn("RPG HUD: repaired world_time:", jsonText.slice(Math.max(0, wt - 40), wt + 200));
+
+  const dayDebug = jsonText.indexOf('"day"');
+  if (dayDebug !== -1) console.warn("RPG HUD: repaired day area:", jsonText.slice(Math.max(0, dayDebug - 50), dayDebug + 200));
 }
 
 
@@ -2063,6 +2098,32 @@ const setupObserver = () => {
   });
   observer.observe(chatContainer, { childList: true, subtree: true });
 };
+
+import { eventSource, event_types } from '../../../../script.js';
+
+// --- PROMPT INJECTION (Toggleable Interceptor) ---
+eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, (payload) => {
+    if (!autoInjectState) return;
+    if (!rpgState || Object.keys(rpgState).length === 0) return;
+
+    const exportObj = exportStateForChat(rpgState);
+    const json = JSON.stringify(exportObj);
+
+    // Clearer instruction — avoids "MUST" language that can sometimes make models over-correct
+    const injection = `\n\n[System Note: Current RPG state for reference: <rpg_state>${json}</rpg_state>. Update values as needed based on the interaction and include the new <rpg_state> tag at the end of your response.]`;
+
+    payload.prompt += injection;
+    console.log("RPG HUD: Auto-inject applied (toggle ON)");
+});
+
+// Listen for toggle changes (already good, but add debug)
+$(document).on('change', '#rpg-settings-autoinject', function() {
+    autoInjectState = this.checked;
+    if (window.toastr) {
+        window.toastr.info(`Auto-Inject ${autoInjectState ? 'Enabled' : 'Disabled'}`);
+    }
+    console.log("RPG HUD: Auto-inject toggle set to", autoInjectState);
+});
 
 // --- 8. BOOT ---
 jQuery(() => {
