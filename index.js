@@ -1770,26 +1770,45 @@ function patchArrayField(text, fieldName, patchFn) {
 function repairJsonText(raw) {
   let t = sanitizeJsonText(raw);
 
-  // Existing fixes (keep all of them)
+  // Existing fixes (keep)
   t = t.replace(/\[X\]\s*,\s*"/g, '[X]","');
   t = t.replace(/("clock"\s*:\s*")([^"]*?),(")/g, '$1$2$3');
   t = t.replace(/("month"\s*:\s*")([^"]*?),(")/g, '$1$2$3');
+
+  // Turn quoted numbers into numbers:  "hp_curr":"225" -> "hp_curr":225
   t = t.replace(/:\s*"(\s*-?\d+(?:\.\d+)?\s*)"\s*(?=[,}\]])/g, ":$1");
-  t = t.replace(/(-?\d+(?:\.\d+)?)"\s*(?=\s*,\s*")/g, "$1");
-  t = t.replace(/:\s*(-?\d+(?:\.\d+)?)\s*"\s*([,}\]])/g, ':$1$2');
-  t = t.replace(/"(day|month|clock)"\s*:\s*"([^"]*)"/g, '"$1": $2');
 
-  // NEW: Quote unquoted month/clock values (e.g. "month": Jan -> "month": "Jan")
-  // Matches alphanumeric month names and time-like clock values (e.g. 23:05, 7:00 AM)
-  t = t.replace(/"(month|clock)"\s*:\s*([a-zA-Z]+(?:\s*[a-zA-Z]+)?|[\d:]+(?:\s*[AP]M)?)\s*([,}])/g, '"$1": "$2"$3');
+  // Day fixes
+  t = t.replace(/"day"\s*:\s*"(\d+)"\s*([,}])/g, '"day":$1$2');
+  t = t.replace(/"day"\s*:\s*(\d+)\s*"\s*([,}])/g, '"day":$1$2');
 
-  // NEW: Extra fix for day if stray quote after number (e.g. "day":1" -> "day":1)
-  t = t.replace(/"day"\s*:\s*(\d+)\s*"\s*([,}]|)/g, '"day": $1$2');
+  // ✅ SAFE stray-quote fix: only numeric fields we expect
+  // Example it fixes: "hp_curr":225"  -> "hp_curr":225
+  t = t.replace(
+    /"(hp_curr|hp_max|mp_curr|mp_max|round|dankcoin|bond)"\s*:\s*(-?\d+(?:\.\d+)?)\s*"\s*([,}\]])/g,
+    '"$1":$2$3'
+  );
+  // Also for meters: {"curr":25" ...}
+  t = t.replace(
+    /"(curr|max)"\s*:\s*(-?\d+(?:\.\d+)?)\s*"\s*([,}\]])/g,
+    '"$1":$2$3'
+  );
 
-  // Bond fraction fix (from previous)
-  t = t.replace(/"bond"\s*:\s*(?:"?\s*(\d+(?:\.\d+)?)\s*\/\s*100\s*"?)/g, '"bond":$1');
+  // ✅ Your month/clock quoting line goes HERE (after numeric cleanup, before arrays)
+  // Fixes: "month": Jan  -> "month":"Jan"
+  // Fixes: "clock": 23:05 -> "clock":"23:05"
+  t = t.replace(
+    /"(month|clock)"\s*:\s*([A-Za-z][A-Za-z ]*|\d{1,2}:\d{2}(?:\s*[AP]M)?)\s*([,}])/g,
+    '"$1":"$2"$3'
+  );
 
-  // Array string fixes
+  // Bond fraction fix
+  t = t.replace(
+    /"bond"\s*:\s*(?:"?\s*(\d+(?:\.\d+)?)\s*\/\s*100\s*"?)/g,
+    '"bond":$1'
+  );
+
+  // Array string fixes (keep yours)
   const fixBrokenArrayStrings = (arrBody) =>
     arrBody.replace(/([^"])\s*,\s*"/g, '$1","');
 
@@ -1806,7 +1825,6 @@ function repairJsonText(raw) {
 
   return t;
 }
-
 
 function normalizeMeters(meters) {
   if (!Array.isArray(meters)) return [];
