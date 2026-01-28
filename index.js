@@ -149,6 +149,10 @@ let lastRpgMsgIndex = -1;
 // Auto-rewrite <rpg_state> back into the chat when we had to repair JSON
 const AUTO_REWRITE_ON_REPAIR = true;
 
+// Disable or Enable Auto-Injection of the last <rpg_state> tags. This acts as a Response Interceptor. If you use the Interceptor, the AI will see the stats twice if they are already in the last message of the chat. 
+// Most modern LLMs (Claude, GPT-4, etc.) handle this fine and actually appreciate the "reminder," but smaller models might get confused. This allows the user to turn it on or off.
+let autoInjectState = false; // Default to OFF
+
 // --- UI SETTINGS (font + scale) ---
 // Stored separately from RPG state (does NOT go into <rpg_state>)
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
@@ -213,15 +217,51 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+function isInfinityToken(v) {
+  const s = String(v ?? "").trim().toLowerCase();
+  if (s === "∞" || s === "inf" || s === "infinity" || s === "+inf" || s === "+infinity") return true;
+  return isHugeNumber(v);
+}
+
+function safeParseFloatOrInf(v, fallback = 0) {
+  if (isInfinityToken(v)) return Number.POSITIVE_INFINITY;
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function toNumberOr(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 }
 
+function percentFrom(currRaw, maxRaw) {
+  const curr = safeParseFloatOrInf(currRaw, 0);
+  const max  = safeParseFloatOrInf(maxRaw, 0);
+
+  // If either side is Infinity, show a full bar (visual “cap”)
+  if (!Number.isFinite(curr) || !Number.isFinite(max)) return 100;
+
+  if (max <= 0) return 0;
+  return clamp((curr / max) * 100, 0, 100);
+}
+
+const INF_THRESHOLD = 999999999; // treat this and above as infinity
+
+function isHugeNumber(v) {
+  const n = Number(String(v ?? "").trim());
+  return Number.isFinite(n) && n >= INF_THRESHOLD;
+}
+
 function parseBondValue(v) {
-  const s = String(v ?? "").trim().toLowerCase();
+  let s = String(v ?? "").trim();
+
+  // Remove any trailing /100 fraction (common LLM mistake)
+  s = s.replace(/\/100$/i, '');
+
+  s = s.toLowerCase();
+
   if (s === "∞" || s === "infinity" || s === "inf") return 101; // sentinel for infinity
-  const n = Number(v);
+  const n = Number(s);
   return Number.isFinite(n) ? n : 0;
 }
 
@@ -523,7 +563,7 @@ function renderEnemySummary() {
 
     const hpCurr = safeParseFloat(target?.hp_curr, 0);
     const hpMax = safeParseFloat(target?.hp_max, 0);
-    const hpPercent = hpMax > 0 ? (hpCurr / hpMax) * 100 : 0;
+    const hpPercent = percentFrom(target?.hp_curr, target?.hp_max);
     const barColor = enemy?.vehicle && enemy.vehicle.active ? "#AB47BC" : "#d32f2f";
 
     html += `
@@ -584,8 +624,8 @@ function renderMiniUnitBars(list, options = {}) {
       const mpCurr = safeParseFloat(target?.mp_curr, 0);
       const mpMax = safeParseFloat(target?.mp_max, 0);
 
-      const hpPct = hpMax > 0 ? (hpCurr / hpMax) * 100 : 0;
-      const mpPct = mpMax > 0 ? (mpCurr / mpMax) * 100 : 0;
+      const hpPct = percentFrom(target?.hp_curr, target?.hp_max);
+      const mpPct = percentFrom(target?.mp_curr, target?.mp_max);
 
       const hpColor = unit?.vehicle && unit.vehicle.active ? "#AB47BC" : barHpColor;
 
@@ -666,13 +706,14 @@ function renderMeters(meters) {
       const curr = m.curr ?? m.value ?? 0;
       const max = m.max ?? 100;
 
-      const currNum = safeParseFloat(curr, 0);
-      const maxNum = safeParseFloat(max, 0);
-
-      if (maxNum <= 0) return "";
-
-      const pct = clamp((currNum / maxNum) * 100, 0, 100);
       const c = meterColorByName(name);
+
+      // only hide the meter if max is a real finite <= 0
+      const maxNum = safeParseFloatOrInf(max, 0);
+      if (Number.isFinite(maxNum) && maxNum <= 0) return "";
+
+      const pct = percentFrom(curr, max);
+
 
       return `
         <div style="margin-top:4px;">
@@ -758,6 +799,100 @@ function writeStateBackToChatMessage(stateObj) {
 }
 
 // --- 3. ACTIONS ---
+function insertLastStateIntoNarrative(e) {
+  if (e) e.stopPropagation();
+  const stateString = `<rpg_state>${JSON.stringify(rpgState, null, 2)}</rpg_state>`;
+  const $input = $('#send_textarea');
+  if ($input.length) {
+    let currentVal = $input.val().trim();
+    currentVal += (currentVal ? '\n\n' : '') + stateString; // Add spacing for readability
+    $input.val(currentVal);
+    $input.trigger('input'); // Update textarea height and trigger any listeners
+    // Optional: Focus the input and scroll to the bottom
+    $input.focus();
+    $input[0].scrollTop = $input[0].scrollHeight;
+  } else {
+    console.warn("RPG HUD: Could not find #send_textarea");
+    alert("Could not find the chat input box. Make sure you're in a chat session.");
+  }
+  // Optional: Close settings after insertion
+  isSettingsOpen = false;
+  renderRPG();
+}
+
+function remindStateInLastMessage(e) {
+  if (e) e.stopPropagation();
+
+  if (Object.keys(rpgState).length === 0 || !rpgState) {
+    alert("No valid RPG state to remind. Scan or generate one first.");
+    return;
+  }
+
+  // 1. Get the current chat
+  const context = SillyTavern.getContext();
+  const chat = context?.chat;
+  if (!Array.isArray(chat) || chat.length === 0) {
+    alert("No chat history found.");
+    return;
+  }
+
+  // 2. Look at the VERY LAST message
+  const lastMsgIndex = chat.length - 1;
+  const lastMsg = chat[lastMsgIndex];
+
+  // 3. Prepare the new state block
+  const exportObj = exportStateForChat(rpgState);
+  const json = JSON.stringify(exportObj);
+  const newBlock = `<rpg_state>${json}</rpg_state>`;
+  const regex = /<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i;
+
+  // 4. Case A: The last message is from the AI
+  if (lastMsg && !lastMsg.is_user) {
+    if (confirm("Append/Update <rpg_state> in the last AI message?")) {
+      
+      // If tag exists, replace it
+      if (regex.test(lastMsg.mes)) {
+        lastMsg.mes = lastMsg.mes.replace(regex, newBlock);
+      } 
+      // If tag is missing, append it
+      else {
+        lastMsg.mes = (lastMsg.mes + "\n\n" + newBlock).trim();
+      }
+
+      // Save changes to SillyTavern
+      if (window.saveChat) {
+        window.saveChat();
+        // Update the internal index tracker since we just wrote to the last msg
+        lastRpgMsgIndex = lastMsgIndex; 
+        alert("State successfully injected into the last AI message.");
+      } else {
+        console.warn("RPG HUD: window.saveChat not available.");
+      }
+      
+      // Refresh UI
+      isSettingsOpen = false;
+      renderRPG();
+      return;
+    }
+  }
+
+  // 5. Case B: The last message was you (User), or you declined the AI overwrite
+  // Fallback to searching history for ANY tag to update (old behavior)
+  const success = writeStateBackToChatMessage(rpgState);
+
+  if (success) {
+    checkMessage(true);
+    alert("Updated an OLD <rpg_state> found further back in history.");
+  } else {
+    // 6. Case C: No tags found anywhere, and last msg wasn't suitable
+    insertLastStateIntoNarrative();
+    alert("Last message was yours (or no tags found). Inserted state into your input box instead.");
+  }
+
+  isSettingsOpen = false;
+  renderRPG();
+}
+
 function resetRPG(e) {
   if (e) e.stopPropagation();
   if (confirm("Reset all RPG stats to zero?")) {
@@ -1037,13 +1172,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         ? `<span style="color:#ff5252; font-weight:bold;">${display.status_effects.map((s) => escHtml(s)).join(", ")}</span>`
         : `<span style="color:#69f0ae;">Healthy</span>`;
 
-    const hpMaxNum = safeParseFloat(display.hp_max, 0);
-    const mpMaxNum = safeParseFloat(display.mp_max, 0);
-    const hpCurrNum = safeParseFloat(display.hp_curr, 0);
-    const mpCurrNum = safeParseFloat(display.mp_curr, 0);
-
-    const hpPercent = hpMaxNum > 0 ? (hpCurrNum / hpMaxNum) * 100 : 0;
-    const mpPercent = mpMaxNum > 0 ? (mpCurrNum / mpMaxNum) * 100 : 0;
+    const hpPercent = percentFrom(display.hp_curr, display.hp_max);
+    const mpPercent = percentFrom(display.mp_curr, display.mp_max);
 
     let bondHtml = "";
     if ((type === "party" || type === "npc") && !isVehicle) {
@@ -1110,7 +1240,12 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
              <button id="rpg-settings-clear-enemies" style="background:#333; border:1px solid #ff5252; color:#ffd0d0; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 Enemies</button>
              <button id="rpg-settings-clear-party" style="background:#333; border:1px solid #C0A040; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 Party</button>
-
+			 <button id="rpg-settings-insert" style="background:#333; border:1px solid #4CAF50; color:#A5D6A7; cursor:pointer; padding:8px 10px; font-weight:bold;">Insert State</button>
+             <button id="rpg-settings-remind" style="background:#333; border:1px solid #9C27B0; color:#E1BEE7; cursor:pointer; padding:8px 10px; font-weight:bold;">Remind State</button>
+			 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px;">
+    			<span title="Automatically reminds the AI of stats on every message">Auto-Inject Prompt</span>
+   			 <input type="checkbox" id="rpg-settings-autoinject" ${autoInjectState ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
+		  </div>
              <button id="rpg-settings-reset" style="background:#b71c1c; border:1px solid #ff5252; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold; grid-column:1 / span 2;">X Reset</button>
           </div>
 
@@ -1329,6 +1464,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       bind("rpg-settings-clear-npcs", (e) => clearArray("npc", e));
       bind("rpg-settings-clear-enemies", (e) => clearArray("enemy", e));
       bind("rpg-settings-clear-party", (e) => clearArray("party", e));
+	  bind("rpg-settings-insert", insertLastStateIntoNarrative);
+      bind("rpg-settings-remind", remindStateInLastMessage);
 
       const overlay = document.getElementById("rpg-settings-overlay");
       if (overlay) overlay.onclick = (e) => e.stopPropagation();
@@ -1367,9 +1504,9 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       } catch {}
     }
   } catch (e) {
-    container.innerHTML = `<div style="color:red; font-size:0.8em;">⚠️ Crash: ${escHtml(
+    container.innerHTML = `<div style="color:#ff5252; padding:10px;">HUD crashed: ${escHtml(
       e.message
-    )} <br><button id="rpg-hard-reset">Reset</button></div>`;
+    )}<br><button id="rpg-hard-reset">Hard Reset</button></div>`;
     document.getElementById("rpg-hard-reset").onclick = resetRPG;
     console.error(e);
   }
@@ -1659,20 +1796,45 @@ function patchArrayField(text, fieldName, patchFn) {
 function repairJsonText(raw) {
   let t = sanitizeJsonText(raw);
 
-  // 1) Fix the common inventory break: ... [X],"Next" -> ... [X]","Next"
+  // Existing fixes (keep)
   t = t.replace(/\[X\]\s*,\s*"/g, '[X]","');
-
-  // 2) Fix accidental commas INSIDE quoted time/month strings
   t = t.replace(/("clock"\s*:\s*")([^"]*?),(")/g, '$1$2$3');
   t = t.replace(/("month"\s*:\s*")([^"]*?),(")/g, '$1$2$3');
 
-  // 3) Fix quoted numbers
+  // Turn quoted numbers into numbers:  "hp_curr":"225" -> "hp_curr":225
   t = t.replace(/:\s*"(\s*-?\d+(?:\.\d+)?\s*)"\s*(?=[,}\]])/g, ":$1");
 
-  // 3.5) Fix stray quote after numbers: "day":1","clock" -> "day":1,"clock"
-  t = t.replace(/(-?\d+(?:\.\d+)?)"\s*(?=\s*,\s*")/g, "$1");
+  // Day fixes
+  t = t.replace(/"day"\s*:\s*"(\d+)"\s*([,}])/g, '"day":$1$2');
+  t = t.replace(/"day"\s*:\s*(\d+)\s*"\s*([,}])/g, '"day":$1$2');
 
-  // 4) Fix missing closing quotes between string elements in common string-arrays
+  // ✅ SAFE stray-quote fix: only numeric fields we expect
+  // Example it fixes: "hp_curr":225"  -> "hp_curr":225
+  t = t.replace(
+    /"(hp_curr|hp_max|mp_curr|mp_max|round|dankcoin|bond)"\s*:\s*(-?\d+(?:\.\d+)?)\s*"\s*([,}\]])/g,
+    '"$1":$2$3'
+  );
+  // Also for meters: {"curr":25" ...}
+  t = t.replace(
+    /"(curr|max)"\s*:\s*(-?\d+(?:\.\d+)?)\s*"\s*([,}\]])/g,
+    '"$1":$2$3'
+  );
+
+  // ✅ Your month/clock quoting line goes HERE (after numeric cleanup, before arrays)
+  // Fixes: "month": Jan  -> "month":"Jan"
+  // Fixes: "clock": 23:05 -> "clock":"23:05"
+  t = t.replace(
+    /"(month|clock)"\s*:\s*([A-Za-z][A-Za-z ]*|\d{1,2}:\d{2}(?:\s*[AP]M)?)\s*([,}])/g,
+    '"$1":"$2"$3'
+  );
+
+  // Bond fraction fix
+  t = t.replace(
+    /"bond"\s*:\s*(?:"?\s*(\d+(?:\.\d+)?)\s*\/\s*100\s*"?)/g,
+    '"bond":$1'
+  );
+
+  // Array string fixes (keep yours)
   const fixBrokenArrayStrings = (arrBody) =>
     arrBody.replace(/([^"])\s*,\s*"/g, '$1","');
 
@@ -1683,12 +1845,12 @@ function repairJsonText(raw) {
   t = patchArrayField(t, "env_effects", fixBrokenArrayStrings);
   t = patchArrayField(t, "status_effects", fixBrokenArrayStrings);
 
-  // 5) Strip trailing commas
+  // Trailing commas
   t = t.replace(/,\s*}/g, "}").replace(/,\s*]/g, "]");
+  t = t.replace(/,\s*([\]}])/g, '$1');
 
   return t;
 }
-
 
 function normalizeMeters(meters) {
   if (!Array.isArray(meters)) return [];
@@ -1758,6 +1920,12 @@ function normalizeEntity(entity, defaultTemplate = {}) {
   // Always delete legacy keys (prevents token bloat)
   scrubLegacyBondKeys(out);
   if ("Bond" in out) delete out.Bond;
+
+  // Additional explicit fallback for "Bond"
+  if (!("bond" in out) && "Bond" in out) {
+    out.bond = parseBondValue(out.Bond);
+    delete out.Bond;
+  }
 
   // Clamp final bond
   const b = parseBondValue(out.bond);
@@ -1831,7 +1999,11 @@ function normalizeFullState(parsed) {
   player.env_effects = Array.isArray(mergedTop.env_effects) ? mergedTop.env_effects : base.env_effects;
 
   player.location = mergedTop.location ?? base.location;
-  player.world_time = { ...base.world_time, ...(mergedTop.world_time || {}) };
+player.world_time = {
+  month: String(mergedTop.world_time?.month ?? "Jan").replace(/^"|"$/g, ''), // strip any extra quotes
+  day: toNumberOr(mergedTop.world_time?.day ?? 1),
+  clock: String(mergedTop.world_time?.clock ?? "12:00").replace(/^"|"$/g, '')
+};
 
   // Combat
   if (mergedTop.combat && typeof mergedTop.combat === "object") {
@@ -1911,6 +2083,7 @@ const checkMessage = async (manual = false) => {
     return;
   } catch (e1) {
     // continue to repair attempt
+    if (manual) console.log("RPG HUD: Initial parse failed, attempting repair...");
   }
 
 // 2) repair then parse
@@ -1924,6 +2097,9 @@ if (manual) {
 
   const wt = jsonText.indexOf('"world_time"');
   if (wt !== -1) console.warn("RPG HUD: repaired world_time:", jsonText.slice(Math.max(0, wt - 40), wt + 200));
+
+  const dayDebug = jsonText.indexOf('"day"');
+  if (dayDebug !== -1) console.warn("RPG HUD: repaired day area:", jsonText.slice(Math.max(0, dayDebug - 50), dayDebug + 200));
 }
 
 
@@ -1966,6 +2142,32 @@ const setupObserver = () => {
   });
   observer.observe(chatContainer, { childList: true, subtree: true });
 };
+
+import { eventSource, event_types } from '../../../../script.js';
+
+// --- PROMPT INJECTION (Toggleable Interceptor) ---
+eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, (payload) => {
+    if (!autoInjectState) return;
+    if (!rpgState || Object.keys(rpgState).length === 0) return;
+
+    const exportObj = exportStateForChat(rpgState);
+    const json = JSON.stringify(exportObj);
+
+    // Clearer instruction — avoids "MUST" language that can sometimes make models over-correct
+    const injection = `\n\n[System Note: Current RPG state for reference: <rpg_state>${json}</rpg_state>. Update values as needed based on the interaction and include the new <rpg_state> tag at the end of your response.]`;
+
+    payload.prompt += injection;
+    console.log("RPG HUD: Auto-inject applied (toggle ON)");
+});
+
+// Listen for toggle changes (already good, but add debug)
+$(document).on('change', '#rpg-settings-autoinject', function() {
+    autoInjectState = this.checked;
+    if (window.toastr) {
+        window.toastr.info(`Auto-Inject ${autoInjectState ? 'Enabled' : 'Disabled'}`);
+    }
+    console.log("RPG HUD: Auto-inject toggle set to", autoInjectState);
+});
 
 // --- 8. BOOT ---
 jQuery(() => {
