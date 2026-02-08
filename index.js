@@ -1233,8 +1233,6 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-bottom:12px;">
              <button id="rpg-settings-edit" style="background:#333; border:1px solid #4FC3F7; color:#4FC3F7; cursor:pointer; padding:8px 10px; font-weight:bold;">✏️ Edit</button>
-             <button id="rpg-settings-scan" style="background:#333; border:1px solid #C0A040; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold;">↻ Scan</button>
-
              <button id="rpg-settings-remove" style="background:#333; border:1px solid #ff9800; color:#ffcc80; cursor:pointer; padding:8px 10px; font-weight:bold;">🗑️ Remove</button>
              <button id="rpg-settings-clear-npcs" style="background:#333; border:1px solid #00e5ff; color:#b3f5ff; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 NPCs</button>
 
@@ -1361,14 +1359,26 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
       ${renderEnemySummary()}
 
-      <!-- Footer controls (absolute, stable) -->
-      <button id="rpg-settings-btn" title="Settings" style="
-        position:absolute; left:10px; bottom:8px;
-        background:#333; border:1px solid #777; color:#fff;
-        cursor:pointer; width:34px; height:26px;
-        display:flex; align-items:center; justify-content:center;
-        box-sizing:border-box;
-      ">⚙️</button>
+    <!-- Footer controls (absolute, stable) -->
+	<div style="
+	  position:absolute; left:10px; bottom:8px;
+	  display:flex; gap:6px;
+	">
+	  <button id="rpg-settings-btn" title="Settings" style="
+	    background:#333; border:1px solid #777; color:#fff;
+	    cursor:pointer; width:34px; height:26px;
+	    display:flex; align-items:center; justify-content:center;
+	    box-sizing:border-box;
+	  ">⚙️</button>
+	
+	  <button id="rpg-scan-btn" title="Scan" style="
+	    background:#333; border:1px solid #C0A040; color:#fff;
+	    cursor:pointer; width:34px; height:26px;
+	    display:flex; align-items:center; justify-content:center;
+	    box-sizing:border-box;
+	  ">↻</button>
+	</div>
+
 
       <div style="position:absolute; right:10px; bottom:10px; font-size:0.8em; color:#FFD700;">💰 ${escHtml(coin)}</div>
 
@@ -1436,6 +1446,11 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
     bind("rpg-min-btn", toggleMinimize);
     bind("rpg-settings-btn", toggleSettings);
+	bind("rpg-scan-btn", (e) => {
+  if (e) e.stopPropagation();
+  checkMessage(true);
+});
+
 
     const dropdown = document.getElementById("rpg-char-select");
     if (dropdown) {
@@ -1455,9 +1470,6 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     if (isSettingsOpen) {
       bind("rpg-settings-close", toggleSettings);
       bind("rpg-settings-edit", openEditorFromSettings);
-      bind("rpg-settings-scan", (e) => {
-        if (e) e.stopPropagation();
-        checkMessage(true);
       });
       bind("rpg-settings-reset", resetRPG);
       bind("rpg-settings-remove", removeActiveCharacter);
@@ -1907,15 +1919,16 @@ function normalizeEntity(entity, defaultTemplate = {}) {
 
   // If incoming did NOT explicitly provide bond, try to migrate from legacy keys
   if (!hasCanonicalBond) {
-    const legacyKey = Object.keys(e).find(isLegacyBondKey);
-    if (legacyKey) {
-      const v = Number(e[legacyKey]);
-      if (Number.isFinite(v)) out.bond = v;
-    } else if (Object.prototype.hasOwnProperty.call(e, "Bond")) {
-      const v = Number(e.Bond);
-      if (Number.isFinite(v)) out.bond = v;
-    }
+  const legacyKey = Object.keys(e).find(isLegacyBondKey);
+
+  if (legacyKey) {
+    const v = parseBondValue(e[legacyKey]); // ✅ handles "15/100"
+    if (Number.isFinite(v)) out.bond = v;
+  } else if (Object.prototype.hasOwnProperty.call(e, "Bond")) {
+    const v = parseBondValue(e.Bond);       // ✅ handles "15/100"
+    if (Number.isFinite(v)) out.bond = v;
   }
+}
 
   // Always delete legacy keys (prevents token bloat)
   scrubLegacyBondKeys(out);
@@ -2196,3 +2209,4 @@ jQuery(() => {
 
   console.log("RPG HUD: boot complete ✅");
 });
+
