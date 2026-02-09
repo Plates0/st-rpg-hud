@@ -1465,56 +1465,55 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     bind("tab-mast", () => switchTab("mastery"));
     bind("tab-quest", () => switchTab("quests"));
     bind("tab-env", () => switchTab("env"));
-
+	  
     // Settings panel binds
-    if (isSettingsOpen) {
-      bind("rpg-settings-close", toggleSettings);
-      bind("rpg-settings-edit", openEditorFromSettings);
-      });
-      bind("rpg-settings-reset", resetRPG);
-      bind("rpg-settings-remove", removeActiveCharacter);
-      bind("rpg-settings-clear-npcs", (e) => clearArray("npc", e));
-      bind("rpg-settings-clear-enemies", (e) => clearArray("enemy", e));
-      bind("rpg-settings-clear-party", (e) => clearArray("party", e));
+	if (isSettingsOpen) {
+	  bind("rpg-settings-close", toggleSettings);
+	  bind("rpg-settings-edit", openEditorFromSettings);
+	
+	  bind("rpg-settings-reset", resetRPG);
+	  bind("rpg-settings-remove", removeActiveCharacter);
+	  bind("rpg-settings-clear-npcs", (e) => clearArray("npc", e));
+	  bind("rpg-settings-clear-enemies", (e) => clearArray("enemy", e));
+	  bind("rpg-settings-clear-party", (e) => clearArray("party", e));
 	  bind("rpg-settings-insert", insertLastStateIntoNarrative);
-      bind("rpg-settings-remind", remindStateInLastMessage);
-
-      const overlay = document.getElementById("rpg-settings-overlay");
-      if (overlay) overlay.onclick = (e) => e.stopPropagation();
-
-      // Font preset + size slider (live apply)
-      try {
-        const presetEl = document.getElementById("rpg-font-preset");
-        const scaleEl = document.getElementById("rpg-font-scale");
-        const scaleLabel = document.getElementById("rpg-font-scale-label");
-
-        if (presetEl) {
-          presetEl.value = uiSettings.fontPreset || "retro_mono";
-          presetEl.onchange = () => {
-            uiSettings.fontPreset = presetEl.value;
-            uiSettings.fontFamily = fontPresetToFamily(uiSettings.fontPreset);
-            saveUiSettings();
-            applyHudTypography(container);
-          };
-        }
-
-        if (scaleEl) {
-          scaleEl.value = String(uiSettings.fontScale || 1.0);
-          const updateLabel = () => {
-            if (scaleLabel) scaleLabel.textContent = `${Math.round((Number(scaleEl.value) || 1) * 100)}%`;
-          };
-          updateLabel();
-
-          // oninput = smooth live changes while sliding
-          scaleEl.oninput = () => {
-            uiSettings.fontScale = Number(scaleEl.value) || 1.0;
-            saveUiSettings();
-            applyHudTypography(container);
-            updateLabel();
-          };
-        }
-      } catch {}
-    }
+	  bind("rpg-settings-remind", remindStateInLastMessage);
+	
+	  const overlay = document.getElementById("rpg-settings-overlay");
+	  if (overlay) overlay.onclick = (e) => e.stopPropagation();
+	
+	  // Font preset + size slider (live apply)
+	  try {
+	    const presetEl = document.getElementById("rpg-font-preset");
+	    const scaleEl = document.getElementById("rpg-font-scale");
+	    const scaleLabel = document.getElementById("rpg-font-scale-label");
+	
+	    if (presetEl) {
+	      presetEl.value = uiSettings.fontPreset || "retro_mono";
+	      presetEl.onchange = () => {
+	        uiSettings.fontPreset = presetEl.value;
+	        uiSettings.fontFamily = fontPresetToFamily(uiSettings.fontPreset);
+	        saveUiSettings();
+	        applyHudTypography(container);
+	      };
+	    }
+	
+	    if (scaleEl) {
+	      scaleEl.value = String(uiSettings.fontScale || 1.0);
+	      const updateLabel = () => {
+	        if (scaleLabel) scaleLabel.textContent = `${Math.round((Number(scaleEl.value) || 1) * 100)}%`;
+	      };
+	      updateLabel();
+	
+	      scaleEl.oninput = () => {
+	        uiSettings.fontScale = Number(scaleEl.value) || 1.0;
+	        saveUiSettings();
+	        applyHudTypography(container);
+	        updateLabel();
+	      };
+	    }
+	  } catch {}
+	}
   } catch (e) {
     container.innerHTML = `<div style="color:#ff5252; padding:10px;">HUD crashed: ${escHtml(
       e.message
@@ -2209,4 +2208,5 @@ jQuery(() => {
 
   console.log("RPG HUD: boot complete ✅");
 });
+
 
