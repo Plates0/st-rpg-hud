@@ -1047,7 +1047,7 @@ function saveEditor() {
   display.masteries = getList("edit-mastery");
 
   if (getEl("edit-bond")) {
-  root.bond = clamp(parseBondValue(getEl("edit-bond").value), 0, 101);
+  root.bond = clamp(parseBondValue(getEl("edit-bond").value), Number.NEGATIVE_INFINITY, 101);
   scrubLegacyBondKeys(root);
 }
 
@@ -1178,16 +1178,21 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     let bondHtml = "";
     if ((type === "party" || type === "npc") && !isVehicle) {
       let bond = parseBondValue(root.bond);
-      bond = clamp(bond, 0, 101);
+      bond = clamp(bond, Number.NEGATIVE_INFINITY, 101);
 
       const bondLabel = bond >= 101 ? "∞" : String(bond);
-      const bondPct = bond >= 101 ? 100 : bond;
 
+      // Visual-only bar fill: use magnitude, cap to 0..100
+      const bondPct = bond >= 101 ? 100 : clamp(Math.abs(bond), 0, 100);
+      
+      // Optional: color changes when negative
+      const bondColor = bond < 0 ? "#ff5252" : "#f06292";
+      
       bondHtml = `<div style="display:flex; justify-content:space-between; font-size:0.8em; margin-top:5px;">
-        <span style="color:#f48fb1;">❤️ Bond</span> <span>${bondLabel}/100</span>
+        <span style="color:${bondColor};">❤️ Bond</span> <span>${bondLabel}/100</span>
       </div>
       <div style="width:100%; background:#333; height:4px; margin-bottom:5px; border-radius:${BAR_RADIUS}; overflow:hidden;">
-        <div style="height:100%; background:#f06292; width:${bondPct}%"></div>
+        <div style="height:100%; background:${bondColor}; width:${bondPct}%"></div>
       </div>`;
     }
 
@@ -1233,8 +1238,6 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-bottom:12px;">
              <button id="rpg-settings-edit" style="background:#333; border:1px solid #4FC3F7; color:#4FC3F7; cursor:pointer; padding:8px 10px; font-weight:bold;">✏️ Edit</button>
-             <button id="rpg-settings-scan" style="background:#333; border:1px solid #C0A040; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold;">↻ Scan</button>
-
              <button id="rpg-settings-remove" style="background:#333; border:1px solid #ff9800; color:#ffcc80; cursor:pointer; padding:8px 10px; font-weight:bold;">🗑️ Remove</button>
              <button id="rpg-settings-clear-npcs" style="background:#333; border:1px solid #00e5ff; color:#b3f5ff; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 NPCs</button>
 
@@ -1361,14 +1364,26 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
       ${renderEnemySummary()}
 
-      <!-- Footer controls (absolute, stable) -->
-      <button id="rpg-settings-btn" title="Settings" style="
-        position:absolute; left:10px; bottom:8px;
-        background:#333; border:1px solid #777; color:#fff;
-        cursor:pointer; width:34px; height:26px;
-        display:flex; align-items:center; justify-content:center;
-        box-sizing:border-box;
-      ">⚙️</button>
+    <!-- Footer controls (absolute, stable) -->
+	<div style="
+	  position:absolute; left:10px; bottom:8px;
+	  display:flex; gap:6px;
+	">
+	  <button id="rpg-settings-btn" title="Settings" style="
+	    background:#333; border:1px solid #777; color:#fff;
+	    cursor:pointer; width:34px; height:26px;
+	    display:flex; align-items:center; justify-content:center;
+	    box-sizing:border-box;
+	  ">⚙️</button>
+	
+	  <button id="rpg-scan-btn" title="Scan" style="
+	    background:#333; border:1px solid #C0A040; color:#fff;
+	    cursor:pointer; width:34px; height:26px;
+	    display:flex; align-items:center; justify-content:center;
+	    box-sizing:border-box;
+	  ">↻</button>
+	</div>
+
 
       <div style="position:absolute; right:10px; bottom:10px; font-size:0.8em; color:#FFD700;">💰 ${escHtml(coin)}</div>
 
@@ -1436,6 +1451,11 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
     bind("rpg-min-btn", toggleMinimize);
     bind("rpg-settings-btn", toggleSettings);
+	bind("rpg-scan-btn", (e) => {
+  if (e) e.stopPropagation();
+  checkMessage(true);
+});
+
 
     const dropdown = document.getElementById("rpg-char-select");
     if (dropdown) {
@@ -1450,59 +1470,55 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     bind("tab-mast", () => switchTab("mastery"));
     bind("tab-quest", () => switchTab("quests"));
     bind("tab-env", () => switchTab("env"));
-
+	  
     // Settings panel binds
-    if (isSettingsOpen) {
-      bind("rpg-settings-close", toggleSettings);
-      bind("rpg-settings-edit", openEditorFromSettings);
-      bind("rpg-settings-scan", (e) => {
-        if (e) e.stopPropagation();
-        checkMessage(true);
-      });
-      bind("rpg-settings-reset", resetRPG);
-      bind("rpg-settings-remove", removeActiveCharacter);
-      bind("rpg-settings-clear-npcs", (e) => clearArray("npc", e));
-      bind("rpg-settings-clear-enemies", (e) => clearArray("enemy", e));
-      bind("rpg-settings-clear-party", (e) => clearArray("party", e));
+	if (isSettingsOpen) {
+	  bind("rpg-settings-close", toggleSettings);
+	  bind("rpg-settings-edit", openEditorFromSettings);
+	
+	  bind("rpg-settings-reset", resetRPG);
+	  bind("rpg-settings-remove", removeActiveCharacter);
+	  bind("rpg-settings-clear-npcs", (e) => clearArray("npc", e));
+	  bind("rpg-settings-clear-enemies", (e) => clearArray("enemy", e));
+	  bind("rpg-settings-clear-party", (e) => clearArray("party", e));
 	  bind("rpg-settings-insert", insertLastStateIntoNarrative);
-      bind("rpg-settings-remind", remindStateInLastMessage);
-
-      const overlay = document.getElementById("rpg-settings-overlay");
-      if (overlay) overlay.onclick = (e) => e.stopPropagation();
-
-      // Font preset + size slider (live apply)
-      try {
-        const presetEl = document.getElementById("rpg-font-preset");
-        const scaleEl = document.getElementById("rpg-font-scale");
-        const scaleLabel = document.getElementById("rpg-font-scale-label");
-
-        if (presetEl) {
-          presetEl.value = uiSettings.fontPreset || "retro_mono";
-          presetEl.onchange = () => {
-            uiSettings.fontPreset = presetEl.value;
-            uiSettings.fontFamily = fontPresetToFamily(uiSettings.fontPreset);
-            saveUiSettings();
-            applyHudTypography(container);
-          };
-        }
-
-        if (scaleEl) {
-          scaleEl.value = String(uiSettings.fontScale || 1.0);
-          const updateLabel = () => {
-            if (scaleLabel) scaleLabel.textContent = `${Math.round((Number(scaleEl.value) || 1) * 100)}%`;
-          };
-          updateLabel();
-
-          // oninput = smooth live changes while sliding
-          scaleEl.oninput = () => {
-            uiSettings.fontScale = Number(scaleEl.value) || 1.0;
-            saveUiSettings();
-            applyHudTypography(container);
-            updateLabel();
-          };
-        }
-      } catch {}
-    }
+	  bind("rpg-settings-remind", remindStateInLastMessage);
+	
+	  const overlay = document.getElementById("rpg-settings-overlay");
+	  if (overlay) overlay.onclick = (e) => e.stopPropagation();
+	
+	  // Font preset + size slider (live apply)
+	  try {
+	    const presetEl = document.getElementById("rpg-font-preset");
+	    const scaleEl = document.getElementById("rpg-font-scale");
+	    const scaleLabel = document.getElementById("rpg-font-scale-label");
+	
+	    if (presetEl) {
+	      presetEl.value = uiSettings.fontPreset || "retro_mono";
+	      presetEl.onchange = () => {
+	        uiSettings.fontPreset = presetEl.value;
+	        uiSettings.fontFamily = fontPresetToFamily(uiSettings.fontPreset);
+	        saveUiSettings();
+	        applyHudTypography(container);
+	      };
+	    }
+	
+	    if (scaleEl) {
+	      scaleEl.value = String(uiSettings.fontScale || 1.0);
+	      const updateLabel = () => {
+	        if (scaleLabel) scaleLabel.textContent = `${Math.round((Number(scaleEl.value) || 1) * 100)}%`;
+	      };
+	      updateLabel();
+	
+	      scaleEl.oninput = () => {
+	        uiSettings.fontScale = Number(scaleEl.value) || 1.0;
+	        saveUiSettings();
+	        applyHudTypography(container);
+	        updateLabel();
+	      };
+	    }
+	  } catch {}
+	}
   } catch (e) {
     container.innerHTML = `<div style="color:#ff5252; padding:10px;">HUD crashed: ${escHtml(
       e.message
@@ -1907,15 +1923,16 @@ function normalizeEntity(entity, defaultTemplate = {}) {
 
   // If incoming did NOT explicitly provide bond, try to migrate from legacy keys
   if (!hasCanonicalBond) {
-    const legacyKey = Object.keys(e).find(isLegacyBondKey);
-    if (legacyKey) {
-      const v = Number(e[legacyKey]);
-      if (Number.isFinite(v)) out.bond = v;
-    } else if (Object.prototype.hasOwnProperty.call(e, "Bond")) {
-      const v = Number(e.Bond);
-      if (Number.isFinite(v)) out.bond = v;
-    }
+  const legacyKey = Object.keys(e).find(isLegacyBondKey);
+
+  if (legacyKey) {
+    const v = parseBondValue(e[legacyKey]); // ✅ handles "15/100"
+    if (Number.isFinite(v)) out.bond = v;
+  } else if (Object.prototype.hasOwnProperty.call(e, "Bond")) {
+    const v = parseBondValue(e.Bond);       // ✅ handles "15/100"
+    if (Number.isFinite(v)) out.bond = v;
   }
+}
 
   // Always delete legacy keys (prevents token bloat)
   scrubLegacyBondKeys(out);
@@ -1929,7 +1946,7 @@ function normalizeEntity(entity, defaultTemplate = {}) {
 
   // Clamp final bond
   const b = parseBondValue(out.bond);
-  out.bond = clamp(b, 0, 101);
+  out.bond = clamp(b, Number.NEGATIVE_INFINITY, 101);
 
 
   // Meters
