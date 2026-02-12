@@ -1047,7 +1047,7 @@ function saveEditor() {
   display.masteries = getList("edit-mastery");
 
   if (getEl("edit-bond")) {
-  root.bond = clamp(parseBondValue(getEl("edit-bond").value), 0, 101);
+  root.bond = clamp(parseBondValue(getEl("edit-bond").value), Number.NEGATIVE_INFINITY, 101);
   scrubLegacyBondKeys(root);
 }
 
@@ -1178,16 +1178,21 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     let bondHtml = "";
     if ((type === "party" || type === "npc") && !isVehicle) {
       let bond = parseBondValue(root.bond);
-      bond = clamp(bond, 0, 101);
+      bond = clamp(bond, Number.NEGATIVE_INFINITY, 101);
 
       const bondLabel = bond >= 101 ? "∞" : String(bond);
-      const bondPct = bond >= 101 ? 100 : bond;
 
+      // Visual-only bar fill: use magnitude, cap to 0..100
+      const bondPct = bond >= 101 ? 100 : clamp(Math.abs(bond), 0, 100);
+      
+      // Optional: color changes when negative
+      const bondColor = bond < 0 ? "#ff5252" : "#f06292";
+      
       bondHtml = `<div style="display:flex; justify-content:space-between; font-size:0.8em; margin-top:5px;">
-        <span style="color:#f48fb1;">❤️ Bond</span> <span>${bondLabel}/100</span>
+        <span style="color:${bondColor};">❤️ Bond</span> <span>${bondLabel}/100</span>
       </div>
       <div style="width:100%; background:#333; height:4px; margin-bottom:5px; border-radius:${BAR_RADIUS}; overflow:hidden;">
-        <div style="height:100%; background:#f06292; width:${bondPct}%"></div>
+        <div style="height:100%; background:${bondColor}; width:${bondPct}%"></div>
       </div>`;
     }
 
@@ -1941,7 +1946,7 @@ function normalizeEntity(entity, defaultTemplate = {}) {
 
   // Clamp final bond
   const b = parseBondValue(out.bond);
-  out.bond = clamp(b, 0, 101);
+  out.bond = clamp(b, Number.NEGATIVE_INFINITY, 101);
 
 
   // Meters
