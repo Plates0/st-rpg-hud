@@ -1991,9 +1991,54 @@ function normalizeEntity(entity, defaultTemplate = {}) {
     }
 
     out.vehicle.dankcoin = toNumberOr(out.vehicle.dankcoin ?? 0, 0);
+    // --- VEHICLE BACK-COMPAT FIXES ---
+    // Accept EN-style keys for ships (and migrate them)
+    if (out.vehicle.mp_curr === undefined && out.vehicle.en !== undefined) {
+      out.vehicle.mp_curr = out.vehicle.en;
+    }
+    if (out.vehicle.mp_max === undefined && out.vehicle.en_max !== undefined) {
+      out.vehicle.mp_max = out.vehicle.en_max;
+    }
+    
+    // Some models use en_curr / enMax variants
+    if (out.vehicle.mp_curr === undefined && out.vehicle.en_curr !== undefined) {
+      out.vehicle.mp_curr = out.vehicle.en_curr;
+    }
+    if (out.vehicle.mp_max === undefined && out.vehicle.enMax !== undefined) {
+      out.vehicle.mp_max = out.vehicle.enMax;
+    }
+    
+    // If model accidentally dumped core vehicle fields into vehicle.stats, migrate them out
+    const vs = (out.vehicle.stats && typeof out.vehicle.stats === "object") ? out.vehicle.stats : {};
+    const moveOutOfStats = (key) => {
+      if (out.vehicle[key] === undefined && vs[key] !== undefined) {
+        out.vehicle[key] = vs[key];
+        delete vs[key];
+      }
+    };
+    
+    moveOutOfStats("hp_curr");
+    moveOutOfStats("hp_max");
+    moveOutOfStats("mp_curr");
+    moveOutOfStats("mp_max");
+    // just in case the model put EN fields there too
+    if (out.vehicle.en === undefined && vs.en !== undefined) out.vehicle.en = vs.en;
+    if (out.vehicle.en_max === undefined && vs.en_max !== undefined) out.vehicle.en_max = vs.en_max;
+    
+    // After migrating, you can optionally delete EN keys to reduce bloat
+    if (out.vehicle.en !== undefined || out.vehicle.en_max !== undefined) {
+      // (keep if you want, but deleting is usually cleaner)
+      delete out.vehicle.en;
+      delete out.vehicle.en_max;
+      delete out.vehicle.en_curr;
+      delete out.vehicle.enMax;
+    }
+    
+    // write back migrated stats object
+    out.vehicle.stats = vs;
     out.vehicle.meters = normalizeMeters(out.vehicle.meters);
 
-    // back-compat survival->meters inside vehicle
+    // back-compat srvival->meters inside vehicle
     if ((!out.vehicle.meters || out.vehicle.meters.length === 0) && out.vehicle.survival && typeof out.vehicle.survival === "object") {
       out.vehicle.meters = Object.entries(out.vehicle.survival)
         .map(([k, v]) => ({ name: String(k), curr: v, max: 100 }))
