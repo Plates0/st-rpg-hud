@@ -2021,18 +2021,18 @@ function normalizeEntity(entity, defaultTemplate = {}) {
     moveOutOfStats("hp_max");
     moveOutOfStats("mp_curr");
     moveOutOfStats("mp_max");
-    // just in case the model put EN fields there too
-    if (out.vehicle.en === undefined && vs.en !== undefined) out.vehicle.en = vs.en;
-    if (out.vehicle.en_max === undefined && vs.en_max !== undefined) out.vehicle.en_max = vs.en_max;
     
-    // After migrating, you can optionally delete EN keys to reduce bloat
-    if (out.vehicle.en !== undefined || out.vehicle.en_max !== undefined) {
-      // (keep if you want, but deleting is usually cleaner)
-      delete out.vehicle.en;
-      delete out.vehicle.en_max;
-      delete out.vehicle.en_curr;
-      delete out.vehicle.enMax;
+    // just in case the model put EN fields there too
+    if (out.vehicle.en === undefined && vs.en !== undefined) {
+      out.vehicle.en = vs.en;
+      delete vs.en;
     }
+    if (out.vehicle.en_max === undefined && vs.en_max !== undefined) {
+      out.vehicle.en_max = vs.en_max;
+      delete vs.en_max;
+    }
+    
+    // ✅ KEEP EN KEYS (do NOT delete them)
     
     // write back migrated stats object
     out.vehicle.stats = vs;
