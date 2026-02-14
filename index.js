@@ -1178,19 +1178,34 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     let icon = "⭐";
 
     if (isVehicle) {
-      if (root.vehicle.type === "ship") {
+      const vType = String(root.vehicle.type || "mecha").toLowerCase();
+    
+      if (vType === "ship") {
         headerColor = "#00E5FF";
         borderColor = "#006064";
         hpLabel = "HULL";
-        mpLabel = "EN";
         hpColor = "#00838F";
         mpColor = "#FBC02D";
         icon = "🚀";
+      } else if (vType === "car") {
+        headerColor = "#FF9800";
+        borderColor = "#E65100";
+        hpLabel = "HULL";
+        hpColor = "#FB8C00";
+        mpColor = "#1976d2"; // still MP unless you’re a ship
+        icon = "🚗";
+      } else if (vType === "transport") {
+        headerColor = "#8BC34A";
+        borderColor = "#33691E";
+        hpLabel = "HULL";
+        hpColor = "#7CB342";
+        mpColor = "#1976d2";
+        icon = "🚊";
       } else {
+        // mecha default
         headerColor = "#E040FB";
         borderColor = "#4A148C";
         hpLabel = "HULL";
-        mpLabel = "MP";
         hpColor = "#AB47BC";
         mpColor = "#1976d2";
         icon = "🤖";
@@ -1586,8 +1601,20 @@ function renderEditor() {
   let editorHeader = "✏️ EDIT MODE";
   let headerColor = "#4FC3F7";
   if (isVehicle) {
-    editorHeader = root.vehicle.type === "ship" ? "🚀 EDIT SHIP" : "🤖 EDIT MECHA";
-    headerColor = root.vehicle.type === "ship" ? "#00E5FF" : "#E040FB";
+    const vType = String(root.vehicle.type || "mecha").toLowerCase();
+    if (vType === "ship") {
+      editorHeader = "🚀 EDIT SHIP";
+      headerColor = "#00E5FF";
+    } else if (vType === "car") {
+      editorHeader = "🚗 EDIT CAR";
+      headerColor = "#FF9800";
+    } else if (vType === "transport") {
+      editorHeader = "🚊 EDIT TRANSPORT";
+      headerColor = "#8BC34A";
+    } else {
+      editorHeader = "🤖 EDIT MECHA";
+      headerColor = "#E040FB";
+    }
   } else if (type === "enemy") {
     editorHeader = "⚔️ EDIT ENEMY";
     headerColor = "#ff5252";
@@ -1657,6 +1684,8 @@ function renderEditor() {
     <select id="edit-vehicle-type" style="background:#222; color:#fff; border:1px solid #555; font-size:0.8em;">
       <option value="mecha" ${vehicleType === "mecha" ? "selected" : ""}>Mecha</option>
       <option value="ship" ${vehicleType === "ship" ? "selected" : ""}>Ship</option>
+      <option value="car" ${vehicleType === "car" ? "selected" : ""}>Car</option>
+      <option value="transport" ${vehicleType === "transport" ? "selected" : ""}>Transport</option>
     </select>
   </div>`;
 
