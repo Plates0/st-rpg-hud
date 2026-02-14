@@ -217,6 +217,29 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+function getEnergy(display, isVehicle) {
+  if (!display) return { curr: 0, max: 0, label: isVehicle ? "EN/MP" : "MP" };
+
+  // Prefer MP keys if present
+  const mpCurr = display.mp_curr ?? display.mp;
+  const mpMax  = display.mp_max;
+
+  // EN variants (ships / alt schemas)
+  const enCurr = display.en_curr ?? display.en ?? display.en_current;
+  const enMax  = display.en_max ?? display.enMax ?? display.en_capacity;
+
+  const hasMp = mpCurr !== undefined || mpMax !== undefined;
+  const curr = hasMp ? mpCurr : enCurr;
+  const max  = hasMp ? mpMax  : enMax;
+
+  const label =
+    (isVehicle && display.type === "ship") || (!hasMp && (enCurr !== undefined || enMax !== undefined))
+      ? "EN"
+      : "MP";
+
+  return { curr: curr ?? 0, max: max ?? 0, label };
+}
+
 function isInfinityToken(v) {
   const s = String(v ?? "").trim().toLowerCase();
   if (s === "∞" || s === "inf" || s === "infinity" || s === "+inf" || s === "+infinity") return true;
@@ -621,11 +644,13 @@ function renderMiniUnitBars(list, options = {}) {
 
       const hpCurr = safeParseFloat(target?.hp_curr, 0);
       const hpMax = safeParseFloat(target?.hp_max, 0);
-      const mpCurr = safeParseFloat(target?.mp_curr, 0);
-      const mpMax = safeParseFloat(target?.mp_max, 0);
+      const isVeh = !!(unit?.vehicle && unit.vehicle.active);
+      const { curr: eCurr, max: eMax, label: eLabel } = getEnergy(target, isVeh);
+      const eCurrNum = safeParseFloat(eCurr, 0);
+      const eMaxNum  = safeParseFloat(eMax, 0);
 
       const hpPct = percentFrom(target?.hp_curr, target?.hp_max);
-      const mpPct = percentFrom(target?.mp_curr, target?.mp_max);
+      const mpPct  = percentFrom(eCurr, eMax);
 
       const hpColor = unit?.vehicle && unit.vehicle.active ? "#AB47BC" : barHpColor;
 
@@ -633,7 +658,7 @@ function renderMiniUnitBars(list, options = {}) {
         <div style="margin-bottom:8px;">
           <div style="display:flex; justify-content:space-between; color:#aaa; font-size:0.85em;">
             <span>${nameHtml}</span>
-            <span>HP ${hpCurr}/${hpMax} · MP ${mpCurr}/${mpMax}</span>
+            <span>HP ${hpCurr}/${hpMax} · ${escHtml(eLabel)} ${eCurrNum}/${eMaxNum}</span>
           </div>
 
           <div style="width:100%; background:#333; height:4px; border-radius:2px; overflow:hidden; margin-top:2px;">
@@ -986,7 +1011,7 @@ function scrubLegacyBondKeys(obj) {
 
 
 function saveEditor() {
-  const { root, display } = getActiveData();
+  const { root, display, isVehicle } = getActiveData();
   const getEl = (id) => document.getElementById(id);
 
   const getMixed = (id) => {
@@ -1024,8 +1049,27 @@ function saveEditor() {
   display.name = getStr("edit-name");
   display.hp_curr = getMixed("edit-hp-curr");
   display.hp_max = getMixed("edit-hp-max");
-  display.mp_curr = getMixed("edit-mp-curr");
-  display.mp_max = getMixed("edit-mp-max");
+
+  // ✅ Energy SAVE (Option B):
+  // Ships write to EN keys; everyone else writes to MP keys.
+  const energyCurrVal = getMixed("edit-mp-curr");
+  const energyMaxVal  = getMixed("edit-mp-max");
+  
+  if (isVehicle && display.type === "ship") {
+    display.en_curr = energyCurrVal;
+    display.en_max  = energyMaxVal;
+  
+    // Optional cleanup: remove MP so you don't get duplicates
+    delete display.mp_curr;
+    delete display.mp_max;
+  } else {
+    display.mp_curr = energyCurrVal;
+    display.mp_max  = energyMaxVal;
+  
+    // Optional cleanup for non-ships (if they had EN before)
+    delete display.en_curr;
+    delete display.en_max;
+  }
 
   // per-entity coin (vehicle or character)
   display.dankcoin = getVal("edit-coin");
@@ -1173,7 +1217,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         : `<span style="color:#69f0ae;">Healthy</span>`;
 
     const hpPercent = percentFrom(display.hp_curr, display.hp_max);
-    const mpPercent = percentFrom(display.mp_curr, display.mp_max);
+    const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(display, isVehicle);
+    const mpPercent = percentFrom(energyCurr, energyMax);
 
     let bondHtml = "";
     if ((type === "party" || type === "npc") && !isVehicle) {
@@ -1322,10 +1367,12 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       <div style="width:100%; background:#333; height:8px; margin-bottom:4px; border-radius:${BAR_RADIUS}; overflow:hidden;"><div style="height:100%; background:${hpColor}; width:${hpPercent}%"></div></div>
 
       <div style="display:flex; justify-content:space-between; font-size:0.8em; align-items:center;">
-        <span>${escHtml(mpLabel)}</span>
-        <span>${renderInlineValue(display.mp_curr)} / ${renderInlineValue(display.mp_max)}</span>
+        <span>${escHtml(energyLabel)}</span>
+        <span>${renderInlineValue(energyCurr)} / ${renderInlineValue(energyMax)}</span>
       </div>
-      <div style="width:100%; background:#333; height:8px; margin-bottom:2px; border-radius:${BAR_RADIUS}; overflow:hidden;"><div style="height:100%; background:${mpColor}; width:${mpPercent}%"></div></div>
+      <div style="width:100%; background:#333; height:8px; margin-bottom:2px; border-radius:${BAR_RADIUS}; overflow:hidden;">
+        <div style="height:100%; background:${mpColor}; width:${mpPercent}%"></div>
+      </div>
 
       ${bondHtml}
       ${metersHtml}
@@ -1534,6 +1581,7 @@ function renderEditor() {
   if (!container) return;
 
   const { root, display, type, isVehicle } = getActiveData();
+  const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(display, isVehicle);
 
   let editorHeader = "✏️ EDIT MODE";
   let headerColor = "#4FC3F7";
@@ -1655,17 +1703,18 @@ function renderEditor() {
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:5px; margin-bottom:10px;">
         <div><div style="${labelStyle()}">${escHtml(isVehicle ? "Hull" : "HP")} Curr</div><input id="edit-hp-curr" type="text" value="${escAttr(
           display.hp_curr
-        )}" style="width:100%; background:#222; color:white;"></div>
+        )}" style="width:100%; background:#222; color:white;">
+        </div>
         <div><div style="${labelStyle()}">${escHtml(isVehicle ? "Hull" : "HP")} Max</div><input id="edit-hp-max" type="text" value="${escAttr(
           display.hp_max
-        )}" style="width:100%; background:#222; color:white;"></div>
-        <div><div style="${labelStyle()}">${escHtml(isVehicle ? "En/Mp" : "MP")} Curr</div><input id="edit-mp-curr" type="text" value="${escAttr(
-          display.mp_curr
-        )}" style="width:100%; background:#222; color:white;"></div>
-        <div><div style="${labelStyle()}">${escHtml(isVehicle ? "En/Mp" : "MP")} Max</div><input id="edit-mp-max" type="text" value="${escAttr(
-          display.mp_max
-        )}" style="width:100%; background:#222; color:white;"></div>
-      </div>
+        )}" style="width:100%; background:#222; color:white;">
+        </div>
+        <div><div style="${labelStyle()}">${escHtml(isVehicle ? "En/Mp" : "MP")} Curr</div>
+          <input id="edit-mp-curr" type="text" value="${escAttr(energyCurr)}" style="width:100%; background:#222; color:white;">
+        </div>
+        <div><div style="${labelStyle()}">${escHtml(isVehicle ? "En/Mp" : "MP")} Max</div>
+          <input id="edit-mp-max" type="text" value="${escAttr(energyMax)}" style="width:100%; background:#222; color:white;">
+        </div>
 
       <div style="margin-bottom:10px; border-top:1px dashed #444; padding-top:8px;">
         <div style="${labelStyle()}">Meters (one per line: Name | curr | max)</div>
