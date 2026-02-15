@@ -1384,7 +1384,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
             • HP/MP dropdown appears if values are strings like: <span style="color:#bbb;">"260 ((100+100)*1.3)"</span><br>
             • Meters are editable: <span style="color:#bbb;">Name | curr | max</span><br>
             • Coins are per character/vehicle (shown bottom-right).<br>
-            • rpg_state indicator on the top left.<br>
+            • rpg_state indicator on the top right.<br>
             🟢 = Valid.<br>
             🟡 = Broken rpg_state.<br>
             🔴 = rpg_state in user message.<br>
@@ -2400,3 +2400,4 @@ jQuery(() => {
 
   console.log("RPG HUD: boot complete ✅");
 });
+
