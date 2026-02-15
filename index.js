@@ -217,6 +217,36 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+function getLatestRpgValidity(chat) {
+  if (!Array.isArray(chat) || chat.length === 0) {
+    return { status: "nochat", label: "No chat", detail: "" };
+  }
+
+  const last = chat[chat.length - 1];
+
+  // last message is user
+  if (last?.is_user) {
+    return { status: "user", label: "Last is user", detail: "" };
+  }
+
+  const mes = String(last?.mes || "");
+  const regex = /<rpg_state\b[^>]*>([\s\S]*?)<\/rpg_state>/i;
+  const m = mes.match(regex);
+
+  if (!m) {
+    return { status: "notag", label: "No <rpg_state>", detail: "" };
+  }
+
+  const raw = sanitizeJsonText(m[1]);
+
+  try {
+    JSON.parse(raw);
+    return { status: "valid", label: "Latest OK", detail: "" };
+  } catch (e) {
+    return { status: "invalid", label: "Latest BAD JSON", detail: String(e?.message || e) };
+  }
+}
+
 function getEnergy(display, isVehicle) {
   if (!display) return { curr: 0, max: 0, label: isVehicle ? "EN/MP" : "MP" };
 
@@ -1168,6 +1198,21 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
   try {
     const { root, display, type, isVehicle } = getActiveData();
+    const context = SillyTavern.getContext();
+    const chat = context?.chat;
+    const latest = getLatestRpgValidity(chat);
+
+    const latestDot =
+      latest.status === "valid" ? "🟢" :
+      latest.status === "invalid" ? "🟡" :
+      latest.status === "notag" ? "⚪" :
+      latest.status === "user" ? "🔴" :
+      "⚫";
+
+    const latestTitle = latest.detail
+      ? `${latest.label}\n${latest.detail}`
+      : latest.label;
+
 
     let headerColor = "#C0A040";
     let borderColor = "#333";
@@ -1338,7 +1383,12 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           <div style="font-size:0.75em; color:#777; line-height:1.3;">
             • HP/MP dropdown appears if values are strings like: <span style="color:#bbb;">"260 ((100+100)*1.3)"</span><br>
             • Meters are editable: <span style="color:#bbb;">Name | curr | max</span><br>
-            • Coins are per character/vehicle (shown bottom-right).
+            • Coins are per character/vehicle (shown bottom-right).<br>
+            • rpg_state indicator on the top left.<br>
+            🟢 = Valid.<br>
+            🟡 = Broken rpg_state.<br>
+            🔴 = rpg_state in user message.<br>
+            ⚪ = No rpg_state.
           </div>
         </div>
       </div>
@@ -1353,17 +1403,21 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
 
     container.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; padding-bottom:5px; border-bottom:1px solid ${borderColor}; min-height:24px;">
-        <div style="display:flex; align-items:center; gap:6px; min-width:0;">
-          <span style="font-size:1.2em;">${icon}</span>
-          <select id="rpg-char-select" style="${selectStyle}" title="Switch Character">${getCharOptions()}</select>
-        </div>
+	<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; padding-bottom:5px; border-bottom:1px solid ${borderColor}; min-height:24px;">
+	  <div style="display:flex; align-items:center; gap:6px; min-width:0;">
+	    <span style="font-size:1.2em;">${icon}</span>
+	    <select id="rpg-char-select" style="${selectStyle}" title="Switch Character">${getCharOptions()}</select>
+	</div>
+	
+	  <!-- Header right: indicator + MINIMIZE (stable) -->
+      <div style="display:flex; align-items:center; justify-content:flex-end; gap:6px; width:60px; flex:0 0 60px;">
+        <span id="rpg-latest-indicator" title="${escAttr(latestTitle)}"
+          style="font-size:12px; cursor:pointer; user-select:none;">${latestDot}</span>
 
-        <!-- Header right: MINIMIZE ONLY (stable) -->
-        <div style="display:flex; align-items:center; justify-content:flex-end; width:42px; flex:0 0 42px;">
-          <button id="rpg-min-btn" title="Minimize" style="background:#444; border:1px solid #777; color:#fff; cursor:pointer; font-size:12px; padding:0; width:36px; height:20px; font-weight:bold; line-height:18px; box-sizing:border-box;">_</button>
-        </div>
+        <button id="rpg-min-btn" title="Minimize" style="background:#444; border:1px solid #777; color:#fff; cursor:pointer; font-size:12px; padding:0; width:36px; height:20px; font-weight:bold; line-height:18px; box-sizing:border-box;">_</button>
       </div>
+    </div>
+
 
       <div style="background:rgba(255,255,255,0.05); padding:5px; border-radius:4px; margin-bottom:5px; font-size:0.85em; text-align:center;">
         <div style="color:#fff; font-weight:bold;">📍 ${escHtml(rpgState.location)}</div>
@@ -1513,10 +1567,17 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
     bind("rpg-min-btn", toggleMinimize);
     bind("rpg-settings-btn", toggleSettings);
-	bind("rpg-scan-btn", (e) => {
-  if (e) e.stopPropagation();
-  checkMessage(true);
-});
+
+    bind("rpg-scan-btn", (e) => {
+      if (e) e.stopPropagation();
+      checkMessage(true);
+    });
+
+    bind("rpg-latest-indicator", (e) => {
+      if (e) e.stopPropagation();
+      checkMessage(true);
+    });
+
 
 
     const dropdown = document.getElementById("rpg-char-select");
@@ -1596,7 +1657,8 @@ function renderEditor() {
   if (!container) return;
 
   const { root, display, type, isVehicle } = getActiveData();
-  const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(display, isVehicle);
+
+const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(display, isVehicle);
 
   let editorHeader = "✏️ EDIT MODE";
   let headerColor = "#4FC3F7";
@@ -1744,6 +1806,7 @@ function renderEditor() {
         <div><div style="${labelStyle()}">${escHtml(isVehicle ? "En/Mp" : "MP")} Max</div>
           <input id="edit-mp-max" type="text" value="${escAttr(energyMax)}" style="width:100%; background:#222; color:white;">
         </div>
+      </div>
 
       <div style="margin-bottom:10px; border-top:1px dashed #444; padding-top:8px;">
         <div style="${labelStyle()}">Meters (one per line: Name | curr | max)</div>
@@ -2195,6 +2258,7 @@ const checkMessage = async (manual = false) => {
   const context = SillyTavern.getContext();
   const chat = context?.chat;
   if (!Array.isArray(chat) || chat.length === 0) return;
+  renderRPG();
 
   const rawBlock = findLatestRpgBlock(chat);
   console.log("RPG HUD: lastRpgMsgIndex =", lastRpgMsgIndex);
@@ -2336,5 +2400,3 @@ jQuery(() => {
 
   console.log("RPG HUD: boot complete ✅");
 });
-
-
