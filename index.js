@@ -146,6 +146,32 @@ let isSettingsOpen = false;
 // Track where the latest <rpg_state> came from so SAVE can rewrite it.
 let lastRpgMsgIndex = -1;
 
+// --- DEBUG OVERLAY (mobile-friendly) ---
+let isDebugOpen = false;
+
+let lastHudError = {
+  time: "",
+  kind: "",
+  message: "",
+  detail: "",
+  snippet: "",
+  caret: "",
+  caret2: "",
+};
+
+let lastIndicatorStatus = null; // tracks status changes for toast/alerts
+
+function setHudError(partial) {
+  lastHudError = { ...lastHudError, ...partial, time: new Date().toISOString() };
+  window.__rpgHudLastError = lastHudError;
+}
+
+function toggleDebug(e) {
+  if (e) { e.stopPropagation(); e.preventDefault(); }
+  isDebugOpen = !isDebugOpen;
+  renderRPG();
+}
+
 // Auto-rewrite <rpg_state> back into the chat when we had to repair JSON
 const AUTO_REWRITE_ON_REPAIR = true;
 
@@ -217,6 +243,126 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+function updateLatestStatusAndToast(chat) {
+  const latest = getLatestRpgValidity(chat);
+
+  if (lastIndicatorStatus !== latest.status) {
+    const prev = lastIndicatorStatus;
+    lastIndicatorStatus = latest.status;
+
+    // Only toast when we ENTER invalid
+    if (latest.status === "invalid" && prev !== "invalid") {
+      const msg = "RPG JSON is broken (🟡). Tap the dot for details.";
+      if (window.toastr?.warning) window.toastr.warning(msg);
+      else alert(msg);
+    }
+  }
+
+  return latest;
+}
+
+function guessLikelyJsonErrorPos(text, parserPos, msg) {
+  const t = String(text || "");
+  const p = Math.max(0, Math.min(Number(parserPos) || 0, t.length));
+  const m = String(msg || "").toLowerCase();
+
+  const win = 260;
+  const windowStart = Math.max(0, p - win);
+  const windowEnd = Math.min(t.length, p + 40);
+  const chunk = t.slice(windowStart, windowEnd);
+
+  // A) Missing closing quote before colon:  "vehicle:null
+  // Find patterns like: "key:VALUE   (colon appears before a closing quote)
+  {
+    const r = /"([A-Za-z_][\w]*)\s*:\s*[^"\s][^,}\]]*/g;
+    let match, best = null;
+    while ((match = r.exec(chunk))) {
+      best = { idx: match.index, key: match[1] };
+    }
+    if (best) {
+      // point at the colon inside the broken string, after the key
+      const colonOffset = best.idx + 1 + best.key.length; // 1 for opening quote
+      return windowStart + colonOffset;
+    }
+  }
+
+  // B) Missing opening quote for key:  vehicle": null
+  {
+    const r = /(^|[{\[,]\s*)([A-Za-z_][\w]*)"\s*:/g;
+    let match, best = null;
+    while ((match = r.exec(chunk))) {
+      best = { idx: match.index, leadLen: match[1].length };
+    }
+    if (best) {
+      return windowStart + best.idx + best.leadLen; // points at start of the bare key
+    }
+  }
+
+  // C) If message says "after property name", try to point near a recent quote/colon
+  if (m.includes("after property name") || m.includes("expected ':'")) {
+    const left = t.slice(Math.max(0, p - win), p);
+    const lastQuote = left.lastIndexOf('"');
+    const lastColon = left.lastIndexOf(':');
+
+    // Prefer the last quote if it’s near the end; else last colon; else parserPos
+    if (lastQuote !== -1 && (p - (Math.max(0, p - win) + lastQuote)) < 80) {
+      return Math.max(0, p - win) + lastQuote;
+    }
+    if (lastColon !== -1) {
+      return Math.max(0, p - win) + lastColon;
+    }
+  }
+
+  return null;
+}
+
+
+function makeCaretSnippet(text, pos, radius = 160) {
+  const t = String(text ?? "");
+  const p = Math.max(0, Math.min(Number(pos) || 0, t.length));
+
+  const start = Math.max(0, p - radius);
+  const end = Math.min(t.length, p + radius);
+
+  const slice = t.slice(start, end);
+  const caretAt = p - start;
+
+  return {
+    slice,
+    caretLine: " ".repeat(Math.max(0, caretAt)) + "^",
+  };
+}
+
+function extractJsonErrorPos(err, textForLineCol = "") {
+  const msg = String(err?.message || err);
+
+  // Chrome/Edge: "Unexpected token ... in JSON at position 1234"
+  let m = msg.match(/position\s+(\d+)/i);
+  if (m) return Number(m[1]);
+
+  // Firefox/WebView: "at line 12 column 34" / "line 12 column 34"
+  m = msg.match(/line\s+(\d+)\s+column\s+(\d+)/i);
+  if (m) {
+    const line = Math.max(1, Number(m[1]) || 1);
+    const col  = Math.max(1, Number(m[2]) || 1);
+
+    // convert (line, col) -> absolute position in the string (0-based)
+    const s = String(textForLineCol || "");
+    let pos = 0;
+    let curLine = 1;
+
+    for (let i = 0; i < s.length; i++) {
+      if (curLine === line) { pos = i; break; }
+      if (s[i] === "\n") curLine++;
+    }
+
+    // pos now = start index of the line; add (col-1)
+    return Math.min(s.length, pos + (col - 1));
+  }
+
+  return null;
+}
+
 function getLatestRpgValidity(chat) {
   if (!Array.isArray(chat) || chat.length === 0) {
     return { status: "nochat", label: "No chat", detail: "" };
@@ -1165,6 +1311,15 @@ function renderRPG() {
   const FONT_FAMILY = uiSettings.fontFamily || "'Courier New', Courier, monospace";
   const FONT_SIZE = `${0.9 * (uiSettings.fontScale || 1)}em`;
 
+  // ✅ Always compute validity + toast, even when minimized
+  let latest = { status: "nochat", label: "", detail: "" };
+  try {
+    const context = SillyTavern.getContext();
+    const chat = context?.chat;
+    latest = updateLatestStatusAndToast(chat);
+  } catch {}
+
+
   if (isMinimized) {
     container.style.cssText = `position: fixed; top: 50px; right: 20px; width: 50px; height: 50px; background: rgba(0,0,0,0.8); border: 2px solid #C0A040; color: #E0E0E0; z-index: 99999; cursor: pointer; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 10px #000; font-family: ${FONT_FAMILY}; font-size: ${FONT_SIZE}; box-sizing:border-box;`;
     applyHudTypography(container);
@@ -1200,7 +1355,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     const { root, display, type, isVehicle } = getActiveData();
     const context = SillyTavern.getContext();
     const chat = context?.chat;
-    const latest = getLatestRpgValidity(chat);
+    latest = updateLatestStatusAndToast(chat);
 
     const latestDot =
       latest.status === "valid" ? "🟢" :
@@ -1212,6 +1367,21 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     const latestTitle = latest.detail
       ? `${latest.label}\n${latest.detail}`
       : latest.label;
+
+    // Notify when indicator flips into invalid JSON (yellow)
+    if (lastIndicatorStatus !== latest.status) {
+      const prev = lastIndicatorStatus;
+      lastIndicatorStatus = latest.status;
+
+      if (latest.status === "invalid" && prev !== "invalid") {
+        if (window.toastr?.warning) {
+          window.toastr.warning("RPG JSON is broken (🟡). Tap the dot for details.");
+        } else {
+          alert("RPG JSON is broken (🟡). Tap the dot for details.");
+        }
+      }
+    }
+
 
 
     let headerColor = "#C0A040";
@@ -1384,7 +1554,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
             • HP/MP dropdown appears if values are strings like: <span style="color:#bbb;">"260 ((100+100)*1.3)"</span><br>
             • Meters are editable: <span style="color:#bbb;">Name | curr | max</span><br>
             • Coins are per character/vehicle (shown bottom-right).<br>
-            • rpg_state indicator on the top right.<br>
+            • rpg_state indicator on the top left.<br>
             🟢 = Valid.<br>
             🟡 = Broken rpg_state.<br>
             🔴 = rpg_state in user message.<br>
@@ -1394,6 +1564,100 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       </div>
     `
       : "";
+
+    // Debug overlay (tap the indicator dot to open)
+    const debugOverlayHtml = isDebugOpen ? `
+      <div id="rpg-debug-overlay" style="
+        position:absolute; inset:0;
+        background: rgba(0,0,0,0.92);
+        border: 1px solid #333;
+        z-index: 150000;
+        display:flex;
+        flex-direction:column;
+        box-sizing:border-box;
+        padding:10px;
+      ">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid #333; padding-bottom:6px;">
+          <div style="font-weight:bold; color:#ddd;">🧾 JSON DEBUG</div>
+          <div style="display:flex; gap:6px;">
+            <button id="rpg-debug-copy" style="background:#333; border:1px solid #777; color:#fff; cursor:pointer; font-size:10px; padding:3px 10px; font-weight:bold;">COPY</button>
+            <button id="rpg-debug-close" style="background:#444; border:1px solid #777; color:#fff; cursor:pointer; font-size:10px; padding:3px 10px; font-weight:bold;">CLOSE</button>
+          </div>
+        </div>
+
+        <div style="flex:1; overflow:auto; font-size:0.8em; color:#ddd; line-height:1.35; padding-right:4px;">
+          <div style="color:#aaa; margin-bottom:6px;">
+            <div><b>Type:</b> ${escHtml(lastHudError.kind || "none")}</div>
+            <div><b>Time:</b> ${escHtml(lastHudError.time || "(none)")}</div>
+          </div>
+
+          <div style="margin-bottom:10px;">
+            <div style="font-size:0.75em; color:#aaa; margin-bottom:4px;">Message</div>
+            <div style="white-space:pre-wrap; background:rgba(255,255,255,0.06); border:1px solid #333; padding:8px; border-radius:4px;">
+              ${escHtml(lastHudError.message || "No error captured yet.")}
+            </div>
+          </div>
+
+          ${lastHudError.snippet ? `
+          <div style="margin-bottom:10px;">
+            <div style="font-size:0.75em; color:#aaa; margin-bottom:4px;">Snippet (around where it broke)</div>
+
+            <div id="rpg-debug-scroll" style="
+              overflow-x:auto;
+              border:1px solid #333;
+              border-radius:4px;
+              background:rgba(255,255,255,0.06);
+              padding:8px;
+            ">
+              <pre id="rpg-debug-snippet" style="
+                white-space:pre;
+                margin:0;
+                font-family:monospace;
+                background:transparent;
+                border:0;
+                padding:0;
+              "></pre>
+
+              <pre id="rpg-debug-caret" style="
+                white-space:pre;
+                margin:6px 0 0;
+                font-family:monospace;
+                color:#ff5252;
+                font-weight:bold;
+                background:transparent;
+                border:0;
+                padding:0;
+              "></pre>
+
+              <pre id="rpg-debug-caret2" style="
+                white-space:pre;
+                margin:2px 0 0;
+                font-family:monospace;
+                color:#ffd54f;
+                font-weight:bold;
+                background:transparent;
+                border:0;
+                padding:0;
+                display:none;
+              "></pre>
+            </div>
+          </div>
+        ` : ""}
+
+
+
+
+          ${lastHudError.detail ? `
+            <div style="margin-bottom:10px;">
+              <div style="font-size:0.75em; color:#aaa; margin-bottom:4px;">Detail</div>
+              <pre style="white-space:pre-wrap; margin:0; background:rgba(255,255,255,0.04); border:1px solid #2a2a2a; padding:8px; border-radius:4px;">${escHtml(lastHudError.detail)}</pre>
+            </div>
+          ` : ""}
+        </div>
+      </div>
+    ` : "";
+
+
 
       // Save current tab-strip horizontal scroll before rerender nukes the DOM
       {
@@ -1508,6 +1772,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           cursor:ew-resize; z-index:200000; background:transparent; touch-action:none;"></div>
 
       ${settingsPanelHtml}
+      ${debugOverlayHtml}
     `;
 
     // --- LEFT RESIZE HANDLE (Pointer Events: mouse + touch + pen) ---
@@ -1573,12 +1838,53 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       checkMessage(true);
     });
 
-    bind("rpg-latest-indicator", (e) => {
-      if (e) e.stopPropagation();
-      checkMessage(true);
-    });
+    bind("rpg-latest-indicator", toggleDebug);
 
+    // Debug overlay binds
+    if (isDebugOpen) {
+      bind("rpg-debug-close", toggleDebug);
+      
+      const sn = document.getElementById("rpg-debug-snippet");
+      if (sn) sn.textContent = lastHudError.snippet || "";
 
+      const ca = document.getElementById("rpg-debug-caret");
+      if (ca) ca.textContent = lastHudError.caret || "";
+
+      const ca2 = document.getElementById("rpg-debug-caret2");
+      if (ca2) {
+        if (lastHudError.caret2) {
+          ca2.style.display = "block";
+          ca2.textContent = lastHudError.caret2;
+        } else {
+          ca2.style.display = "none";
+          ca2.textContent = "";
+        }
+      }
+
+      const copyBtn = document.getElementById("rpg-debug-copy");
+      if (copyBtn) {
+        copyBtn.onclick = (e) => {
+          e.stopPropagation();
+
+          const text =
+            `Type: ${lastHudError.kind}\nTime: ${lastHudError.time}\n\n` +
+            `Message:\n${lastHudError.message}\n\n` +
+            (lastHudError.snippet ? `Snippet:\n${lastHudError.snippet}\n\n` : "") +
+            (lastHudError.caret ? `Caret:\n${lastHudError.caret}\n\n` : "") +
+            (lastHudError.caret2 ? `Caret2:\n${lastHudError.caret2}\n\n` : "") +
+            (lastHudError.detail ? `Detail:\n${lastHudError.detail}\n` : "");
+
+          navigator.clipboard?.writeText(text).then(() => {
+            window.toastr?.info?.("Copied debug info");
+          }).catch(() => {
+            alert("Could not copy (clipboard blocked).");
+          });
+        };
+      }
+
+      const overlay = document.getElementById("rpg-debug-overlay");
+      if (overlay) overlay.onclick = (e) => e.stopPropagation();
+    }
 
     const dropdown = document.getElementById("rpg-char-select");
     if (dropdown) {
@@ -1643,6 +1949,13 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	  } catch {}
 	}
   } catch (e) {
+    setHudError({
+      kind: "render",
+      message: String(e?.message || e),
+      detail: e?.stack ? String(e.stack) : "",
+      snippet: ""
+    });
+
     container.innerHTML = `<div style="color:#ff5252; padding:10px;">HUD crashed: ${escHtml(
       e.message
     )}<br><button id="rpg-hard-reset">Hard Reset</button></div>`;
@@ -1650,6 +1963,9 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     console.error(e);
   }
 }
+
+
+
 
 // --- 5. EDITOR RENDERER ---
 function renderEditor() {
@@ -2279,16 +2595,25 @@ const checkMessage = async (manual = false) => {
     applyRpgState(normalized);
     renderRPG();
 
-    // Only rewrite on manual scan (not every auto scan)
-    if (manual) {
-      const ok = writeStateBackToChatMessage(rpgState);
-      if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after manual scan");
-    }
-    return;
-  } catch (e1) {
-    // continue to repair attempt
-    if (manual) console.log("RPG HUD: Initial parse failed, attempting repair...");
+  // Only rewrite on manual scan (not every auto scan)
+  if (manual) {
+    const ok = writeStateBackToChatMessage(rpgState);
+    if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after manual scan");
   }
+  return;
+} catch (e1) {
+  setHudError({
+    kind: "parse",
+    message: String(e1?.message || e1),
+    detail: e1?.stack ? String(e1.stack) : "",
+    snippet: "",
+    caret: "",
+  });
+
+  // continue to repair attempt
+  if (manual) console.log("RPG HUD: Initial parse failed, attempting repair...");
+}
+
 
 // 2) repair then parse
 try {
@@ -2318,14 +2643,48 @@ if (manual) {
     if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after repair");
   }
 } catch (e2) {
+  const msg = String(e2?.message || e2);
+  const pos = extractJsonErrorPos(e2, jsonText);
+
+  let snippet = "";
+  let caret = "";
+  let caret2 = "";
+
+  try {
+    if (Number.isFinite(pos)) {
+      const out = makeCaretSnippet(jsonText, pos, 200);
+      snippet = out.slice;
+      caret = out.caretLine;
+
+      const guess = guessLikelyJsonErrorPos(jsonText, pos, msg);
+      if (Number.isFinite(guess) && guess !== pos) {
+        const out2 = makeCaretSnippet(jsonText, guess, 200);
+        // only use the guess caret if it points into the same snippet slice
+        if (out2.slice === snippet) {
+          caret2 = out2.caretLine;
+        }
+      }
+    } else {
+      snippet = String(jsonText || "").slice(0, 400);
+    }
+  } catch (snipErr) {
+    snippet = "(snippet generation failed) " + String(snipErr?.message || snipErr);
+  }
+
+  setHudError({
+    kind: "parse",
+    message: msg,
+    detail: e2?.stack ? String(e2.stack) : "",
+    snippet,
+    caret,
+    caret2,
+  });
+
+
+
   if (manual) {
     console.error("RPG HUD Parse Error", e2);
-    const msg = String(e2?.message || "");
-    const m = msg.match(/column\s+(\d+)/i);
-    const col = m ? Number(m[1]) : 190;
-    const start = Math.max(0, col - 120);
-    const end = Math.min(jsonText.length, col + 120);
-    console.warn("RPG HUD: JSON around error:", jsonText.slice(start, end));
+    if (snippet) console.warn("RPG HUD: JSON around error:", snippet);
   }
 }
 };
@@ -2400,4 +2759,3 @@ jQuery(() => {
 
   console.log("RPG HUD: boot complete ✅");
 });
-
