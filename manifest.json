@@ -5,11 +5,12 @@
   "js": "index.js",
   "css": "",
   "author": "BANANA",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "homePage": "https://github.com/Plates0/st-rpg-hud",
   "auto_update": true,
   "minimum_client_version": "1.0.0"
 }
+
 
 
 
