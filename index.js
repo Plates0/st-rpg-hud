@@ -157,7 +157,10 @@ let lastHudError = {
   snippet: "",
   caret: "",
   caret2: "",
+  caretAt: null,
+  caretAt2: null,
 };
+
 
 let lastIndicatorStatus = null; // tracks status changes for toast/alerts
 
@@ -243,6 +246,109 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+function findMissingColonCandidate(text) {
+  const t = String(text || "");
+
+  // Pattern 1: "key" <value>   (missing colon)
+  // e.g.  "month" "Jan"   or   "vehicle" null   or   "hp_curr" 123
+  // We ignore cases where "key": already has colon.
+  const re1 = /"([^"\\]|\\.)*"\s+(?=[{\["0-9tfn-])/g;
+  let m;
+  while ((m = re1.exec(t))) {
+    const endQuote = re1.lastIndex; // index after the match
+    // If there's a colon between the end quote and the start of the value, it's fine.
+    const tail = t.slice(m.index, Math.min(t.length, m.index + 80));
+    if (!/"\s*:/.test(tail)) {
+      // Point at the end quote (or right after it)
+      const lastQuote = t.lastIndexOf('"', endQuote - 1);
+      if (lastQuote !== -1) return lastQuote;
+      return m.index;
+    }
+  }
+
+  // Pattern 2: barewordKey "value"  (missing opening quote for key or malformed key)
+  // e.g.  month": "Jan"   OR  month "Jan"
+  const re2 = /(^|[{\[,]\s*)([A-Za-z_][\w]*)\s+(?=[{\["0-9tfn-])/g;
+  while ((m = re2.exec(t))) {
+    // Point at the bare key start
+    return m.index + m[1].length;
+  }
+
+  return null;
+}
+
+function findLikelyJsonErrorCandidates(text, msg) {
+  const t = String(text || "");
+  const m = String(msg || "").toLowerCase();
+  const cands = [];
+
+  const push = (idx, why) => {
+    if (Number.isFinite(idx) && idx >= 0 && idx < t.length) cands.push({ idx, why });
+  };
+
+  // 1) "Expected ':' before value" often means:  "key"  value   (missing colon)
+  // Find: "something" <whitespace> <not colon>
+  // Ex: {"vehicle" null} or {"day" 1}
+  {
+    const r = /"([^"\\]|\\.)+"\s+[^:\s]/g;
+    const match = r.exec(t);
+    if (match) push(match.index + match[0].lastIndexOf('"') + 1, 'missing ":" after quoted key');
+  }
+
+  // 2) Unquoted key: { key: 1 }  (JSON requires "key": 1)
+  {
+    const r = /(^|[{\[,]\s*)([A-Za-z_][\w]*)\s*:/m;
+    const match = r.exec(t);
+    if (match) push(match.index + match[1].length, "unquoted key");
+  }
+
+  // 3) The specific broken pattern you already had:
+  // Missing closing quote before colon:  "key:VALUE
+  {
+    const r = /"([A-Za-z_][\w]*)\s*:\s*[^"\s][^,}\]]*/g;
+    const match = r.exec(t);
+    if (match) {
+      const colonOffset = match.index + 1 + match[1].length; // points at colon
+      push(colonOffset, "quote missing before ':'");
+    }
+  }
+
+  // Sort by earliest occurrence (most useful when we have zero parser info)
+  cands.sort((a, b) => a.idx - b.idx);
+
+  // De-dupe near-identical positions
+  const out = [];
+  for (const c of cands) {
+    if (!out.length || Math.abs(out[out.length - 1].idx - c.idx) > 3) out.push(c);
+  }
+
+  return out;
+}
+
+function renderCaretWithSpacer(el, caretAt) {
+  if (!el) return;
+
+  // Clear
+  el.textContent = "";
+
+  // If we don’t have a number, just hide
+  if (!Number.isFinite(caretAt) || caretAt < 0) {
+    el.style.display = "none";
+    return;
+  }
+
+  el.style.display = "block";
+
+  // Spacer measured in monospace columns
+  const spacer = document.createElement("span");
+  spacer.style.display = "inline-block";
+  spacer.style.width = `${caretAt}ch`;   // ✅ key trick
+  spacer.textContent = "";              // no whitespace needed
+
+  el.appendChild(spacer);
+  el.appendChild(document.createTextNode("^"));
+}
+
 function updateLatestStatusAndToast(chat) {
   const latest = getLatestRpgValidity(chat);
 
@@ -317,47 +423,66 @@ function guessLikelyJsonErrorPos(text, parserPos, msg) {
 }
 
 
-function makeCaretSnippet(text, pos, radius = 160) {
+function makeCaretSnippet(text, pos, context = 160) {
   const t = String(text ?? "");
   const p = Math.max(0, Math.min(Number(pos) || 0, t.length));
 
-  const start = Math.max(0, p - radius);
-  const end = Math.min(t.length, p + radius);
+  // Normalize newlines for consistent line math
+  // (Your sanitize does this, but keep it safe here too)
+  const s = t.replace(/\r\n?/g, "\n");
 
-  const slice = t.slice(start, end);
-  const caretAt = p - start;
+  // Find the line containing p
+  const lineStart = s.lastIndexOf("\n", Math.max(0, p - 1)) + 1;
+  let lineEnd = s.indexOf("\n", p);
+  if (lineEnd === -1) lineEnd = s.length;
+
+  // Clip within the same line (don’t include other lines)
+  const sliceStart = Math.max(lineStart, p - context);
+  const sliceEnd = Math.min(lineEnd, p + context);
+
+  const slice = s.slice(sliceStart, sliceEnd);
+
+  // caretAt = COLUMN within this displayed slice (codepoints)
+  const caretAt = Array.from(s.slice(sliceStart, p)).length;
 
   return {
     slice,
-    caretLine: " ".repeat(Math.max(0, caretAt)) + "^",
+    caretAt,
+    caretLine: "\u00A0".repeat(Math.max(0, caretAt)) + "^",
   };
 }
+
 
 function extractJsonErrorPos(err, textForLineCol = "") {
   const msg = String(err?.message || err);
 
-  // Chrome/Edge: "Unexpected token ... in JSON at position 1234"
+  // Always map against the same newline-normalized string
+  const s = String(textForLineCol || "").replace(/\r\n?/g, "\n");
+
+  // 1) Chrome/Edge: "... at position 1234"
   let m = msg.match(/position\s+(\d+)/i);
   if (m) return Number(m[1]);
 
-  // Firefox/WebView: "at line 12 column 34" / "line 12 column 34"
+  // 2) Python-ish / some libs: "(char 1234)" or "character 1234"
+  m = msg.match(/\bchar(?:acter)?\s*\(?\s*(\d+)\s*\)?/i);
+  if (m) return Number(m[1]);
+
+  // 3) Firefox/WebView/Safari variants: "line 12 column 34"
   m = msg.match(/line\s+(\d+)\s+column\s+(\d+)/i);
   if (m) {
     const line = Math.max(1, Number(m[1]) || 1);
     const col  = Math.max(1, Number(m[2]) || 1);
 
-    // convert (line, col) -> absolute position in the string (0-based)
-    const s = String(textForLineCol || "");
-    let pos = 0;
+    // find start index of (line)
     let curLine = 1;
+    let lineStart = 0;
 
     for (let i = 0; i < s.length; i++) {
-      if (curLine === line) { pos = i; break; }
+      if (curLine === line) { lineStart = i; break; }
       if (s[i] === "\n") curLine++;
     }
 
-    // pos now = start index of the line; add (col-1)
-    return Math.min(s.length, pos + (col - 1));
+    return Math.min(s.length, lineStart + (col - 1));
   }
 
   return null;
@@ -1612,7 +1737,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
               <pre id="rpg-debug-snippet" style="
                 white-space:pre;
                 margin:0;
-                font-family:monospace;
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
                 background:transparent;
                 border:0;
                 padding:0;
@@ -1621,23 +1746,25 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
               <pre id="rpg-debug-caret" style="
                 white-space:pre;
                 margin:6px 0 0;
-                font-family:monospace;
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
                 color:#ff5252;
                 font-weight:bold;
                 background:transparent;
                 border:0;
                 padding:0;
+                min-height:1em;
               "></pre>
 
               <pre id="rpg-debug-caret2" style="
                 white-space:pre;
                 margin:2px 0 0;
-                font-family:monospace;
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
                 color:#ffd54f;
                 font-weight:bold;
                 background:transparent;
                 border:0;
                 padding:0;
+                min-height:1em;
                 display:none;
               "></pre>
             </div>
@@ -1848,18 +1975,11 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       if (sn) sn.textContent = lastHudError.snippet || "";
 
       const ca = document.getElementById("rpg-debug-caret");
-      if (ca) ca.textContent = lastHudError.caret || "";
+      renderCaretWithSpacer(ca, lastHudError.caretAt);
 
       const ca2 = document.getElementById("rpg-debug-caret2");
-      if (ca2) {
-        if (lastHudError.caret2) {
-          ca2.style.display = "block";
-          ca2.textContent = lastHudError.caret2;
-        } else {
-          ca2.style.display = "none";
-          ca2.textContent = "";
-        }
-      }
+      renderCaretWithSpacer(ca2, lastHudError.caretAt2);
+
 
       const copyBtn = document.getElementById("rpg-debug-copy");
       if (copyBtn) {
@@ -2224,6 +2344,7 @@ function sanitizeJsonText(raw) {
   return raw
     .replace(/```json/gi, "")
     .replace(/```/g, "")
+    .replace(/\r\n?/g, "\n")
     .replace(/\u00a0/g, " ")
     .replace(/[“”]/g, '"')
     .replace(/[‘’]/g, "'")
@@ -2650,23 +2771,50 @@ if (manual) {
   let caret = "";
   let caret2 = "";
 
+  // ✅ declare OUTSIDE the try so setHudError can see them
+  let caretAt = null;
+  let caretAt2 = null;
+
   try {
     if (Number.isFinite(pos)) {
       const out = makeCaretSnippet(jsonText, pos, 200);
       snippet = out.slice;
       caret = out.caretLine;
+      caretAt = out.caretAt;
 
       const guess = guessLikelyJsonErrorPos(jsonText, pos, msg);
       if (Number.isFinite(guess) && guess !== pos) {
         const out2 = makeCaretSnippet(jsonText, guess, 200);
-        // only use the guess caret if it points into the same snippet slice
         if (out2.slice === snippet) {
           caret2 = out2.caretLine;
+          caretAt2 = out2.caretAt;
         }
       }
     } else {
-      snippet = String(jsonText || "").slice(0, 400);
+      const t = String(jsonText || "");
+
+      // Try message-based candidate scan first (more reliable than guessing near the end)
+      const cands = findLikelyJsonErrorCandidates(t, msg);
+
+      const idx =
+        (cands && cands.length ? cands[0].idx : null) ??
+        findMissingColonCandidate(t);
+
+      if (Number.isFinite(idx)) {
+        const out = makeCaretSnippet(t, idx, 200);
+        snippet = out.slice;
+        caretAt = out.caretAt;
+        caret = out.caretLine;
+      } else {
+        // final fallback: show the end (no caret)
+        const tailLen = 500;
+        snippet = t.slice(Math.max(0, t.length - tailLen));
+        caretAt = null;
+        caret = "";
+      }
     }
+
+
   } catch (snipErr) {
     snippet = "(snippet generation failed) " + String(snipErr?.message || snipErr);
   }
@@ -2678,9 +2826,9 @@ if (manual) {
     snippet,
     caret,
     caret2,
+    caretAt,
+    caretAt2,
   });
-
-
 
   if (manual) {
     console.error("RPG HUD Parse Error", e2);
