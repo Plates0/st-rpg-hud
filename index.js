@@ -146,6 +146,36 @@ let isSettingsOpen = false;
 // Track where the latest <rpg_state> came from so SAVE can rewrite it.
 let lastRpgMsgIndex = -1;
 
+// --- DEBUG OVERLAY (mobile-friendly) ---
+let isDebugOpen = false;
+
+let lastHudError = {
+  time: "",
+  kind: "",
+  message: "",
+  detail: "",
+  snippet: "",
+  caret: "",
+  caret2: "",
+  caretAt: null,
+  caretAt2: null,
+};
+
+
+let lastIndicatorStatus = null; // tracks status changes for toast/alerts
+let hudToastArmed = false; // ✅ prevents "notag" toast on initial page load
+
+function setHudError(partial) {
+  lastHudError = { ...lastHudError, ...partial, time: new Date().toISOString() };
+  window.__rpgHudLastError = lastHudError;
+}
+
+function toggleDebug(e) {
+  if (e) { e.stopPropagation(); e.preventDefault(); }
+  isDebugOpen = !isDebugOpen;
+  renderRPG();
+}
+
 // Auto-rewrite <rpg_state> back into the chat when we had to repair JSON
 const AUTO_REWRITE_ON_REPAIR = true;
 
@@ -217,6 +247,363 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+function indicatorColor(status) {
+  switch (status) {
+    case "valid":   return "#2ecc71"; // green
+    case "invalid": return "#f1c40f"; // yellow
+    case "notag":   return "#bdc3c7"; // gray
+    case "user":    return "#e74c3c"; // red
+    default:        return "#555";    // fallback
+  }
+}
+
+function renderIndicatorDotHtml(status, title) {
+  const c = indicatorColor(status);
+  return `
+    <span
+      title="${escAttr(title || "")}"
+      style="
+        width:12px;
+        height:12px;
+        border-radius:50%;
+        background:${c};
+        box-shadow: 0 0 0 2px rgba(0,0,0,0.65);
+        display:inline-block;
+        vertical-align:middle;
+      "
+    ></span>
+  `;
+}
+
+function findMissingColonCandidate(text) {
+  const t = String(text || "");
+
+  // Pattern 1: "key" <value>   (missing colon)
+  // e.g.  "month" "Jan"   or   "vehicle" null   or   "hp_curr" 123
+  // We ignore cases where "key": already has colon.
+  const re1 = /"([^"\\]|\\.)*"\s+(?=[{\["0-9tfn-])/g;
+  let m;
+  while ((m = re1.exec(t))) {
+    const endQuote = re1.lastIndex; // index after the match
+    // If there's a colon between the end quote and the start of the value, it's fine.
+    const tail = t.slice(m.index, Math.min(t.length, m.index + 80));
+    if (!/"\s*:/.test(tail)) {
+      // Point at the end quote (or right after it)
+      const lastQuote = t.lastIndexOf('"', endQuote - 1);
+      if (lastQuote !== -1) return lastQuote;
+      return m.index;
+    }
+  }
+
+  // Pattern 2: barewordKey "value"  (missing opening quote for key or malformed key)
+  // e.g.  month": "Jan"   OR  month "Jan"
+  const re2 = /(^|[{\[,]\s*)([A-Za-z_][\w]*)\s+(?=[{\["0-9tfn-])/g;
+  while ((m = re2.exec(t))) {
+    // Point at the bare key start
+    return m.index + m[1].length;
+  }
+
+  return null;
+}
+
+function findLikelyJsonErrorCandidates(text, msg) {
+  const t = String(text || "");
+  const m = String(msg || "").toLowerCase();
+  const cands = [];
+
+  const push = (idx, why) => {
+    if (Number.isFinite(idx) && idx >= 0 && idx < t.length) cands.push({ idx, why });
+  };
+
+  // 1) "Expected ':' before value" often means:  "key"  value   (missing colon)
+  // Find: "something" <whitespace> <not colon>
+  // Ex: {"vehicle" null} or {"day" 1}
+  {
+    const r = /"([^"\\]|\\.)+"\s+[^:\s]/g;
+    const match = r.exec(t);
+    if (match) push(match.index + match[0].lastIndexOf('"') + 1, 'missing ":" after quoted key');
+  }
+
+  // 2) Unquoted key: { key: 1 }  (JSON requires "key": 1)
+  {
+    const r = /(^|[{\[,]\s*)([A-Za-z_][\w]*)\s*:/m;
+    const match = r.exec(t);
+    if (match) push(match.index + match[1].length, "unquoted key");
+  }
+
+  // 3) The specific broken pattern you already had:
+  // Missing closing quote before colon:  "key:VALUE
+  {
+    const r = /"([A-Za-z_][\w]*)\s*:\s*[^"\s][^,}\]]*/g;
+    const match = r.exec(t);
+    if (match) {
+      const colonOffset = match.index + 1 + match[1].length; // points at colon
+      push(colonOffset, "quote missing before ':'");
+    }
+  }
+
+  // Sort by earliest occurrence (most useful when we have zero parser info)
+  cands.sort((a, b) => a.idx - b.idx);
+
+  // De-dupe near-identical positions
+  const out = [];
+  for (const c of cands) {
+    if (!out.length || Math.abs(out[out.length - 1].idx - c.idx) > 3) out.push(c);
+  }
+
+  return out;
+}
+
+function renderCaretWithSpacer(el, caretAt) {
+  if (!el) return;
+
+  // Clear
+  el.textContent = "";
+
+  // If we don’t have a number, just hide
+  if (!Number.isFinite(caretAt) || caretAt < 0) {
+    el.style.display = "none";
+    return;
+  }
+
+  el.style.display = "block";
+
+  // Spacer measured in monospace columns
+  const spacer = document.createElement("span");
+  spacer.style.display = "inline-block";
+  spacer.style.width = `${caretAt}ch`;   // ✅ key trick
+  spacer.textContent = "";              // no whitespace needed
+
+  el.appendChild(spacer);
+  el.appendChild(document.createTextNode("^"));
+}
+
+function updateLatestStatusAndToast(chat) {
+  const latest = getLatestRpgValidity(chat);
+
+  if (lastIndicatorStatus !== latest.status) {
+    const prev = lastIndicatorStatus;
+    lastIndicatorStatus = latest.status;
+
+    const enteredBad =
+      (latest.status === "invalid" || latest.status === "notag") &&
+      prev !== latest.status;
+
+    // ✅ Only toast NOTAG if we previously had a tag (valid/invalid).
+    // This prevents refresh/startup "no tag" spam.
+    const shouldToast =
+      enteredBad &&
+      (
+        latest.status === "invalid" ||
+        (
+          latest.status === "notag" &&
+          hudToastArmed &&
+          (prev === "valid" || prev === "invalid")
+        )
+      );
+
+    if (shouldToast) {
+      const msg =
+        latest.status === "invalid"
+          ? "RPG JSON is broken (🟡). Tap the dot for details."
+          : "No <rpg_state> found in the latest AI message (⚪). Tap the dot for details.";
+
+      if (window.toastr) {
+        window.toastr.options = {
+          ...window.toastr.options,
+          timeOut: 0,
+          extendedTimeOut: 0,
+          tapToDismiss: true,
+          closeButton: true,
+          preventDuplicates: true,
+        };
+
+        if (latest.status === "invalid" && window.toastr.warning) window.toastr.warning(msg);
+        else if (window.toastr.info) window.toastr.info(msg);
+        else window.toastr.warning?.(msg);
+      } else {
+        alert(msg);
+      }
+    }
+  }
+
+  return latest;
+}
+
+function guessLikelyJsonErrorPos(text, parserPos, msg) {
+  const t = String(text || "");
+  const p = Math.max(0, Math.min(Number(parserPos) || 0, t.length));
+  const m = String(msg || "").toLowerCase();
+
+  const win = 260;
+  const windowStart = Math.max(0, p - win);
+  const windowEnd = Math.min(t.length, p + 40);
+  const chunk = t.slice(windowStart, windowEnd);
+
+  // A) Missing closing quote before colon:  "vehicle:null
+  // Find patterns like: "key:VALUE   (colon appears before a closing quote)
+  {
+    const r = /"([A-Za-z_][\w]*)\s*:\s*[^"\s][^,}\]]*/g;
+    let match, best = null;
+    while ((match = r.exec(chunk))) {
+      best = { idx: match.index, key: match[1] };
+    }
+    if (best) {
+      // point at the colon inside the broken string, after the key
+      const colonOffset = best.idx + 1 + best.key.length; // 1 for opening quote
+      return windowStart + colonOffset;
+    }
+  }
+
+  // B) Missing opening quote for key:  vehicle": null
+  {
+    const r = /(^|[{\[,]\s*)([A-Za-z_][\w]*)"\s*:/g;
+    let match, best = null;
+    while ((match = r.exec(chunk))) {
+      best = { idx: match.index, leadLen: match[1].length };
+    }
+    if (best) {
+      return windowStart + best.idx + best.leadLen; // points at start of the bare key
+    }
+  }
+
+  // C) If message says "after property name", try to point near a recent quote/colon
+  if (m.includes("after property name") || m.includes("expected ':'")) {
+    const left = t.slice(Math.max(0, p - win), p);
+    const lastQuote = left.lastIndexOf('"');
+    const lastColon = left.lastIndexOf(':');
+
+    // Prefer the last quote if it’s near the end; else last colon; else parserPos
+    if (lastQuote !== -1 && (p - (Math.max(0, p - win) + lastQuote)) < 80) {
+      return Math.max(0, p - win) + lastQuote;
+    }
+    if (lastColon !== -1) {
+      return Math.max(0, p - win) + lastColon;
+    }
+  }
+
+  return null;
+}
+
+
+function makeCaretSnippet(text, pos, context = 160) {
+  const t = String(text ?? "");
+  const p = Math.max(0, Math.min(Number(pos) || 0, t.length));
+
+  // Normalize newlines for consistent line math
+  // (Your sanitize does this, but keep it safe here too)
+  const s = t.replace(/\r\n?/g, "\n");
+
+  // Find the line containing p
+  const lineStart = s.lastIndexOf("\n", Math.max(0, p - 1)) + 1;
+  let lineEnd = s.indexOf("\n", p);
+  if (lineEnd === -1) lineEnd = s.length;
+
+  // Clip within the same line (don’t include other lines)
+  const sliceStart = Math.max(lineStart, p - context);
+  const sliceEnd = Math.min(lineEnd, p + context);
+
+  const slice = s.slice(sliceStart, sliceEnd);
+
+  // caretAt = COLUMN within this displayed slice (codepoints)
+  const caretAt = Array.from(s.slice(sliceStart, p)).length;
+
+  return {
+    slice,
+    caretAt,
+    caretLine: "\u00A0".repeat(Math.max(0, caretAt)) + "^",
+  };
+}
+
+
+function extractJsonErrorPos(err, textForLineCol = "") {
+  const msg = String(err?.message || err);
+
+  // Always map against the same newline-normalized string
+  const s = String(textForLineCol || "").replace(/\r\n?/g, "\n");
+
+  // 1) Chrome/Edge: "... at position 1234"
+  let m = msg.match(/position\s+(\d+)/i);
+  if (m) return Number(m[1]);
+
+  // 2) Python-ish / some libs: "(char 1234)" or "character 1234"
+  m = msg.match(/\bchar(?:acter)?\s*\(?\s*(\d+)\s*\)?/i);
+  if (m) return Number(m[1]);
+
+  // 3) Firefox/WebView/Safari variants: "line 12 column 34"
+  m = msg.match(/line\s+(\d+)\s+column\s+(\d+)/i);
+  if (m) {
+    const line = Math.max(1, Number(m[1]) || 1);
+    const col  = Math.max(1, Number(m[2]) || 1);
+
+    // find start index of (line)
+    let curLine = 1;
+    let lineStart = 0;
+
+    for (let i = 0; i < s.length; i++) {
+      if (curLine === line) { lineStart = i; break; }
+      if (s[i] === "\n") curLine++;
+    }
+
+    return Math.min(s.length, lineStart + (col - 1));
+  }
+
+  return null;
+}
+
+function getLatestRpgValidity(chat) {
+  if (!Array.isArray(chat) || chat.length === 0) {
+    return { status: "nochat", label: "No chat", detail: "" };
+  }
+
+  const last = chat[chat.length - 1];
+
+  // last message is user
+  if (last?.is_user) {
+    return { status: "user", label: "Last is user", detail: "" };
+  }
+
+  const mes = String(last?.mes || "");
+  const regex = /<rpg_state\b[^>]*>([\s\S]*?)<\/rpg_state>/i;
+  const m = mes.match(regex);
+
+  if (!m) {
+    return { status: "notag", label: "No <rpg_state>", detail: "" };
+  }
+
+  const raw = sanitizeJsonText(m[1]);
+
+  try {
+    JSON.parse(raw);
+    return { status: "valid", label: "Latest OK", detail: "" };
+  } catch (e) {
+    return { status: "invalid", label: "Latest BAD JSON", detail: String(e?.message || e) };
+  }
+}
+
+function getEnergy(display, isVehicle) {
+  if (!display) return { curr: 0, max: 0, label: isVehicle ? "EN/MP" : "MP" };
+
+  // Prefer MP keys if present
+  const mpCurr = display.mp_curr ?? display.mp;
+  const mpMax  = display.mp_max;
+
+  // EN variants (ships / alt schemas)
+  const enCurr = display.en_curr ?? display.en ?? display.en_current;
+  const enMax  = display.en_max ?? display.enMax ?? display.en_capacity;
+
+  const hasMp = mpCurr !== undefined || mpMax !== undefined;
+  const curr = hasMp ? mpCurr : enCurr;
+  const max  = hasMp ? mpMax  : enMax;
+
+  const label =
+    (isVehicle && display.type === "ship") || (!hasMp && (enCurr !== undefined || enMax !== undefined))
+      ? "EN"
+      : "MP";
+
+  return { curr: curr ?? 0, max: max ?? 0, label };
+}
+
 function isInfinityToken(v) {
   const s = String(v ?? "").trim().toLowerCase();
   if (s === "∞" || s === "inf" || s === "infinity" || s === "+inf" || s === "+infinity") return true;
@@ -621,11 +1008,13 @@ function renderMiniUnitBars(list, options = {}) {
 
       const hpCurr = safeParseFloat(target?.hp_curr, 0);
       const hpMax = safeParseFloat(target?.hp_max, 0);
-      const mpCurr = safeParseFloat(target?.mp_curr, 0);
-      const mpMax = safeParseFloat(target?.mp_max, 0);
+      const isVeh = !!(unit?.vehicle && unit.vehicle.active);
+      const { curr: eCurr, max: eMax, label: eLabel } = getEnergy(target, isVeh);
+      const eCurrNum = safeParseFloat(eCurr, 0);
+      const eMaxNum  = safeParseFloat(eMax, 0);
 
       const hpPct = percentFrom(target?.hp_curr, target?.hp_max);
-      const mpPct = percentFrom(target?.mp_curr, target?.mp_max);
+      const mpPct  = percentFrom(eCurr, eMax);
 
       const hpColor = unit?.vehicle && unit.vehicle.active ? "#AB47BC" : barHpColor;
 
@@ -633,7 +1022,7 @@ function renderMiniUnitBars(list, options = {}) {
         <div style="margin-bottom:8px;">
           <div style="display:flex; justify-content:space-between; color:#aaa; font-size:0.85em;">
             <span>${nameHtml}</span>
-            <span>HP ${hpCurr}/${hpMax} · MP ${mpCurr}/${mpMax}</span>
+            <span>HP ${hpCurr}/${hpMax} · ${escHtml(eLabel)} ${eCurrNum}/${eMaxNum}</span>
           </div>
 
           <div style="width:100%; background:#333; height:4px; border-radius:2px; overflow:hidden; margin-top:2px;">
@@ -986,7 +1375,7 @@ function scrubLegacyBondKeys(obj) {
 
 
 function saveEditor() {
-  const { root, display } = getActiveData();
+  const { root, display, isVehicle } = getActiveData();
   const getEl = (id) => document.getElementById(id);
 
   const getMixed = (id) => {
@@ -1024,8 +1413,27 @@ function saveEditor() {
   display.name = getStr("edit-name");
   display.hp_curr = getMixed("edit-hp-curr");
   display.hp_max = getMixed("edit-hp-max");
-  display.mp_curr = getMixed("edit-mp-curr");
-  display.mp_max = getMixed("edit-mp-max");
+
+  // ✅ Energy SAVE (Option B):
+  // Ships write to EN keys; everyone else writes to MP keys.
+  const energyCurrVal = getMixed("edit-mp-curr");
+  const energyMaxVal  = getMixed("edit-mp-max");
+  
+  if (isVehicle && display.type === "ship") {
+    display.en_curr = energyCurrVal;
+    display.en_max  = energyMaxVal;
+  
+    // Optional cleanup: remove MP so you don't get duplicates
+    delete display.mp_curr;
+    delete display.mp_max;
+  } else {
+    display.mp_curr = energyCurrVal;
+    display.mp_max  = energyMaxVal;
+  
+    // Optional cleanup for non-ships (if they had EN before)
+    delete display.en_curr;
+    delete display.en_max;
+  }
 
   // per-entity coin (vehicle or character)
   display.dankcoin = getVal("edit-coin");
@@ -1091,13 +1499,62 @@ function renderRPG() {
   const FONT_FAMILY = uiSettings.fontFamily || "'Courier New', Courier, monospace";
   const FONT_SIZE = `${0.9 * (uiSettings.fontScale || 1)}em`;
 
+  // ✅ Always compute validity + toast, even when minimized
+  let latest = { status: "nochat", label: "", detail: "" };
+  try {
+    const context = SillyTavern.getContext();
+    const chat = context?.chat;
+    latest = updateLatestStatusAndToast(chat);
+  } catch {}
+
+
   if (isMinimized) {
-    container.style.cssText = `position: fixed; top: 50px; right: 20px; width: 50px; height: 50px; background: rgba(0,0,0,0.8); border: 2px solid #C0A040; color: #E0E0E0; z-index: 99999; cursor: pointer; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 10px #000; font-family: ${FONT_FAMILY}; font-size: ${FONT_SIZE}; box-sizing:border-box;`;
-    applyHudTypography(container);
-    container.innerHTML = `<div style="font-size:24px; user-select:none;">🛡️</div>`;
-    container.onclick = toggleMinimize;
-    return;
-  }
+      const dot = indicatorColor(latest?.status);
+      const latestTitle = latest?.detail ? `${latest.label}\n${latest.detail}` : (latest?.label || "");
+
+      container.style.cssText = `
+        position: fixed;
+        top: 20%;
+        right: 0;
+        transform: translateY(-50%);
+
+        width: 26px;
+        height: 58px;
+
+        background: rgba(0,0,0,0.78);
+        border: 2px solid #C0A040;
+        border-right: 0;
+
+        border-top-left-radius: 12px;
+        border-bottom-left-radius: 12px;
+
+        z-index: 99999;
+        cursor: pointer;
+        box-shadow: 0 0 10px #000;
+        box-sizing: border-box;
+
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        touch-action: manipulation;
+        user-select: none;
+      `;
+
+      container.innerHTML = `
+        <div title="${escAttr(latestTitle)}" style="
+          width: 12px;
+          height: 12px;
+          border-radius: 50%;
+          background: ${dot};
+          box-shadow: 0 0 0 2px rgba(0,0,0,0.65);
+          pointer-events: none;
+        "></div>
+      `;
+
+      container.onclick = toggleMinimize;
+      return;
+    }
 
 // Make container a positioning context for the settings button/panel + coin
 const hudW = Math.max(220, Number(uiSettings.hudWidth) || 280);
@@ -1124,6 +1581,13 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
   try {
     const { root, display, type, isVehicle } = getActiveData();
+    const context = SillyTavern.getContext();
+    const chat = context?.chat;
+    latest = updateLatestStatusAndToast(chat);
+
+    const latestTitle = latest.detail
+      ? `${latest.label}\n${latest.detail}`
+      : latest.label;
 
     let headerColor = "#C0A040";
     let borderColor = "#333";
@@ -1134,19 +1598,34 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     let icon = "⭐";
 
     if (isVehicle) {
-      if (root.vehicle.type === "ship") {
+      const vType = String(root.vehicle.type || "mecha").toLowerCase();
+    
+      if (vType === "ship") {
         headerColor = "#00E5FF";
         borderColor = "#006064";
         hpLabel = "HULL";
-        mpLabel = "EN";
         hpColor = "#00838F";
         mpColor = "#FBC02D";
         icon = "🚀";
+      } else if (vType === "car") {
+        headerColor = "#FF9800";
+        borderColor = "#E65100";
+        hpLabel = "HULL";
+        hpColor = "#FB8C00";
+        mpColor = "#1976d2"; // still MP unless you’re a ship
+        icon = "🚗";
+      } else if (vType === "transport") {
+        headerColor = "#8BC34A";
+        borderColor = "#33691E";
+        hpLabel = "HULL";
+        hpColor = "#7CB342";
+        mpColor = "#1976d2";
+        icon = "🚊";
       } else {
+        // mecha default
         headerColor = "#E040FB";
         borderColor = "#4A148C";
         hpLabel = "HULL";
-        mpLabel = "MP";
         hpColor = "#AB47BC";
         mpColor = "#1976d2";
         icon = "🤖";
@@ -1173,7 +1652,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         : `<span style="color:#69f0ae;">Healthy</span>`;
 
     const hpPercent = percentFrom(display.hp_curr, display.hp_max);
-    const mpPercent = percentFrom(display.mp_curr, display.mp_max);
+    const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(display, isVehicle);
+    const mpPercent = percentFrom(energyCurr, energyMax);
 
     let bondHtml = "";
     if ((type === "party" || type === "npc") && !isVehicle) {
@@ -1278,12 +1758,113 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           <div style="font-size:0.75em; color:#777; line-height:1.3;">
             • HP/MP dropdown appears if values are strings like: <span style="color:#bbb;">"260 ((100+100)*1.3)"</span><br>
             • Meters are editable: <span style="color:#bbb;">Name | curr | max</span><br>
-            • Coins are per character/vehicle (shown bottom-right).
+            • Coins are per character/vehicle (shown bottom-right).<br>
+            • rpg_state indicator on the top left.<br>
+            🟢 = Valid.<br>
+            🟡 = Broken rpg_state.<br>
+            🔴 = rpg_state in user message.<br>
+            ⚪ = No rpg_state.
           </div>
         </div>
       </div>
     `
       : "";
+
+    // Debug overlay (tap the indicator dot to open)
+    const debugOverlayHtml = isDebugOpen ? `
+      <div id="rpg-debug-overlay" style="
+        position:absolute; inset:0;
+        background: rgba(0,0,0,0.92);
+        border: 1px solid #333;
+        z-index: 150000;
+        display:flex;
+        flex-direction:column;
+        box-sizing:border-box;
+        padding:10px;
+      ">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid #333; padding-bottom:6px;">
+          <div style="font-weight:bold; color:#ddd;">🧾 JSON DEBUG</div>
+          <div style="display:flex; gap:6px;">
+            <button id="rpg-debug-copy" style="background:#333; border:1px solid #777; color:#fff; cursor:pointer; font-size:10px; padding:3px 10px; font-weight:bold;">COPY</button>
+            <button id="rpg-debug-close" style="background:#444; border:1px solid #777; color:#fff; cursor:pointer; font-size:10px; padding:3px 10px; font-weight:bold;">CLOSE</button>
+          </div>
+        </div>
+
+        <div style="flex:1; overflow:auto; font-size:0.8em; color:#ddd; line-height:1.35; padding-right:4px;">
+          <div style="color:#aaa; margin-bottom:6px;">
+            <div><b>Type:</b> ${escHtml(lastHudError.kind || "none")}</div>
+            <div><b>Time:</b> ${escHtml(lastHudError.time || "(none)")}</div>
+          </div>
+
+          <div style="margin-bottom:10px;">
+            <div style="font-size:0.75em; color:#aaa; margin-bottom:4px;">Message</div>
+            <div style="white-space:pre-wrap; background:rgba(255,255,255,0.06); border:1px solid #333; padding:8px; border-radius:4px;">
+              ${escHtml(lastHudError.message || "No error captured yet.")}
+            </div>
+          </div>
+
+          ${lastHudError.snippet ? `
+          <div style="margin-bottom:10px;">
+            <div style="font-size:0.75em; color:#aaa; margin-bottom:4px;">Snippet (around where it broke)</div>
+
+            <div id="rpg-debug-scroll" style="
+              overflow-x:auto;
+              border:1px solid #333;
+              border-radius:4px;
+              background:rgba(255,255,255,0.06);
+              padding:8px;
+            ">
+              <pre id="rpg-debug-snippet" style="
+                white-space:pre;
+                margin:0;
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+                background:transparent;
+                border:0;
+                padding:0;
+              "></pre>
+
+              <pre id="rpg-debug-caret" style="
+                white-space:pre;
+                margin:6px 0 0;
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+                color:#ff5252;
+                font-weight:bold;
+                background:transparent;
+                border:0;
+                padding:0;
+                min-height:1em;
+              "></pre>
+
+              <pre id="rpg-debug-caret2" style="
+                white-space:pre;
+                margin:2px 0 0;
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+                color:#ffd54f;
+                font-weight:bold;
+                background:transparent;
+                border:0;
+                padding:0;
+                min-height:1em;
+                display:none;
+              "></pre>
+            </div>
+          </div>
+        ` : ""}
+
+
+
+
+          ${lastHudError.detail ? `
+            <div style="margin-bottom:10px;">
+              <div style="font-size:0.75em; color:#aaa; margin-bottom:4px;">Detail</div>
+              <pre style="white-space:pre-wrap; margin:0; background:rgba(255,255,255,0.04); border:1px solid #2a2a2a; padding:8px; border-radius:4px;">${escHtml(lastHudError.detail)}</pre>
+            </div>
+          ` : ""}
+        </div>
+      </div>
+    ` : "";
+
+
 
       // Save current tab-strip horizontal scroll before rerender nukes the DOM
       {
@@ -1293,17 +1874,22 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
 
     container.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; padding-bottom:5px; border-bottom:1px solid ${borderColor}; min-height:24px;">
-        <div style="display:flex; align-items:center; gap:6px; min-width:0;">
-          <span style="font-size:1.2em;">${icon}</span>
-          <select id="rpg-char-select" style="${selectStyle}" title="Switch Character">${getCharOptions()}</select>
-        </div>
+	<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; padding-bottom:5px; border-bottom:1px solid ${borderColor}; min-height:24px;">
+	  <div style="display:flex; align-items:center; gap:6px; min-width:0;">
+	    <span style="font-size:1.2em;">${icon}</span>
+	    <select id="rpg-char-select" style="${selectStyle}" title="Switch Character">${getCharOptions()}</select>
+	</div>
+	
+	  <!-- Header right: indicator + MINIMIZE (stable) -->
+      <div style="display:flex; align-items:center; justify-content:flex-end; gap:6px; width:60px; flex:0 0 60px;">
+        <span id="rpg-latest-indicator" style="cursor:pointer; user-select:none;">
+          ${renderIndicatorDotHtml(latest.status, latestTitle)}
+        </span>
 
-        <!-- Header right: MINIMIZE ONLY (stable) -->
-        <div style="display:flex; align-items:center; justify-content:flex-end; width:42px; flex:0 0 42px;">
-          <button id="rpg-min-btn" title="Minimize" style="background:#444; border:1px solid #777; color:#fff; cursor:pointer; font-size:12px; padding:0; width:36px; height:20px; font-weight:bold; line-height:18px; box-sizing:border-box;">_</button>
-        </div>
+        <button id="rpg-min-btn" title="Minimize" style="background:#444; border:1px solid #777; color:#fff; cursor:pointer; font-size:12px; padding:0; width:36px; height:20px; font-weight:bold; line-height:18px; box-sizing:border-box;">_</button>
       </div>
+    </div>
+
 
       <div style="background:rgba(255,255,255,0.05); padding:5px; border-radius:4px; margin-bottom:5px; font-size:0.85em; text-align:center;">
         <div style="color:#fff; font-weight:bold;">📍 ${escHtml(rpgState.location)}</div>
@@ -1322,10 +1908,12 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       <div style="width:100%; background:#333; height:8px; margin-bottom:4px; border-radius:${BAR_RADIUS}; overflow:hidden;"><div style="height:100%; background:${hpColor}; width:${hpPercent}%"></div></div>
 
       <div style="display:flex; justify-content:space-between; font-size:0.8em; align-items:center;">
-        <span>${escHtml(mpLabel)}</span>
-        <span>${renderInlineValue(display.mp_curr)} / ${renderInlineValue(display.mp_max)}</span>
+        <span>${escHtml(energyLabel)}</span>
+        <span>${renderInlineValue(energyCurr)} / ${renderInlineValue(energyMax)}</span>
       </div>
-      <div style="width:100%; background:#333; height:8px; margin-bottom:2px; border-radius:${BAR_RADIUS}; overflow:hidden;"><div style="height:100%; background:${mpColor}; width:${mpPercent}%"></div></div>
+      <div style="width:100%; background:#333; height:8px; margin-bottom:2px; border-radius:${BAR_RADIUS}; overflow:hidden;">
+        <div style="height:100%; background:${mpColor}; width:${mpPercent}%"></div>
+      </div>
 
       ${bondHtml}
       ${metersHtml}
@@ -1392,6 +1980,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           cursor:ew-resize; z-index:200000; background:transparent; touch-action:none;"></div>
 
       ${settingsPanelHtml}
+      ${debugOverlayHtml}
     `;
 
     // --- LEFT RESIZE HANDLE (Pointer Events: mouse + touch + pen) ---
@@ -1451,11 +2040,52 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
     bind("rpg-min-btn", toggleMinimize);
     bind("rpg-settings-btn", toggleSettings);
-	bind("rpg-scan-btn", (e) => {
-  if (e) e.stopPropagation();
-  checkMessage(true);
-});
 
+    bind("rpg-scan-btn", (e) => {
+      if (e) e.stopPropagation();
+      checkMessage(true);
+    });
+
+    bind("rpg-latest-indicator", toggleDebug);
+
+    // Debug overlay binds
+    if (isDebugOpen) {
+      bind("rpg-debug-close", toggleDebug);
+      
+      const sn = document.getElementById("rpg-debug-snippet");
+      if (sn) sn.textContent = lastHudError.snippet || "";
+
+      const ca = document.getElementById("rpg-debug-caret");
+      renderCaretWithSpacer(ca, lastHudError.caretAt);
+
+      const ca2 = document.getElementById("rpg-debug-caret2");
+      renderCaretWithSpacer(ca2, lastHudError.caretAt2);
+
+
+      const copyBtn = document.getElementById("rpg-debug-copy");
+      if (copyBtn) {
+        copyBtn.onclick = (e) => {
+          e.stopPropagation();
+
+          const text =
+            `Type: ${lastHudError.kind}\nTime: ${lastHudError.time}\n\n` +
+            `Message:\n${lastHudError.message}\n\n` +
+            (lastHudError.snippet ? `Snippet:\n${lastHudError.snippet}\n\n` : "") +
+            (lastHudError.caret ? `Caret:\n${lastHudError.caret}\n\n` : "") +
+            (lastHudError.caret2 ? `Caret2:\n${lastHudError.caret2}\n\n` : "") +
+            (lastHudError.detail ? `Detail:\n${lastHudError.detail}\n` : "");
+
+          navigator.clipboard?.writeText(text).then(() => {
+            window.toastr?.info?.("Copied debug info");
+          }).catch(() => {
+            alert("Could not copy (clipboard blocked).");
+          });
+        };
+      }
+
+      const overlay = document.getElementById("rpg-debug-overlay");
+      if (overlay) overlay.onclick = (e) => e.stopPropagation();
+    }
 
     const dropdown = document.getElementById("rpg-char-select");
     if (dropdown) {
@@ -1520,6 +2150,13 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	  } catch {}
 	}
   } catch (e) {
+    setHudError({
+      kind: "render",
+      message: String(e?.message || e),
+      detail: e?.stack ? String(e.stack) : "",
+      snippet: ""
+    });
+
     container.innerHTML = `<div style="color:#ff5252; padding:10px;">HUD crashed: ${escHtml(
       e.message
     )}<br><button id="rpg-hard-reset">Hard Reset</button></div>`;
@@ -1528,6 +2165,9 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
   }
 }
 
+
+
+
 // --- 5. EDITOR RENDERER ---
 function renderEditor() {
   let container = document.getElementById("rpg-hud-container");
@@ -1535,11 +2175,25 @@ function renderEditor() {
 
   const { root, display, type, isVehicle } = getActiveData();
 
+const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(display, isVehicle);
+
   let editorHeader = "✏️ EDIT MODE";
   let headerColor = "#4FC3F7";
   if (isVehicle) {
-    editorHeader = root.vehicle.type === "ship" ? "🚀 EDIT SHIP" : "🤖 EDIT MECHA";
-    headerColor = root.vehicle.type === "ship" ? "#00E5FF" : "#E040FB";
+    const vType = String(root.vehicle.type || "mecha").toLowerCase();
+    if (vType === "ship") {
+      editorHeader = "🚀 EDIT SHIP";
+      headerColor = "#00E5FF";
+    } else if (vType === "car") {
+      editorHeader = "🚗 EDIT CAR";
+      headerColor = "#FF9800";
+    } else if (vType === "transport") {
+      editorHeader = "🚊 EDIT TRANSPORT";
+      headerColor = "#8BC34A";
+    } else {
+      editorHeader = "🤖 EDIT MECHA";
+      headerColor = "#E040FB";
+    }
   } else if (type === "enemy") {
     editorHeader = "⚔️ EDIT ENEMY";
     headerColor = "#ff5252";
@@ -1609,6 +2263,8 @@ function renderEditor() {
     <select id="edit-vehicle-type" style="background:#222; color:#fff; border:1px solid #555; font-size:0.8em;">
       <option value="mecha" ${vehicleType === "mecha" ? "selected" : ""}>Mecha</option>
       <option value="ship" ${vehicleType === "ship" ? "selected" : ""}>Ship</option>
+      <option value="car" ${vehicleType === "car" ? "selected" : ""}>Car</option>
+      <option value="transport" ${vehicleType === "transport" ? "selected" : ""}>Transport</option>
     </select>
   </div>`;
 
@@ -1655,16 +2311,18 @@ function renderEditor() {
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:5px; margin-bottom:10px;">
         <div><div style="${labelStyle()}">${escHtml(isVehicle ? "Hull" : "HP")} Curr</div><input id="edit-hp-curr" type="text" value="${escAttr(
           display.hp_curr
-        )}" style="width:100%; background:#222; color:white;"></div>
+        )}" style="width:100%; background:#222; color:white;">
+        </div>
         <div><div style="${labelStyle()}">${escHtml(isVehicle ? "Hull" : "HP")} Max</div><input id="edit-hp-max" type="text" value="${escAttr(
           display.hp_max
-        )}" style="width:100%; background:#222; color:white;"></div>
-        <div><div style="${labelStyle()}">${escHtml(isVehicle ? "En/Mp" : "MP")} Curr</div><input id="edit-mp-curr" type="text" value="${escAttr(
-          display.mp_curr
-        )}" style="width:100%; background:#222; color:white;"></div>
-        <div><div style="${labelStyle()}">${escHtml(isVehicle ? "En/Mp" : "MP")} Max</div><input id="edit-mp-max" type="text" value="${escAttr(
-          display.mp_max
-        )}" style="width:100%; background:#222; color:white;"></div>
+        )}" style="width:100%; background:#222; color:white;">
+        </div>
+        <div><div style="${labelStyle()}">${escHtml(isVehicle ? "En/Mp" : "MP")} Curr</div>
+          <input id="edit-mp-curr" type="text" value="${escAttr(energyCurr)}" style="width:100%; background:#222; color:white;">
+        </div>
+        <div><div style="${labelStyle()}">${escHtml(isVehicle ? "En/Mp" : "MP")} Max</div>
+          <input id="edit-mp-max" type="text" value="${escAttr(energyMax)}" style="width:100%; background:#222; color:white;">
+        </div>
       </div>
 
       <div style="margin-bottom:10px; border-top:1px dashed #444; padding-top:8px;">
@@ -1767,6 +2425,7 @@ function sanitizeJsonText(raw) {
   return raw
     .replace(/```json/gi, "")
     .replace(/```/g, "")
+    .replace(/\r\n?/g, "\n")
     .replace(/\u00a0/g, " ")
     .replace(/[“”]/g, '"')
     .replace(/[‘’]/g, "'")
@@ -1991,9 +2650,54 @@ function normalizeEntity(entity, defaultTemplate = {}) {
     }
 
     out.vehicle.dankcoin = toNumberOr(out.vehicle.dankcoin ?? 0, 0);
+    // --- VEHICLE BACK-COMPAT FIXES ---
+    // Accept EN-style keys for ships (and migrate them)
+    if (out.vehicle.mp_curr === undefined && out.vehicle.en !== undefined) {
+      out.vehicle.mp_curr = out.vehicle.en;
+    }
+    if (out.vehicle.mp_max === undefined && out.vehicle.en_max !== undefined) {
+      out.vehicle.mp_max = out.vehicle.en_max;
+    }
+    
+    // Some models use en_curr / enMax variants
+    if (out.vehicle.mp_curr === undefined && out.vehicle.en_curr !== undefined) {
+      out.vehicle.mp_curr = out.vehicle.en_curr;
+    }
+    if (out.vehicle.mp_max === undefined && out.vehicle.enMax !== undefined) {
+      out.vehicle.mp_max = out.vehicle.enMax;
+    }
+    
+    // If model accidentally dumped core vehicle fields into vehicle.stats, migrate them out
+    const vs = (out.vehicle.stats && typeof out.vehicle.stats === "object") ? out.vehicle.stats : {};
+    const moveOutOfStats = (key) => {
+      if (out.vehicle[key] === undefined && vs[key] !== undefined) {
+        out.vehicle[key] = vs[key];
+        delete vs[key];
+      }
+    };
+    
+    moveOutOfStats("hp_curr");
+    moveOutOfStats("hp_max");
+    moveOutOfStats("mp_curr");
+    moveOutOfStats("mp_max");
+    
+    // just in case the model put EN fields there too
+    if (out.vehicle.en === undefined && vs.en !== undefined) {
+      out.vehicle.en = vs.en;
+      delete vs.en;
+    }
+    if (out.vehicle.en_max === undefined && vs.en_max !== undefined) {
+      out.vehicle.en_max = vs.en_max;
+      delete vs.en_max;
+    }
+    
+    // ✅ KEEP EN KEYS (do NOT delete them)
+    
+    // write back migrated stats object
+    out.vehicle.stats = vs;
     out.vehicle.meters = normalizeMeters(out.vehicle.meters);
 
-    // back-compat survival->meters inside vehicle
+    // back-compat srvival->meters inside vehicle
     if ((!out.vehicle.meters || out.vehicle.meters.length === 0) && out.vehicle.survival && typeof out.vehicle.survival === "object") {
       out.vehicle.meters = Object.entries(out.vehicle.survival)
         .map(([k, v]) => ({ name: String(k), curr: v, max: 100 }))
@@ -2072,6 +2776,7 @@ const checkMessage = async (manual = false) => {
   const context = SillyTavern.getContext();
   const chat = context?.chat;
   if (!Array.isArray(chat) || chat.length === 0) return;
+  renderRPG();
 
   const rawBlock = findLatestRpgBlock(chat);
   console.log("RPG HUD: lastRpgMsgIndex =", lastRpgMsgIndex);
@@ -2092,16 +2797,25 @@ const checkMessage = async (manual = false) => {
     applyRpgState(normalized);
     renderRPG();
 
-    // Only rewrite on manual scan (not every auto scan)
-    if (manual) {
-      const ok = writeStateBackToChatMessage(rpgState);
-      if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after manual scan");
-    }
-    return;
-  } catch (e1) {
-    // continue to repair attempt
-    if (manual) console.log("RPG HUD: Initial parse failed, attempting repair...");
+  // Only rewrite on manual scan (not every auto scan)
+  if (manual) {
+    const ok = writeStateBackToChatMessage(rpgState);
+    if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after manual scan");
   }
+  return;
+} catch (e1) {
+  setHudError({
+    kind: "parse",
+    message: String(e1?.message || e1),
+    detail: e1?.stack ? String(e1.stack) : "",
+    snippet: "",
+    caret: "",
+  });
+
+  // continue to repair attempt
+  if (manual) console.log("RPG HUD: Initial parse failed, attempting repair...");
+}
+
 
 // 2) repair then parse
 try {
@@ -2131,14 +2845,75 @@ if (manual) {
     if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after repair");
   }
 } catch (e2) {
+  const msg = String(e2?.message || e2);
+  const pos = extractJsonErrorPos(e2, jsonText);
+
+  let snippet = "";
+  let caret = "";
+  let caret2 = "";
+
+  // ✅ declare OUTSIDE the try so setHudError can see them
+  let caretAt = null;
+  let caretAt2 = null;
+
+  try {
+    if (Number.isFinite(pos)) {
+      const out = makeCaretSnippet(jsonText, pos, 200);
+      snippet = out.slice;
+      caret = out.caretLine;
+      caretAt = out.caretAt;
+
+      const guess = guessLikelyJsonErrorPos(jsonText, pos, msg);
+      if (Number.isFinite(guess) && guess !== pos) {
+        const out2 = makeCaretSnippet(jsonText, guess, 200);
+        if (out2.slice === snippet) {
+          caret2 = out2.caretLine;
+          caretAt2 = out2.caretAt;
+        }
+      }
+    } else {
+      const t = String(jsonText || "");
+
+      // Try message-based candidate scan first (more reliable than guessing near the end)
+      const cands = findLikelyJsonErrorCandidates(t, msg);
+
+      const idx =
+        (cands && cands.length ? cands[0].idx : null) ??
+        findMissingColonCandidate(t);
+
+      if (Number.isFinite(idx)) {
+        const out = makeCaretSnippet(t, idx, 200);
+        snippet = out.slice;
+        caretAt = out.caretAt;
+        caret = out.caretLine;
+      } else {
+        // final fallback: show the end (no caret)
+        const tailLen = 500;
+        snippet = t.slice(Math.max(0, t.length - tailLen));
+        caretAt = null;
+        caret = "";
+      }
+    }
+
+
+  } catch (snipErr) {
+    snippet = "(snippet generation failed) " + String(snipErr?.message || snipErr);
+  }
+
+  setHudError({
+    kind: "parse",
+    message: msg,
+    detail: e2?.stack ? String(e2.stack) : "",
+    snippet,
+    caret,
+    caret2,
+    caretAt,
+    caretAt2,
+  });
+
   if (manual) {
     console.error("RPG HUD Parse Error", e2);
-    const msg = String(e2?.message || "");
-    const m = msg.match(/column\s+(\d+)/i);
-    const col = m ? Number(m[1]) : 190;
-    const start = Math.max(0, col - 120);
-    const end = Math.min(jsonText.length, col + 120);
-    console.warn("RPG HUD: JSON around error:", jsonText.slice(start, end));
+    if (snippet) console.warn("RPG HUD: JSON around error:", snippet);
   }
 }
 };
@@ -2189,6 +2964,21 @@ $(document).on('change', '#rpg-settings-autoinject', function() {
 // --- 8. BOOT ---
 jQuery(() => {
   console.log("RPG HUD: boot start ✅");
+  // Make toasts stay until dismissed (sticky)
+  try {
+    if (window.toastr) {
+      window.toastr.options = {
+        ...window.toastr.options,
+        timeOut: 0,             // 0 = never auto-close
+        extendedTimeOut: 0,
+        tapToDismiss: true,
+        closeButton: true,
+        progressBar: false,
+        newestOnTop: true,
+        preventDuplicates: true,
+      };
+    }
+  } catch {}
 
   // Try to stabilize scrollbar gutter to avoid page-level right-edge shifts (best-effort)
   try {
@@ -2209,7 +2999,11 @@ jQuery(() => {
     console.error("RPG HUD: setupObserver() failed ❌", e);
   }
 
-  setTimeout(() => checkMessage(true), 300);
+  setTimeout(() => {
+    Promise.resolve(checkMessage(true)).finally(() => {
+      hudToastArmed = true; // ✅ allow notag toast after initial boot scan
+    });
+  }, 300);
 
   console.log("RPG HUD: boot complete ✅");
 });
