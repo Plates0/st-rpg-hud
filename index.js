@@ -1514,8 +1514,13 @@ function renderRPG() {
 
       container.style.cssText = `
         position: fixed;
-        top: 38%;
         right: 0;
+
+		top: clamp(
+		  calc(env(safe-area-inset-top, 0px) + 50px),
+		  20vh,
+		  calc(100vh - env(safe-area-inset-bottom, 0px) - 50px)
+		);
         transform: translateY(-50%);
 
         width: 26px;
