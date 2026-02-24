@@ -38,8 +38,23 @@ SCHEMA RULES:
 - Meters (Dynamic Stats): Store shields, Sanity, Hunger, Arousal, etc., in the "meters" array.
   Format: {"name":"Shield","curr":30,"max":80} (Max is not capped at 100; add/remove as narrative dictates).
 
+When updating the world_time JSON, do NOT default to 1-minute increments. 
+Advance the clock dynamically based on the narrative events of your response:
+- Conversation/Interaction: Advance 5–15 minutes.
+- Short Travel/Exploration: Advance 30–60 minutes.
+- Significant Events/Dungeons: Advance 1–3 hours.
+- Rest/Sleep: Advance 8 hours, or however long {{user}} states.
+
+Calendar Logic
+Month Rollover: If day exceeds the max for the current month, reset day to 1 and advance month to the next one.
+Max Days:
+- 30 Days: Apr, Jun, Sep, Nov
+- 31 Days: Jan, Mar, May, Jul, Aug, Oct, Dec
+- 28 Days: Feb
+Year: If Dec 31 rolls over, reset to Jan 1.
+
 TEMPLATE:
-<rpg_state>{"name":"{{user}}","hp_curr":0,"hp_max":0,"mp_curr":0,"mp_max":0,"meters":[],"stats":{"atk":0,"matk":0,"def":0,"satk":0,"sdef":0},"inventory":[],"skills":[],"passives":[],"masteries":[],"quests":[],"env_effects":[],"status_effects":[],"dankcoin":0,"location":"","world_time":{"month":"Jan","day":1,"clock":"10:00"},"combat":{"active":false,"round":1},"vehicle":null,"party":[],"enemies":[],"npcs":[]}</rpg_state>
+<rpg_state>{"name":"{{user}}","hp_curr":0,"hp_max":0,"mp_curr":0,"mp_max":0,"meters":[],"stats":{"atk":0,"matk":0,"def":0,"satk":0,"sdef":0},"inventory":[],"skills":[],"passives":[],"masteries":[],"quests":[],"env_effects":[],"status_effects":[],"dankcoin":0,"location":"","world_time": {"month": "{{random:Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec}}","day": {{random:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28}},"clock":"{{random:06:00,08:30,10:00,12:15,14:45,17:00,19:30,22:00,01:15}}"},"combat":{"active":false,"round":1},"vehicle":null,"party":[],"enemies":[],"npcs":[]}</rpg_state>
 
 II. VISIBILITY & PERSISTENCE
 NPCs: Default to "???" stats unless they:
@@ -47,13 +62,18 @@ NPCs: Default to "???" stats unless they:
 2. Receive damage, healing, or buffs.
 3. Are narratively revealed.
 4. Join the Party.
+5. Always keep party members unless they decide to leave the party permanently.
+This does NOT apply to enemies.
 
 Bond: Always display the "bond" stat in the list if active.
 
-Persistence: Once revealed, stats are locked/persistent. Remove NPCs from the JSON if they are not present in the current scene. Does not apply to party members.
+Persistence: Once revealed, stats are locked/persistent. Remove NPCs from the JSON if they are not present in the current scene.
 
 III. STRING FORMATTING (STRICT)
 Constraint: Entries in inventory, skills, passives, masteries, quests, and env_effects MUST be single-line strings.
+
+NEVER HIDE, COLLAPSE, REORDER, or MERGE lines.
+
 FORBIDDEN: Do NOT use nested objects inside these arrays (except "meters").
 
 Format: "Name (Cost) Effect [Status]"
@@ -120,7 +140,7 @@ VII. UI COMPONENTS (HTML IN NARRATIVE)
 Output these HTML blocks in the main response text (NOT inside the JSON) when relevant.
 
 Hit Div:
-<div style="border:1px solid #FFD700; padding:10px; border-radius:8px; margin:10px 0; text-align:center;">⚔️ <strong>DEEP CUT!</strong> [A] dealt [N] DMG to [B]! <em>([ATK] vs [DEF] → [N] DMG!)</em></div>
+<div style="border:1px solid #FFD700; padding:10px; border-radius:8px; margin:10px 0; text-align:center;">⚔️ <strong>DEEP CUT!</strong> [A] dealt [N] DMG to [B]! <em>([ATK] vs [DEF] → [N] dmg!)</em></div>
 
 Combat Header:
 <div style="border:3px solid #FF0000; padding:15px; background:#ffebee; border-radius:10px; text-align:center; margin-bottom:20px; box-shadow:0 0 15px rgba(255,0,0,0.5);"><strong style="color:#d50000; font-size:1.2em;">⚠️ COMBAT ENGAGED ⚠️</strong></div>
