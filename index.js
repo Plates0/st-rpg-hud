@@ -163,6 +163,7 @@ let lastHudError = {
 
 
 let lastIndicatorStatus = null; // tracks status changes for toast/alerts
+let hudToastArmed = false; // ✅ prevents "notag" toast on initial page load
 
 function setHudError(partial) {
   lastHudError = { ...lastHudError, ...partial, time: new Date().toISOString() };
@@ -246,6 +247,34 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+function indicatorColor(status) {
+  switch (status) {
+    case "valid":   return "#2ecc71"; // green
+    case "invalid": return "#f1c40f"; // yellow
+    case "notag":   return "#bdc3c7"; // gray
+    case "user":    return "#e74c3c"; // red
+    default:        return "#555";    // fallback
+  }
+}
+
+function renderIndicatorDotHtml(status, title) {
+  const c = indicatorColor(status);
+  return `
+    <span
+      title="${escAttr(title || "")}"
+      style="
+        width:12px;
+        height:12px;
+        border-radius:50%;
+        background:${c};
+        box-shadow: 0 0 0 2px rgba(0,0,0,0.65);
+        display:inline-block;
+        vertical-align:middle;
+      "
+    ></span>
+  `;
+}
+
 function findMissingColonCandidate(text) {
   const t = String(text || "");
 
@@ -356,11 +385,45 @@ function updateLatestStatusAndToast(chat) {
     const prev = lastIndicatorStatus;
     lastIndicatorStatus = latest.status;
 
-    // Only toast when we ENTER invalid
-    if (latest.status === "invalid" && prev !== "invalid") {
-      const msg = "RPG JSON is broken (🟡). Tap the dot for details.";
-      if (window.toastr?.warning) window.toastr.warning(msg);
-      else alert(msg);
+    const enteredBad =
+      (latest.status === "invalid" || latest.status === "notag") &&
+      prev !== latest.status;
+
+    // ✅ Only toast NOTAG if we previously had a tag (valid/invalid).
+    // This prevents refresh/startup "no tag" spam.
+    const shouldToast =
+      enteredBad &&
+      (
+        latest.status === "invalid" ||
+        (
+          latest.status === "notag" &&
+          hudToastArmed &&
+          (prev === "valid" || prev === "invalid")
+        )
+      );
+
+    if (shouldToast) {
+      const msg =
+        latest.status === "invalid"
+          ? "RPG JSON is broken (🟡). Tap the dot for details."
+          : "No <rpg_state> found in the latest AI message (⚪). Tap the dot for details.";
+
+      if (window.toastr) {
+        window.toastr.options = {
+          ...window.toastr.options,
+          timeOut: 0,
+          extendedTimeOut: 0,
+          tapToDismiss: true,
+          closeButton: true,
+          preventDuplicates: true,
+        };
+
+        if (latest.status === "invalid" && window.toastr.warning) window.toastr.warning(msg);
+        else if (window.toastr.info) window.toastr.info(msg);
+        else window.toastr.warning?.(msg);
+      } else {
+        alert(msg);
+      }
     }
   }
 
@@ -1446,12 +1509,52 @@ function renderRPG() {
 
 
   if (isMinimized) {
-    container.style.cssText = `position: fixed; top: 50px; right: 20px; width: 50px; height: 50px; background: rgba(0,0,0,0.8); border: 2px solid #C0A040; color: #E0E0E0; z-index: 99999; cursor: pointer; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 10px #000; font-family: ${FONT_FAMILY}; font-size: ${FONT_SIZE}; box-sizing:border-box;`;
-    applyHudTypography(container);
-    container.innerHTML = `<div style="font-size:24px; user-select:none;">🛡️</div>`;
-    container.onclick = toggleMinimize;
-    return;
-  }
+      const dot = indicatorColor(latest?.status);
+      const latestTitle = latest?.detail ? `${latest.label}\n${latest.detail}` : (latest?.label || "");
+
+      container.style.cssText = `
+        position: fixed;
+        top: 20%;
+        right: 0;
+        transform: translateY(-50%);
+
+        width: 26px;
+        height: 58px;
+
+        background: rgba(0,0,0,0.78);
+        border: 2px solid #C0A040;
+        border-right: 0;
+
+        border-top-left-radius: 12px;
+        border-bottom-left-radius: 12px;
+
+        z-index: 99999;
+        cursor: pointer;
+        box-shadow: 0 0 10px #000;
+        box-sizing: border-box;
+
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        touch-action: manipulation;
+        user-select: none;
+      `;
+
+      container.innerHTML = `
+        <div title="${escAttr(latestTitle)}" style="
+          width: 12px;
+          height: 12px;
+          border-radius: 50%;
+          background: ${dot};
+          box-shadow: 0 0 0 2px rgba(0,0,0,0.65);
+          pointer-events: none;
+        "></div>
+      `;
+
+      container.onclick = toggleMinimize;
+      return;
+    }
 
 // Make container a positioning context for the settings button/panel + coin
 const hudW = Math.max(220, Number(uiSettings.hudWidth) || 280);
@@ -1482,32 +1585,9 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     const chat = context?.chat;
     latest = updateLatestStatusAndToast(chat);
 
-    const latestDot =
-      latest.status === "valid" ? "🟢" :
-      latest.status === "invalid" ? "🟡" :
-      latest.status === "notag" ? "⚪" :
-      latest.status === "user" ? "🔴" :
-      "⚫";
-
     const latestTitle = latest.detail
       ? `${latest.label}\n${latest.detail}`
       : latest.label;
-
-    // Notify when indicator flips into invalid JSON (yellow)
-    if (lastIndicatorStatus !== latest.status) {
-      const prev = lastIndicatorStatus;
-      lastIndicatorStatus = latest.status;
-
-      if (latest.status === "invalid" && prev !== "invalid") {
-        if (window.toastr?.warning) {
-          window.toastr.warning("RPG JSON is broken (🟡). Tap the dot for details.");
-        } else {
-          alert("RPG JSON is broken (🟡). Tap the dot for details.");
-        }
-      }
-    }
-
-
 
     let headerColor = "#C0A040";
     let borderColor = "#333";
@@ -1802,8 +1882,9 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	
 	  <!-- Header right: indicator + MINIMIZE (stable) -->
       <div style="display:flex; align-items:center; justify-content:flex-end; gap:6px; width:60px; flex:0 0 60px;">
-        <span id="rpg-latest-indicator" title="${escAttr(latestTitle)}"
-          style="font-size:12px; cursor:pointer; user-select:none;">${latestDot}</span>
+        <span id="rpg-latest-indicator" style="cursor:pointer; user-select:none;">
+          ${renderIndicatorDotHtml(latest.status, latestTitle)}
+        </span>
 
         <button id="rpg-min-btn" title="Minimize" style="background:#444; border:1px solid #777; color:#fff; cursor:pointer; font-size:12px; padding:0; width:36px; height:20px; font-weight:bold; line-height:18px; box-sizing:border-box;">_</button>
       </div>
@@ -2883,6 +2964,21 @@ $(document).on('change', '#rpg-settings-autoinject', function() {
 // --- 8. BOOT ---
 jQuery(() => {
   console.log("RPG HUD: boot start ✅");
+  // Make toasts stay until dismissed (sticky)
+  try {
+    if (window.toastr) {
+      window.toastr.options = {
+        ...window.toastr.options,
+        timeOut: 0,             // 0 = never auto-close
+        extendedTimeOut: 0,
+        tapToDismiss: true,
+        closeButton: true,
+        progressBar: false,
+        newestOnTop: true,
+        preventDuplicates: true,
+      };
+    }
+  } catch {}
 
   // Try to stabilize scrollbar gutter to avoid page-level right-edge shifts (best-effort)
   try {
@@ -2903,7 +2999,11 @@ jQuery(() => {
     console.error("RPG HUD: setupObserver() failed ❌", e);
   }
 
-  setTimeout(() => checkMessage(true), 300);
+  setTimeout(() => {
+    Promise.resolve(checkMessage(true)).finally(() => {
+      hudToastArmed = true; // ✅ allow notag toast after initial boot scan
+    });
+  }, 300);
 
   console.log("RPG HUD: boot complete ✅");
 });
