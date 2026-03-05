@@ -35,7 +35,7 @@ SCHEMA RULES:
 - "world_time" must be an object.
 - "stats" values must be STRINGS if they contain equations, or INTEGERS if raw.
 - No "player" root key. The root is the object itself.
-- Meters (Dynamic Stats): Store shields, Sanity, Hunger, Arousal, etc., in the "meters" array.
+- Meters (Dynamic Stats): Store shields, Sanity, Hunger, etc., in the "meters" array.
   Format: {"name":"Shield","curr":30,"max":80} (Max is not capped at 100; add/remove as narrative dictates).
 
 When updating the world_time JSON, do NOT default to 1-minute increments. 
@@ -62,8 +62,6 @@ NPCs: Default to "???" stats unless they:
 2. Receive damage, healing, or buffs.
 3. Are narratively revealed.
 4. Join the Party.
-5. Always keep party members unless they decide to leave the party permanently.
-This does NOT apply to enemies.
 
 Bond: Always display the "bond" stat in the list if active.
 
@@ -71,9 +69,6 @@ Persistence: Once revealed, stats are locked/persistent. Remove NPCs from the JS
 
 III. STRING FORMATTING (STRICT)
 Constraint: Entries in inventory, skills, passives, masteries, quests, and env_effects MUST be single-line strings.
-
-NEVER HIDE, COLLAPSE, REORDER, or MERGE lines.
-
 FORBIDDEN: Do NOT use nested objects inside these arrays (except "meters").
 
 Format: "Name (Cost) Effect [Status]"
@@ -119,7 +114,7 @@ Damage Engine: ((ATK/MATK * SkillMult) * Crit) - (DEF * TrueDMGMod) = RAW_DMG.
 - True DMG: TrueDMGMod = 0.
 - Parry: Treat DEF as (DEF + ATK).
 - Bosses: M.HP = Base * PartySize. Immune to Blind/Bind/Stun.
-- Critical Hits: Guaranteed when hitting a Weak Spot.
+- Critical Hits: Guaranteed when hitting a Weak Spot. Critical hits are *2 damage multiplier.
 
 VI. LIVING WEAPON OVERRIDE
 Trigger: If {{user}} is a sentient weapon/item.
