@@ -108,6 +108,7 @@ const defaultState = {
 
   location: "Unknown",
   world_time: { month: "Jan", day: 1, clock: "12:00" },
+  weather: "Clear",
 
   combat: { active: false, round: 1 },
 
@@ -378,6 +379,23 @@ function renderCaretWithSpacer(el, caretAt) {
   el.appendChild(document.createTextNode("^"));
 }
 
+function toastSticky(type, msg) {
+  if (!window.toastr) return alert(msg);
+
+  const opts = {
+    timeOut: 0,
+    extendedTimeOut: 0,
+    tapToDismiss: true,
+    closeButton: true,
+    preventDuplicates: true,
+    newestOnTop: true,
+    progressBar: false,
+  };
+
+  const fn = window.toastr[type] || window.toastr.warning;
+  fn.call(window.toastr, msg, null, opts);
+}
+
 function updateLatestStatusAndToast(chat) {
   const latest = getLatestRpgValidity(chat);
 
@@ -408,22 +426,11 @@ function updateLatestStatusAndToast(chat) {
           ? "RPG JSON is broken (🟡). Tap the dot for details."
           : "No <rpg_state> found in the latest AI message (⚪). Tap the dot for details.";
 
-      if (window.toastr) {
-        window.toastr.options = {
-          ...window.toastr.options,
-          timeOut: 0,
-          extendedTimeOut: 0,
-          tapToDismiss: true,
-          closeButton: true,
-          preventDuplicates: true,
-        };
-
-        if (latest.status === "invalid" && window.toastr.warning) window.toastr.warning(msg);
-        else if (window.toastr.info) window.toastr.info(msg);
-        else window.toastr.warning?.(msg);
-      } else {
-        alert(msg);
-      }
+      if (latest.status === "invalid") {
+         toastSticky("warning", msg);
+       } else {
+         toastSticky("info", msg);
+       }
     }
   }
 
@@ -1474,6 +1481,7 @@ function saveEditor() {
     rpgState.world_time.month = getStr("edit-month");
     rpgState.world_time.day = getVal("edit-day");
     rpgState.world_time.clock = getStr("edit-clock");
+    rpgState.weather = getStr("edit-weather");
     rpgState.quests = getList("edit-quests");
     rpgState.env_effects = getList("edit-env");
   }
@@ -1891,11 +1899,22 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     </div>
 
 
-      <div style="background:rgba(255,255,255,0.05); padding:5px; border-radius:4px; margin-bottom:5px; font-size:0.85em; text-align:center;">
-        <div style="color:#fff; font-weight:bold;">📍 ${escHtml(rpgState.location)}</div>
-        <div style="color:#aaa; font-size:0.9em;">📅 ${escHtml(time.month)} ${escHtml(time.day)} &nbsp;|&nbsp; ⏰ ${escHtml(
-          time.clock
-        )}</div>
+      <div style="
+        color:#aaa;
+        font-size:0.9em;
+        display:flex;
+        justify-content:center;
+        align-items:center;
+        gap:8px;
+        flex-wrap:wrap;
+        line-height:1.15;
+      ">
+        <span style="white-space:nowrap;">📅 ${escHtml(time.month)} ${escHtml(time.day)}</span>
+        <span style="opacity:0.6;">|</span>
+        <span style="white-space:nowrap;">⏰ ${escHtml(time.clock)}</span>
+        <span style="opacity:0.6;">|</span>
+        <span style="white-space:nowrap;">🌤️ ${escHtml(rpgState.weather ?? "Unknown")}</span>
+      </div>
         ${combatLine}
       </div>
 
@@ -2233,6 +2252,11 @@ const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(displ
         <input id="edit-clock" type="text" value="${escAttr(rpgState.world_time?.clock ?? "12:00")}"
           style="width:100%; background:#222; border:1px solid #555; color:white;">
       </div>
+    </div>
+    <div>
+      <div style="${labelStyle()}">Weather</div>
+      <input id="edit-weather" type="text" value="${escAttr(rpgState.weather ?? "Unknown")}"
+        style="width:100%; background:#222; border:1px solid #555; color:white;">
     </div>
 
     <div style="margin-bottom:10px;">
@@ -2720,11 +2744,13 @@ function normalizeFullState(parsed) {
   player.env_effects = Array.isArray(mergedTop.env_effects) ? mergedTop.env_effects : base.env_effects;
 
   player.location = mergedTop.location ?? base.location;
-player.world_time = {
+  player.world_time = {
   month: String(mergedTop.world_time?.month ?? "Jan").replace(/^"|"$/g, ''), // strip any extra quotes
   day: toNumberOr(mergedTop.world_time?.day ?? 1),
   clock: String(mergedTop.world_time?.clock ?? "12:00").replace(/^"|"$/g, '')
 };
+
+  player.weather = String(mergedTop.weather ?? base.weather ?? "Unknown")
 
   // Combat
   if (mergedTop.combat && typeof mergedTop.combat === "object") {
@@ -2964,21 +2990,6 @@ $(document).on('change', '#rpg-settings-autoinject', function() {
 // --- 8. BOOT ---
 jQuery(() => {
   console.log("RPG HUD: boot start ✅");
-  // Make toasts stay until dismissed (sticky)
-  try {
-    if (window.toastr) {
-      window.toastr.options = {
-        ...window.toastr.options,
-        timeOut: 0,             // 0 = never auto-close
-        extendedTimeOut: 0,
-        tapToDismiss: true,
-        closeButton: true,
-        progressBar: false,
-        newestOnTop: true,
-        preventDuplicates: true,
-      };
-    }
-  } catch {}
 
   // Try to stabilize scrollbar gutter to avoid page-level right-edge shifts (best-effort)
   try {
