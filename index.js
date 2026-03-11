@@ -1899,6 +1899,9 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     </div>
 
 
+      <div style="background:rgba(255,255,255,0.05); padding:5px; border-radius:4px; margin-bottom:5px; font-size:0.85em; text-align:center;">
+      <div style="color:#fff; font-weight:bold;">📍 ${escHtml(rpgState.location)}</div>
+
       <div style="
         color:#aaa;
         font-size:0.9em;
@@ -1908,6 +1911,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         gap:8px;
         flex-wrap:wrap;
         line-height:1.15;
+        margin-top:2px;
       ">
         <span style="white-space:nowrap;">📅 ${escHtml(time.month)} ${escHtml(time.day)}</span>
         <span style="opacity:0.6;">|</span>
@@ -1915,8 +1919,9 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         <span style="opacity:0.6;">|</span>
         <span style="white-space:nowrap;">🌤️ ${escHtml(rpgState.weather ?? "Unknown")}</span>
       </div>
-        ${combatLine}
-      </div>
+
+      ${combatLine}
+    </div>
 
       <div style="font-size:0.8em; text-align:right; margin-bottom:2px;">${statusSafe}</div>
 
@@ -2229,7 +2234,7 @@ const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(displ
     charIndex === 0
       ? `
   <div style="background:rgba(255,255,255,0.05); padding:5px; margin-bottom:10px; border-radius:4px;">
-    <div style="margin-bottom:5px; font-size:0.8em; color:#aaa;">Global Data</div>
+    <div style="margin-bottom:5px; font-size:0.8em; color:#aaa;">Location</div>
 
     <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
       <input id="edit-location" type="text" value="${escAttr(rpgState.location || "")}"
