@@ -3,23 +3,11 @@ window.__rpgHudLoaded = true;
 
 // =====================================================
 // RPG HUD Extension for SillyTavern
+// - Pipe Format Parser
 // - NO prompt injection
 // - NO caching/localStorage snapshots
 // - Editor SAVE rewrites the actual <rpg_state> block
 // - XSS-hardened rendering
-// - Editor has CANCEL
-//
-// Current UX:
-// - Header: Character select + Minimize only (prevents header button "jank")
-// - Bottom-left: ⚙️ opens a FULL Settings panel (future-proof)
-// - Bottom-right: 💰 per-entity dankcoin
-//
-// Data model:
-// - dankcoin is PER-ENTITY (player/party/enemy/npc/vehicle), not global
-// - Survival replaced with generic dynamic meters[] (supports >100 max, editable)
-// - Combat tracker: rpgState.combat.active + round -> shows "Round N" only when active
-// - Extra stats renamed: SATK / SDEF (keys: satk, sdef)
-// - HP/MP inline dropdown works if values are strings like: "260 ((100+100)*1.3)"
 // =====================================================
 
 // --- 0. XSS SAFETY HELPERS ---
@@ -41,7 +29,6 @@ function escTextarea(s) {
     .replace(/>/g, "&gt;");
 }
 
-// Inline value renderer that supports "123 (math...)" dropdown.
 function renderInlineValue(rawValue) {
   let val = rawValue;
   let math = null;
@@ -84,8 +71,6 @@ const defaultState = {
   mp_curr: 0,
   mp_max: 100,
 
-  // Generic meters (shields, stamina, sanity, hunger, temp hp, etc.)
-  // Each: { name: string, curr: number|string, max: number|string }
   meters: [],
 
   stats: {
@@ -96,15 +81,15 @@ const defaultState = {
     sdef: 0,
   },
 
-  inventory: ["(Reset)"],
-  skills: [],
-  passives: [],
+  inventory: ["???"],
+  skills: ["???"],
+  passives: ["???"],
   masteries: [],
   quests: [],
   env_effects: [],
   status_effects: [],
 
-  dankcoin: 0, // per-entity
+  dankcoin: 0,
 
   location: "Unknown",
   world_time: { month: "Jan", day: 1, clock: "12:00" },
@@ -138,63 +123,23 @@ let activeTab = "inventory";
 let isMinimized = false;
 let scanTimer = null;
 let charIndex = 0;
-let tabStripScrollLeft = 0; // <-- remember horizontal scroll position of the tab bar
-
-// Settings panel state
+let tabStripScrollLeft = 0; 
 let isSettingsOpen = false;
-
-// Track where the latest <rpg_state> came from so SAVE can rewrite it.
 let lastRpgMsgIndex = -1;
 
-// --- DEBUG OVERLAY (mobile-friendly) ---
-let isDebugOpen = false;
-
-let lastHudError = {
-  time: "",
-  kind: "",
-  message: "",
-  detail: "",
-  snippet: "",
-  caret: "",
-  caret2: "",
-  caretAt: null,
-  caretAt2: null,
-};
-
-
-let lastIndicatorStatus = null; // tracks status changes for toast/alerts
-let hudToastArmed = false; // ✅ prevents "notag" toast on initial page load
-
-function setHudError(partial) {
-  lastHudError = { ...lastHudError, ...partial, time: new Date().toISOString() };
-  window.__rpgHudLastError = lastHudError;
-}
-
-function toggleDebug(e) {
-  if (e) { e.stopPropagation(); e.preventDefault(); }
-  isDebugOpen = !isDebugOpen;
-  renderRPG();
-}
-
-// Auto-rewrite <rpg_state> back into the chat when we had to repair JSON
-const AUTO_REWRITE_ON_REPAIR = true;
-
-// Disable or Enable Auto-Injection of the last <rpg_state> tags. This acts as a Response Interceptor. If you use the Interceptor, the AI will see the stats twice if they are already in the last message of the chat. 
-// Most modern LLMs (Claude, GPT-4, etc.) handle this fine and actually appreciate the "reminder," but smaller models might get confused. This allows the user to turn it on or off.
-let autoInjectState = false; // Default to OFF
+let lastIndicatorStatus = null;
+let hudToastArmed = false;
+let autoInjectState = false;
 
 // --- UI SETTINGS (font + scale) ---
-// Stored separately from RPG state (does NOT go into <rpg_state>)
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 
 const defaultUiSettings = {
-  fontPreset: "retro_mono", // one of: retro_mono, modern_mono, ui_sans, big_sans, story_serif
+  fontPreset: "retro_mono",
   fontFamily: "'Courier New', Courier, monospace",
-  fontScale: 1.0, // 0.85 - 1.15
-
-  // NEW: persistent HUD size
+  fontScale: 1.0,
   hudWidth: 280,
-  hudHeight: 0, // 0 = auto
+  hudHeight: 0,
 };
 
 let uiSettings = (() => {
@@ -236,12 +181,10 @@ function applyHudTypography(container) {
   const scale = Math.max(0.85, Math.min(1.15, Number(uiSettings.fontScale) || 1.0));
   uiSettings.fontScale = scale;
 
-  // Update family from preset (if preset set)
   if (uiSettings.fontPreset) {
     uiSettings.fontFamily = fontPresetToFamily(uiSettings.fontPreset);
   }
 
-  // Apply directly so slider changes don't require a full rerender
   container.style.fontFamily = uiSettings.fontFamily;
   container.style.fontSize = `${0.9 * scale}em`;
 }
@@ -249,11 +192,11 @@ function applyHudTypography(container) {
 // --- 2. HELPERS ---
 function indicatorColor(status) {
   switch (status) {
-    case "valid":   return "#2ecc71"; // green
-    case "invalid": return "#f1c40f"; // yellow
-    case "notag":   return "#bdc3c7"; // gray
-    case "user":    return "#e74c3c"; // red
-    default:        return "#555";    // fallback
+    case "valid":   return "#2ecc71";
+    case "invalid": return "#f1c40f";
+    case "notag":   return "#bdc3c7";
+    case "user":    return "#e74c3c";
+    default:        return "#555";
   }
 }
 
@@ -275,109 +218,6 @@ function renderIndicatorDotHtml(status, title) {
   `;
 }
 
-function findMissingColonCandidate(text) {
-  const t = String(text || "");
-
-  // Pattern 1: "key" <value>   (missing colon)
-  // e.g.  "month" "Jan"   or   "vehicle" null   or   "hp_curr" 123
-  // We ignore cases where "key": already has colon.
-  const re1 = /"([^"\\]|\\.)*"\s+(?=[{\["0-9tfn-])/g;
-  let m;
-  while ((m = re1.exec(t))) {
-    const endQuote = re1.lastIndex; // index after the match
-    // If there's a colon between the end quote and the start of the value, it's fine.
-    const tail = t.slice(m.index, Math.min(t.length, m.index + 80));
-    if (!/"\s*:/.test(tail)) {
-      // Point at the end quote (or right after it)
-      const lastQuote = t.lastIndexOf('"', endQuote - 1);
-      if (lastQuote !== -1) return lastQuote;
-      return m.index;
-    }
-  }
-
-  // Pattern 2: barewordKey "value"  (missing opening quote for key or malformed key)
-  // e.g.  month": "Jan"   OR  month "Jan"
-  const re2 = /(^|[{\[,]\s*)([A-Za-z_][\w]*)\s+(?=[{\["0-9tfn-])/g;
-  while ((m = re2.exec(t))) {
-    // Point at the bare key start
-    return m.index + m[1].length;
-  }
-
-  return null;
-}
-
-function findLikelyJsonErrorCandidates(text, msg) {
-  const t = String(text || "");
-  const m = String(msg || "").toLowerCase();
-  const cands = [];
-
-  const push = (idx, why) => {
-    if (Number.isFinite(idx) && idx >= 0 && idx < t.length) cands.push({ idx, why });
-  };
-
-  // 1) "Expected ':' before value" often means:  "key"  value   (missing colon)
-  // Find: "something" <whitespace> <not colon>
-  // Ex: {"vehicle" null} or {"day" 1}
-  {
-    const r = /"([^"\\]|\\.)+"\s+[^:\s]/g;
-    const match = r.exec(t);
-    if (match) push(match.index + match[0].lastIndexOf('"') + 1, 'missing ":" after quoted key');
-  }
-
-  // 2) Unquoted key: { key: 1 }  (JSON requires "key": 1)
-  {
-    const r = /(^|[{\[,]\s*)([A-Za-z_][\w]*)\s*:/m;
-    const match = r.exec(t);
-    if (match) push(match.index + match[1].length, "unquoted key");
-  }
-
-  // 3) The specific broken pattern you already had:
-  // Missing closing quote before colon:  "key:VALUE
-  {
-    const r = /"([A-Za-z_][\w]*)\s*:\s*[^"\s][^,}\]]*/g;
-    const match = r.exec(t);
-    if (match) {
-      const colonOffset = match.index + 1 + match[1].length; // points at colon
-      push(colonOffset, "quote missing before ':'");
-    }
-  }
-
-  // Sort by earliest occurrence (most useful when we have zero parser info)
-  cands.sort((a, b) => a.idx - b.idx);
-
-  // De-dupe near-identical positions
-  const out = [];
-  for (const c of cands) {
-    if (!out.length || Math.abs(out[out.length - 1].idx - c.idx) > 3) out.push(c);
-  }
-
-  return out;
-}
-
-function renderCaretWithSpacer(el, caretAt) {
-  if (!el) return;
-
-  // Clear
-  el.textContent = "";
-
-  // If we don’t have a number, just hide
-  if (!Number.isFinite(caretAt) || caretAt < 0) {
-    el.style.display = "none";
-    return;
-  }
-
-  el.style.display = "block";
-
-  // Spacer measured in monospace columns
-  const spacer = document.createElement("span");
-  spacer.style.display = "inline-block";
-  spacer.style.width = `${caretAt}ch`;   // ✅ key trick
-  spacer.textContent = "";              // no whitespace needed
-
-  el.appendChild(spacer);
-  el.appendChild(document.createTextNode("^"));
-}
-
 function updateLatestStatusAndToast(chat) {
   const latest = getLatestRpgValidity(chat);
 
@@ -389,8 +229,6 @@ function updateLatestStatusAndToast(chat) {
       (latest.status === "invalid" || latest.status === "notag") &&
       prev !== latest.status;
 
-    // ✅ Only toast NOTAG if we previously had a tag (valid/invalid).
-    // This prevents refresh/startup "no tag" spam.
     const shouldToast =
       enteredBad &&
       (
@@ -405,8 +243,8 @@ function updateLatestStatusAndToast(chat) {
     if (shouldToast) {
       const msg =
         latest.status === "invalid"
-          ? "RPG JSON is broken (🟡). Tap the dot for details."
-          : "No <rpg_state> found in the latest AI message (⚪). Tap the dot for details.";
+          ? "RPG Pipe format is broken (🟡). Tap the dot for details."
+          : "No <rpg_state> found in the latest AI message (⚪).";
 
       if (window.toastr) {
         window.toastr.options = {
@@ -430,127 +268,6 @@ function updateLatestStatusAndToast(chat) {
   return latest;
 }
 
-function guessLikelyJsonErrorPos(text, parserPos, msg) {
-  const t = String(text || "");
-  const p = Math.max(0, Math.min(Number(parserPos) || 0, t.length));
-  const m = String(msg || "").toLowerCase();
-
-  const win = 260;
-  const windowStart = Math.max(0, p - win);
-  const windowEnd = Math.min(t.length, p + 40);
-  const chunk = t.slice(windowStart, windowEnd);
-
-  // A) Missing closing quote before colon:  "vehicle:null
-  // Find patterns like: "key:VALUE   (colon appears before a closing quote)
-  {
-    const r = /"([A-Za-z_][\w]*)\s*:\s*[^"\s][^,}\]]*/g;
-    let match, best = null;
-    while ((match = r.exec(chunk))) {
-      best = { idx: match.index, key: match[1] };
-    }
-    if (best) {
-      // point at the colon inside the broken string, after the key
-      const colonOffset = best.idx + 1 + best.key.length; // 1 for opening quote
-      return windowStart + colonOffset;
-    }
-  }
-
-  // B) Missing opening quote for key:  vehicle": null
-  {
-    const r = /(^|[{\[,]\s*)([A-Za-z_][\w]*)"\s*:/g;
-    let match, best = null;
-    while ((match = r.exec(chunk))) {
-      best = { idx: match.index, leadLen: match[1].length };
-    }
-    if (best) {
-      return windowStart + best.idx + best.leadLen; // points at start of the bare key
-    }
-  }
-
-  // C) If message says "after property name", try to point near a recent quote/colon
-  if (m.includes("after property name") || m.includes("expected ':'")) {
-    const left = t.slice(Math.max(0, p - win), p);
-    const lastQuote = left.lastIndexOf('"');
-    const lastColon = left.lastIndexOf(':');
-
-    // Prefer the last quote if it’s near the end; else last colon; else parserPos
-    if (lastQuote !== -1 && (p - (Math.max(0, p - win) + lastQuote)) < 80) {
-      return Math.max(0, p - win) + lastQuote;
-    }
-    if (lastColon !== -1) {
-      return Math.max(0, p - win) + lastColon;
-    }
-  }
-
-  return null;
-}
-
-
-function makeCaretSnippet(text, pos, context = 160) {
-  const t = String(text ?? "");
-  const p = Math.max(0, Math.min(Number(pos) || 0, t.length));
-
-  // Normalize newlines for consistent line math
-  // (Your sanitize does this, but keep it safe here too)
-  const s = t.replace(/\r\n?/g, "\n");
-
-  // Find the line containing p
-  const lineStart = s.lastIndexOf("\n", Math.max(0, p - 1)) + 1;
-  let lineEnd = s.indexOf("\n", p);
-  if (lineEnd === -1) lineEnd = s.length;
-
-  // Clip within the same line (don’t include other lines)
-  const sliceStart = Math.max(lineStart, p - context);
-  const sliceEnd = Math.min(lineEnd, p + context);
-
-  const slice = s.slice(sliceStart, sliceEnd);
-
-  // caretAt = COLUMN within this displayed slice (codepoints)
-  const caretAt = Array.from(s.slice(sliceStart, p)).length;
-
-  return {
-    slice,
-    caretAt,
-    caretLine: "\u00A0".repeat(Math.max(0, caretAt)) + "^",
-  };
-}
-
-
-function extractJsonErrorPos(err, textForLineCol = "") {
-  const msg = String(err?.message || err);
-
-  // Always map against the same newline-normalized string
-  const s = String(textForLineCol || "").replace(/\r\n?/g, "\n");
-
-  // 1) Chrome/Edge: "... at position 1234"
-  let m = msg.match(/position\s+(\d+)/i);
-  if (m) return Number(m[1]);
-
-  // 2) Python-ish / some libs: "(char 1234)" or "character 1234"
-  m = msg.match(/\bchar(?:acter)?\s*\(?\s*(\d+)\s*\)?/i);
-  if (m) return Number(m[1]);
-
-  // 3) Firefox/WebView/Safari variants: "line 12 column 34"
-  m = msg.match(/line\s+(\d+)\s+column\s+(\d+)/i);
-  if (m) {
-    const line = Math.max(1, Number(m[1]) || 1);
-    const col  = Math.max(1, Number(m[2]) || 1);
-
-    // find start index of (line)
-    let curLine = 1;
-    let lineStart = 0;
-
-    for (let i = 0; i < s.length; i++) {
-      if (curLine === line) { lineStart = i; break; }
-      if (s[i] === "\n") curLine++;
-    }
-
-    return Math.min(s.length, lineStart + (col - 1));
-  }
-
-  return null;
-}
-
 function getLatestRpgValidity(chat) {
   if (!Array.isArray(chat) || chat.length === 0) {
     return { status: "nochat", label: "No chat", detail: "" };
@@ -558,7 +275,6 @@ function getLatestRpgValidity(chat) {
 
   const last = chat[chat.length - 1];
 
-  // last message is user
   if (last?.is_user) {
     return { status: "user", label: "Last is user", detail: "" };
   }
@@ -571,24 +287,44 @@ function getLatestRpgValidity(chat) {
     return { status: "notag", label: "No <rpg_state>", detail: "" };
   }
 
-  const raw = sanitizeJsonText(m[1]);
-
-  try {
-    JSON.parse(raw);
-    return { status: "valid", label: "Latest OK", detail: "" };
-  } catch (e) {
-    return { status: "invalid", label: "Latest BAD JSON", detail: String(e?.message || e) };
+  const rawText = m[1];
+  if (!rawText.includes('|')) {
+    return { status: "invalid", label: "No Pipes Found", detail: "The <rpg_state> block is empty or missing pipes." };
   }
+
+  const lines = rawText.split('\n');
+  let errors = [];
+
+  lines.forEach((line, index) => {
+    const t = line.trim();
+    if (!t) return;
+
+    const pipeCount = (t.match(/\|/g) || []).length;
+    if (pipeCount > 0 && pipeCount % 2 !== 0) {
+      errors.push(`Line ${index + 1}: Missing a pipe '|' (Odd number found).`);
+    }
+
+    const pipeSegments = [...t.matchAll(/\|([^|]+)\|/g)];
+    pipeSegments.forEach(seg => {
+      if (!seg[1].includes(':')) {
+        errors.push(`Line ${index + 1}: Missing colon ':' inside ${seg[0]}`);
+      }
+    });
+  });
+
+  if (errors.length > 0) {
+    return { status: "invalid", label: "Format Warning", detail: errors.join("\n") };
+  }
+
+  return { status: "valid", label: "Latest OK", detail: "" };
 }
 
 function getEnergy(display, isVehicle) {
   if (!display) return { curr: 0, max: 0, label: isVehicle ? "EN/MP" : "MP" };
 
-  // Prefer MP keys if present
   const mpCurr = display.mp_curr ?? display.mp;
   const mpMax  = display.mp_max;
 
-  // EN variants (ships / alt schemas)
   const enCurr = display.en_curr ?? display.en ?? display.en_current;
   const enMax  = display.en_max ?? display.enMax ?? display.en_capacity;
 
@@ -625,14 +361,12 @@ function percentFrom(currRaw, maxRaw) {
   const curr = safeParseFloatOrInf(currRaw, 0);
   const max  = safeParseFloatOrInf(maxRaw, 0);
 
-  // If either side is Infinity, show a full bar (visual “cap”)
   if (!Number.isFinite(curr) || !Number.isFinite(max)) return 100;
-
   if (max <= 0) return 0;
   return clamp((curr / max) * 100, 0, 100);
 }
 
-const INF_THRESHOLD = 999999999; // treat this and above as infinity
+const INF_THRESHOLD = 999999999; 
 
 function isHugeNumber(v) {
   const n = Number(String(v ?? "").trim());
@@ -641,13 +375,10 @@ function isHugeNumber(v) {
 
 function parseBondValue(v) {
   let s = String(v ?? "").trim();
-
-  // Remove any trailing /100 fraction (common LLM mistake)
   s = s.replace(/\/100$/i, '');
-
   s = s.toLowerCase();
 
-  if (s === "∞" || s === "infinity" || s === "inf") return 101; // sentinel for infinity
+  if (s === "∞" || s === "infinity" || s === "inf") return 101; 
   const n = Number(s);
   return Number.isFinite(n) ? n : 0;
 }
@@ -735,7 +466,6 @@ function getActivePointerInfo() {
 }
 
 function confirmDanger(title, detail) {
-  // Double-confirm to avoid accidental nukes
   const a = confirm(`⚠️ ${title}\n\n${detail}\n\nThis cannot be undone.`);
   if (!a) return false;
   const b = confirm(`⚠️ FINAL WARNING\n\nProceed with:\n${detail}\n\nClick OK to confirm permanently.`);
@@ -756,17 +486,13 @@ function removeActiveCharacter(e) {
     info.type === "enemy" ? "enemy" :
     "NPC";
 
-  const ok = confirmDanger(
-    "DELETE CHARACTER",
-    `Remove ${label} "${info.name}" from <rpg_state>?`
-  );
+  const ok = confirmDanger("DELETE CHARACTER", `Remove ${label} "${info.name}" from <rpg_state>?`);
   if (!ok) return;
 
   if (info.type === "party") rpgState.party.splice(info.idx, 1);
   if (info.type === "enemy") rpgState.enemies.splice(info.idx, 1);
   if (info.type === "npc") rpgState.npcs.splice(info.idx, 1);
 
-  // safest: return to player view after removal
   charIndex = 0;
   isSettingsOpen = false;
   renderRPG();
@@ -783,17 +509,13 @@ function clearArray(type, e) {
     type === "enemy" ? "ALL enemies" :
     "ALL NPCs";
 
-  const ok = confirmDanger(
-    "CLEAR ARRAY",
-    `Clear ${label} from <rpg_state>?`
-  );
+  const ok = confirmDanger("CLEAR ARRAY", `Clear ${label} from <rpg_state>?`);
   if (!ok) return;
 
   if (type === "party") rpgState.party = [];
   if (type === "enemy") rpgState.enemies = [];
   if (type === "npc") rpgState.npcs = [];
 
-  // if you were looking at that group, go back to player
   const info = getActivePointerInfo();
   if (info.type !== "player" && info.type === type) charIndex = 0;
 
@@ -825,7 +547,7 @@ function bindJumpLinks() {
       if (!Number.isFinite(idx)) return;
 
       charIndex = idx;
-      isSettingsOpen = false; // close settings if open
+      isSettingsOpen = false; 
       renderRPG();
     };
   });
@@ -980,7 +702,7 @@ function renderMiniUnitBars(list, options = {}) {
     barHpColor = "#4caf50",
     barMpColor = "#1976d2",
     emptyText = "None",
-    jumpType = null, // "party" | "npc" | "enemy"
+    jumpType = null, 
   } = options;
 
   if (!Array.isArray(list) || list.length === 0) {
@@ -1097,12 +819,10 @@ function renderMeters(meters) {
 
       const c = meterColorByName(name);
 
-      // only hide the meter if max is a real finite <= 0
       const maxNum = safeParseFloatOrInf(max, 0);
       if (Number.isFinite(maxNum) && maxNum <= 0) return "";
 
       const pct = percentFrom(curr, max);
-
 
       return `
         <div style="margin-top:4px;">
@@ -1132,154 +852,129 @@ function findLatestRpgMessageIndex(chat) {
   return -1;
 }
 
-function exportStateForChat(stateObj) {
-  // deep clone so we don't mutate live state
-  const o = JSON.parse(JSON.stringify(stateObj));
-
-  const visit = (x) => {
-    if (!x || typeof x !== "object") return;
-
-    // Convert bond >= 101 into the infinity symbol string
-    if (Object.prototype.hasOwnProperty.call(x, "bond")) {
-      const b = parseBondValue(x.bond);
-      x.bond = b >= 101 ? "∞" : b;
-    }
-
-    // Walk children
-    for (const k of Object.keys(x)) {
-      const v = x[k];
-      if (Array.isArray(v)) v.forEach(visit);
-      else if (v && typeof v === "object") visit(v);
-    }
-  };
-
-  visit(o);
-  return o;
-}
-
-
 function writeStateBackToChatMessage(stateObj) {
   const context = SillyTavern.getContext();
   const chat = context?.chat;
   if (!Array.isArray(chat) || chat.length === 0) return false;
 
   let idx = lastRpgMsgIndex;
-  if (!(idx >= 0 && idx < chat.length)) idx = findLatestRpgMessageIndex(chat);
+  if (!(idx >= 0 && idx < chat.length)) {
+    idx = chat.findLastIndex(m => !m.is_user && /<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i.test(m.mes));
+  }
   if (idx < 0) return false;
 
   const msg = chat[idx];
   if (!msg || typeof msg.mes !== "string") return false;
-
   const regex = /<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i;
-  if (!regex.test(msg.mes)) return false;
 
-  // ✅ Minified JSON to avoid whitespace token bloat
-  const exportObj = exportStateForChat(stateObj);
-  const json = JSON.stringify(exportObj);
-  const newBlock = `<rpg_state>${json}</rpg_state>`;
-  msg.mes = msg.mes.replace(regex, newBlock);
+  // Uses the exact same builder to prevent mismatched keys!
+  const finalString = buildPipeString(stateObj);
+  msg.mes = msg.mes.replace(regex, finalString);
 
-  try {
-    window.saveChat?.();
-  } catch (e) {
-    console.warn("RPG HUD: saveChat failed after writeback", e);
-  }
+  try { window.saveChat?.(); } catch (e) { console.warn("RPG HUD: saveChat failed", e); }
   return true;
 }
 
 // --- 3. ACTIONS ---
+
+function buildPipeString(stateObj) {
+  let lines = ["[Global]"];
+  lines.push(`|Loc:${stateObj.location || "Unknown"}||Time:${stateObj.world_time?.month} ${stateObj.world_time?.day},${stateObj.world_time?.clock}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
+  
+  // If an array is empty, output "None" to match the prompt template perfectly
+  const safeJoin = (arr) => Array.isArray(arr) && arr.length ? arr.map(i => typeof i === 'object' ? i.name : i).join(";") : "None";
+  
+  const quests = safeJoin(stateObj.quests);
+  const env = safeJoin(stateObj.env_effects);
+  lines.push(`|Quests:${quests}||Env:${env}|`);
+  lines.push("");
+
+  const formatStats = (s) => {
+    if (!s) return "ATK:0,MATK:0,DEF:0,SATK:0,SDEF:0";
+    let parts = [];
+    if (s.atk !== undefined) parts.push(`ATK:${s.atk}`);
+    if (s.matk !== undefined) parts.push(`MATK:${s.matk}`);
+    if (s.def !== undefined) parts.push(`DEF:${s.def}`);
+    if (s.satk !== undefined) parts.push(`SATK:${s.satk}`);
+    if (s.sdef !== undefined) parts.push(`SDEF:${s.sdef}`);
+    return parts.length ? parts.join(",") : "ATK:0,MATK:0,DEF:0,SATK:0,SDEF:0";
+  };
+
+  const formatMeters = (m) => {
+    if (!Array.isArray(m) || !m.length) return "";
+    return `|Meters:` + m.map(x => `${x.name}:${x.curr}/${x.max}`).join(";") + `|`;
+  };
+
+  const buildEntity = (ent, isPlayer = false, isPartyOrNPC = false) => {
+    // FIXED: Allow Coin for EVERYONE.
+    // If it's the player, or if the entity has a coin value set, include it.
+    let coinStr = (isPlayer || (ent.dankcoin !== undefined && ent.dankcoin !== null)) ? `||Coin:${ent.dankcoin ?? 0}` : "";
+    let bondStr = isPartyOrNPC ? `||Bond:${ent.bond ?? 0}` : "";
+    
+    let block = [`|Name:${ent.name || "Unknown"}||HP:${ent.hp_curr ?? 0}/${ent.hp_max ?? 0}||MP:${ent.mp_curr ?? 0}/${ent.mp_max ?? 0}${coinStr}${bondStr}|`];
+    
+    block.push(`|Stats:${formatStats(ent.stats)}|`);
+    
+    const meters = formatMeters(ent.meters);
+    if (meters) block.push(meters);
+    
+    block.push(`|INV:${safeJoin(ent.inventory)}||Skills:${safeJoin(ent.skills)}||Passives:${safeJoin(ent.passives)}||Masteries:${safeJoin(ent.masteries)}||Status:${safeJoin(ent.status_effects)}|`);
+    
+    if (ent.vehicle && ent.vehicle.active) {
+      block.push(`>Vehicle|Type:${ent.vehicle.type || "Mecha"}||Name:${ent.vehicle.name || "Vehicle"}||HP:${ent.vehicle.hp_curr ?? 0}/${ent.vehicle.hp_max ?? 0}|`);
+    }
+    return block;
+  };
+
+  lines.push("[Player]"); lines.push(...buildEntity(stateObj, true, false)); lines.push("");
+  if (stateObj.party?.length) { lines.push("[Party]"); stateObj.party.forEach(p => lines.push(...buildEntity(p, false, true))); lines.push(""); }
+  if (stateObj.enemies?.length) { lines.push("[Enemies]"); stateObj.enemies.forEach(e => lines.push(...buildEntity(e, false, false))); lines.push(""); }
+  if (stateObj.npcs?.length) { lines.push("[NPCs]"); stateObj.npcs.forEach(n => lines.push(...buildEntity(n, false, true))); lines.push(""); }
+  
+  return `<rpg_state>\n${lines.join("\n").trim()}\n</rpg_state>`;
+}
+
 function insertLastStateIntoNarrative(e) {
   if (e) e.stopPropagation();
-  const stateString = `<rpg_state>${JSON.stringify(rpgState, null, 2)}</rpg_state>`;
+  const stateString = buildPipeString(rpgState);
   const $input = $('#send_textarea');
   if ($input.length) {
     let currentVal = $input.val().trim();
-    currentVal += (currentVal ? '\n\n' : '') + stateString; // Add spacing for readability
-    $input.val(currentVal);
-    $input.trigger('input'); // Update textarea height and trigger any listeners
-    // Optional: Focus the input and scroll to the bottom
-    $input.focus();
+    $input.val(currentVal + (currentVal ? '\n\n' : '') + stateString).trigger('input').focus();
     $input[0].scrollTop = $input[0].scrollHeight;
   } else {
-    console.warn("RPG HUD: Could not find #send_textarea");
-    alert("Could not find the chat input box. Make sure you're in a chat session.");
+    alert("Could not find the chat input box.");
   }
-  // Optional: Close settings after insertion
   isSettingsOpen = false;
   renderRPG();
 }
 
 function remindStateInLastMessage(e) {
   if (e) e.stopPropagation();
+  if (!rpgState || Object.keys(rpgState).length === 0) return alert("No valid RPG state to remind.");
+  
+  const chat = SillyTavern.getContext()?.chat;
+  if (!Array.isArray(chat) || chat.length === 0) return alert("No chat history found.");
 
-  if (Object.keys(rpgState).length === 0 || !rpgState) {
-    alert("No valid RPG state to remind. Scan or generate one first.");
-    return;
-  }
-
-  // 1. Get the current chat
-  const context = SillyTavern.getContext();
-  const chat = context?.chat;
-  if (!Array.isArray(chat) || chat.length === 0) {
-    alert("No chat history found.");
-    return;
-  }
-
-  // 2. Look at the VERY LAST message
   const lastMsgIndex = chat.length - 1;
   const lastMsg = chat[lastMsgIndex];
-
-  // 3. Prepare the new state block
-  const exportObj = exportStateForChat(rpgState);
-  const json = JSON.stringify(exportObj);
-  const newBlock = `<rpg_state>${json}</rpg_state>`;
+  const newBlock = buildPipeString(rpgState);
   const regex = /<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i;
 
-  // 4. Case A: The last message is from the AI
   if (lastMsg && !lastMsg.is_user) {
     if (confirm("Append/Update <rpg_state> in the last AI message?")) {
-      
-      // If tag exists, replace it
-      if (regex.test(lastMsg.mes)) {
-        lastMsg.mes = lastMsg.mes.replace(regex, newBlock);
-      } 
-      // If tag is missing, append it
-      else {
-        lastMsg.mes = (lastMsg.mes + "\n\n" + newBlock).trim();
-      }
-
-      // Save changes to SillyTavern
-      if (window.saveChat) {
-        window.saveChat();
-        // Update the internal index tracker since we just wrote to the last msg
-        lastRpgMsgIndex = lastMsgIndex; 
-        alert("State successfully injected into the last AI message.");
-      } else {
-        console.warn("RPG HUD: window.saveChat not available.");
-      }
-      
-      // Refresh UI
-      isSettingsOpen = false;
-      renderRPG();
-      return;
+      lastMsg.mes = regex.test(lastMsg.mes) ? lastMsg.mes.replace(regex, newBlock) : (lastMsg.mes + "\n\n" + newBlock).trim();
+      if (window.saveChat) { window.saveChat(); lastRpgMsgIndex = lastMsgIndex; alert("State injected."); }
+      isSettingsOpen = false; renderRPG(); return;
     }
   }
 
-  // 5. Case B: The last message was you (User), or you declined the AI overwrite
-  // Fallback to searching history for ANY tag to update (old behavior)
-  const success = writeStateBackToChatMessage(rpgState);
-
-  if (success) {
-    checkMessage(true);
-    alert("Updated an OLD <rpg_state> found further back in history.");
+  if (writeStateBackToChatMessage(rpgState)) {
+    checkMessage(true); alert("Updated an OLD <rpg_state>.");
   } else {
-    // 6. Case C: No tags found anywhere, and last msg wasn't suitable
-    insertLastStateIntoNarrative();
-    alert("Last message was yours (or no tags found). Inserted state into your input box instead.");
+    insertLastStateIntoNarrative(); alert("Inserted state into your input box instead.");
   }
-
-  isSettingsOpen = false;
-  renderRPG();
+  isSettingsOpen = false; renderRPG();
 }
 
 function resetRPG(e) {
@@ -1317,15 +1012,12 @@ function openEditorFromSettings(e) {
 }
 
 function parseMetersFromText(text) {
-  // Lines like: Name | curr | max
-  // Also accept commas: Name, curr, max
   const out = [];
   const lines = String(text || "").split("\n");
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line) continue;
 
-    // Allow comments
     if (line.startsWith("#") || line.startsWith("//")) continue;
 
     let parts = line.split("|").map((s) => s.trim());
@@ -1337,8 +1029,6 @@ function parseMetersFromText(text) {
     const max = parts[2];
 
     if (!name) continue;
-
-    // Keep curr/max as raw text (supports "260 ((...)*1.3)" etc)
     out.push({ name, curr, max });
   }
   return out;
@@ -1361,7 +1051,6 @@ function isLegacyBondKey(k) {
   const key = String(k ?? "")
     .replace(/\u00a0/g, " ")
     .trim();
-  // matches: "Bond", "Kita Bond", "Kita Bond ", "Kita Bond:", etc.
   return /bond\s*:?\s*$/i.test(key) && key.toLowerCase() !== "bond";
 }
 
@@ -1371,8 +1060,6 @@ function scrubLegacyBondKeys(obj) {
     if (isLegacyBondKey(k)) delete obj[k];
   }
 }
-
-
 
 function saveEditor() {
   const { root, display, isVehicle } = getActiveData();
@@ -1414,31 +1101,23 @@ function saveEditor() {
   display.hp_curr = getMixed("edit-hp-curr");
   display.hp_max = getMixed("edit-hp-max");
 
-  // ✅ Energy SAVE (Option B):
-  // Ships write to EN keys; everyone else writes to MP keys.
   const energyCurrVal = getMixed("edit-mp-curr");
   const energyMaxVal  = getMixed("edit-mp-max");
   
   if (isVehicle && display.type === "ship") {
     display.en_curr = energyCurrVal;
     display.en_max  = energyMaxVal;
-  
-    // Optional cleanup: remove MP so you don't get duplicates
     delete display.mp_curr;
     delete display.mp_max;
   } else {
     display.mp_curr = energyCurrVal;
     display.mp_max  = energyMaxVal;
-  
-    // Optional cleanup for non-ships (if they had EN before)
     delete display.en_curr;
     delete display.en_max;
   }
 
-  // per-entity coin (vehicle or character)
   display.dankcoin = getVal("edit-coin");
 
-  // meters (vehicle or character)
   const metersText = getStr("edit-meters");
   display.meters = parseMetersFromText(metersText);
 
@@ -1459,7 +1138,6 @@ function saveEditor() {
   scrubLegacyBondKeys(root);
 }
 
-
   if (getEl("edit-vehicle-active")) {
     const isActive = getEl("edit-vehicle-active").checked;
     const vType = getEl("edit-vehicle-type").value;
@@ -1468,7 +1146,6 @@ function saveEditor() {
     root.vehicle.type = vType;
   }
 
-  // Top-level globals (player only)
   if (charIndex === 0) {
     rpgState.location = getStr("edit-location");
     rpgState.world_time.month = getStr("edit-month");
@@ -1493,20 +1170,17 @@ function renderRPG() {
     document.body.appendChild(container);
   }
 
-  // Style constants
   const BOX_RADIUS = "0px";
   const BAR_RADIUS = "4px";
   const FONT_FAMILY = uiSettings.fontFamily || "'Courier New', Courier, monospace";
   const FONT_SIZE = `${0.9 * (uiSettings.fontScale || 1)}em`;
 
-  // ✅ Always compute validity + toast, even when minimized
   let latest = { status: "nochat", label: "", detail: "" };
   try {
     const context = SillyTavern.getContext();
     const chat = context?.chat;
     latest = updateLatestStatusAndToast(chat);
   } catch {}
-
 
   if (isMinimized) {
       const dot = indicatorColor(latest?.status);
@@ -1561,7 +1235,6 @@ function renderRPG() {
       return;
     }
 
-// Make container a positioning context for the settings button/panel + coin
 const hudW = Math.max(220, Number(uiSettings.hudWidth) || 280);
 const hudH = Math.max(0, Number(uiSettings.hudHeight) || 0);
 
@@ -1604,7 +1277,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
     if (isVehicle) {
       const vType = String(root.vehicle.type || "mecha").toLowerCase();
-    
+      
       if (vType === "ship") {
         headerColor = "#00E5FF";
         borderColor = "#006064";
@@ -1617,7 +1290,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         borderColor = "#E65100";
         hpLabel = "HULL";
         hpColor = "#FB8C00";
-        mpColor = "#1976d2"; // still MP unless you’re a ship
+        mpColor = "#1976d2"; 
         icon = "🚗";
       } else if (vType === "transport") {
         headerColor = "#8BC34A";
@@ -1627,7 +1300,6 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         mpColor = "#1976d2";
         icon = "🚊";
       } else {
-        // mecha default
         headerColor = "#E040FB";
         borderColor = "#4A148C";
         hpLabel = "HULL";
@@ -1666,11 +1338,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       bond = clamp(bond, Number.NEGATIVE_INFINITY, 101);
 
       const bondLabel = bond >= 101 ? "∞" : String(bond);
-
-      // Visual-only bar fill: use magnitude, cap to 0..100
       const bondPct = bond >= 101 ? 100 : clamp(Math.abs(bond), 0, 100);
-      
-      // Optional: color changes when negative
       const bondColor = bond < 0 ? "#ff5252" : "#f06292";
       
       bondHtml = `<div style="display:flex; justify-content:space-between; font-size:0.8em; margin-top:5px;">
@@ -1683,7 +1351,6 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
     const metersHtml = renderMeters(display.meters);
 
-    // per-entity coin shown for currently displayed entity (vehicle overrides)
     const coin = toNumberOr(display.dankcoin ?? root.dankcoin ?? 0, 0);
 
     const time = rpgState.world_time || { month: "???", day: 0, clock: "??:??" };
@@ -1692,7 +1359,6 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       `flex:0 0 auto; min-width:56px; text-align:center; cursor:pointer; padding:5px 8px; font-size:0.8em; border-radius:3px; user-select:none; ` +
       `${activeTab === name ? "background:#C0A040; color:#000; font-weight:bold;" : "background:transparent; color:#ddd;"}`;
 
-    // Combat tracker (only when active)
     const combatLine =
       rpgState?.combat?.active
         ? `<div style="color:#ff5252; font-weight:bold; font-size:0.9em; margin-top:3px;">⚔️ Round ${escHtml(
@@ -1700,7 +1366,6 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           )}</div>`
         : "";
 
-    // Settings panel overlay (full panel)
     const settingsPanelHtml = isSettingsOpen
       ? `
       <div id="rpg-settings-overlay" style="
@@ -1775,103 +1440,6 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     `
       : "";
 
-    // Debug overlay (tap the indicator dot to open)
-    const debugOverlayHtml = isDebugOpen ? `
-      <div id="rpg-debug-overlay" style="
-        position:absolute; inset:0;
-        background: rgba(0,0,0,0.92);
-        border: 1px solid #333;
-        z-index: 150000;
-        display:flex;
-        flex-direction:column;
-        box-sizing:border-box;
-        padding:10px;
-      ">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid #333; padding-bottom:6px;">
-          <div style="font-weight:bold; color:#ddd;">🧾 JSON DEBUG</div>
-          <div style="display:flex; gap:6px;">
-            <button id="rpg-debug-copy" style="background:#333; border:1px solid #777; color:#fff; cursor:pointer; font-size:10px; padding:3px 10px; font-weight:bold;">COPY</button>
-            <button id="rpg-debug-close" style="background:#444; border:1px solid #777; color:#fff; cursor:pointer; font-size:10px; padding:3px 10px; font-weight:bold;">CLOSE</button>
-          </div>
-        </div>
-
-        <div style="flex:1; overflow:auto; font-size:0.8em; color:#ddd; line-height:1.35; padding-right:4px;">
-          <div style="color:#aaa; margin-bottom:6px;">
-            <div><b>Type:</b> ${escHtml(lastHudError.kind || "none")}</div>
-            <div><b>Time:</b> ${escHtml(lastHudError.time || "(none)")}</div>
-          </div>
-
-          <div style="margin-bottom:10px;">
-            <div style="font-size:0.75em; color:#aaa; margin-bottom:4px;">Message</div>
-            <div style="white-space:pre-wrap; background:rgba(255,255,255,0.06); border:1px solid #333; padding:8px; border-radius:4px;">
-              ${escHtml(lastHudError.message || "No error captured yet.")}
-            </div>
-          </div>
-
-          ${lastHudError.snippet ? `
-          <div style="margin-bottom:10px;">
-            <div style="font-size:0.75em; color:#aaa; margin-bottom:4px;">Snippet (around where it broke)</div>
-
-            <div id="rpg-debug-scroll" style="
-              overflow-x:auto;
-              border:1px solid #333;
-              border-radius:4px;
-              background:rgba(255,255,255,0.06);
-              padding:8px;
-            ">
-              <pre id="rpg-debug-snippet" style="
-                white-space:pre;
-                margin:0;
-                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-                background:transparent;
-                border:0;
-                padding:0;
-              "></pre>
-
-              <pre id="rpg-debug-caret" style="
-                white-space:pre;
-                margin:6px 0 0;
-                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-                color:#ff5252;
-                font-weight:bold;
-                background:transparent;
-                border:0;
-                padding:0;
-                min-height:1em;
-              "></pre>
-
-              <pre id="rpg-debug-caret2" style="
-                white-space:pre;
-                margin:2px 0 0;
-                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-                color:#ffd54f;
-                font-weight:bold;
-                background:transparent;
-                border:0;
-                padding:0;
-                min-height:1em;
-                display:none;
-              "></pre>
-            </div>
-          </div>
-        ` : ""}
-
-
-
-
-          ${lastHudError.detail ? `
-            <div style="margin-bottom:10px;">
-              <div style="font-size:0.75em; color:#aaa; margin-bottom:4px;">Detail</div>
-              <pre style="white-space:pre-wrap; margin:0; background:rgba(255,255,255,0.04); border:1px solid #2a2a2a; padding:8px; border-radius:4px;">${escHtml(lastHudError.detail)}</pre>
-            </div>
-          ` : ""}
-        </div>
-      </div>
-    ` : "";
-
-
-
-      // Save current tab-strip horizontal scroll before rerender nukes the DOM
       {
         const prevStrip = container.querySelector("#rpg-tab-strip");
         if (prevStrip) tabStripScrollLeft = prevStrip.scrollLeft;
@@ -1885,8 +1453,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    <select id="rpg-char-select" style="${selectStyle}" title="Switch Character">${getCharOptions()}</select>
 	</div>
 	
-	  <!-- Header right: indicator + MINIMIZE (stable) -->
-      <div style="display:flex; align-items:center; justify-content:flex-end; gap:6px; width:60px; flex:0 0 60px;">
+	  <div style="display:flex; align-items:center; justify-content:flex-end; gap:6px; width:60px; flex:0 0 60px;">
         <span id="rpg-latest-indicator" style="cursor:pointer; user-select:none;">
           ${renderIndicatorDotHtml(latest.status, latestTitle)}
         </span>
@@ -1957,8 +1524,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
       ${renderEnemySummary()}
 
-    <!-- Footer controls (absolute, stable) -->
-	<div style="
+    <div style="
 	  position:absolute; left:10px; bottom:8px;
 	  display:flex; gap:6px;
 	">
@@ -1985,10 +1551,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           cursor:ew-resize; z-index:200000; background:transparent; touch-action:none;"></div>
 
       ${settingsPanelHtml}
-      ${debugOverlayHtml}
     `;
 
-    // --- LEFT RESIZE HANDLE (Pointer Events: mouse + touch + pen) ---
 {
   const handle = container.querySelector("#rpg-resize-left");
   if (handle) {
@@ -1996,15 +1560,14 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       ev.preventDefault();
       ev.stopPropagation();
 
-      // capture pointer so we keep receiving move events even if finger leaves the handle
       handle.setPointerCapture?.(ev.pointerId);
 
       const startX = ev.clientX;
       const startW = container.getBoundingClientRect().width;
 
       const onMove = (e) => {
-        const dx = e.clientX - startX; // moving right = +
-        const newW = Math.max(220, Math.min(700, startW - dx)); // grow LEFT
+        const dx = e.clientX - startX; 
+        const newW = Math.max(220, Math.min(700, startW - dx)); 
         uiSettings.hudWidth = Math.round(newW);
         container.style.width = uiSettings.hudWidth + "px";
       };
@@ -2023,7 +1586,6 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
   }
 }
 
-    // Restore tab-strip scroll after rerender, and keep it updated
 {
   const newStrip = container.querySelector("#rpg-tab-strip");
   if (newStrip) {
@@ -2051,47 +1613,6 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       checkMessage(true);
     });
 
-    bind("rpg-latest-indicator", toggleDebug);
-
-    // Debug overlay binds
-    if (isDebugOpen) {
-      bind("rpg-debug-close", toggleDebug);
-      
-      const sn = document.getElementById("rpg-debug-snippet");
-      if (sn) sn.textContent = lastHudError.snippet || "";
-
-      const ca = document.getElementById("rpg-debug-caret");
-      renderCaretWithSpacer(ca, lastHudError.caretAt);
-
-      const ca2 = document.getElementById("rpg-debug-caret2");
-      renderCaretWithSpacer(ca2, lastHudError.caretAt2);
-
-
-      const copyBtn = document.getElementById("rpg-debug-copy");
-      if (copyBtn) {
-        copyBtn.onclick = (e) => {
-          e.stopPropagation();
-
-          const text =
-            `Type: ${lastHudError.kind}\nTime: ${lastHudError.time}\n\n` +
-            `Message:\n${lastHudError.message}\n\n` +
-            (lastHudError.snippet ? `Snippet:\n${lastHudError.snippet}\n\n` : "") +
-            (lastHudError.caret ? `Caret:\n${lastHudError.caret}\n\n` : "") +
-            (lastHudError.caret2 ? `Caret2:\n${lastHudError.caret2}\n\n` : "") +
-            (lastHudError.detail ? `Detail:\n${lastHudError.detail}\n` : "");
-
-          navigator.clipboard?.writeText(text).then(() => {
-            window.toastr?.info?.("Copied debug info");
-          }).catch(() => {
-            alert("Could not copy (clipboard blocked).");
-          });
-        };
-      }
-
-      const overlay = document.getElementById("rpg-debug-overlay");
-      if (overlay) overlay.onclick = (e) => e.stopPropagation();
-    }
-
     const dropdown = document.getElementById("rpg-char-select");
     if (dropdown) {
       dropdown.value = charIndex;
@@ -2106,7 +1627,6 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     bind("tab-quest", () => switchTab("quests"));
     bind("tab-env", () => switchTab("env"));
 	  
-    // Settings panel binds
 	if (isSettingsOpen) {
 	  bind("rpg-settings-close", toggleSettings);
 	  bind("rpg-settings-edit", openEditorFromSettings);
@@ -2122,7 +1642,6 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	  const overlay = document.getElementById("rpg-settings-overlay");
 	  if (overlay) overlay.onclick = (e) => e.stopPropagation();
 	
-	  // Font preset + size slider (live apply)
 	  try {
 	    const presetEl = document.getElementById("rpg-font-preset");
 	    const scaleEl = document.getElementById("rpg-font-scale");
@@ -2155,23 +1674,13 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	  } catch {}
 	}
   } catch (e) {
-    setHudError({
-      kind: "render",
-      message: String(e?.message || e),
-      detail: e?.stack ? String(e.stack) : "",
-      snippet: ""
-    });
-
     container.innerHTML = `<div style="color:#ff5252; padding:10px;">HUD crashed: ${escHtml(
       e.message
     )}<br><button id="rpg-hard-reset">Hard Reset</button></div>`;
     document.getElementById("rpg-hard-reset").onclick = resetRPG;
-    console.error(e);
+    console.error("RPG HUD UI Error:", e);
   }
 }
-
-
-
 
 // --- 5. EDITOR RENDERER ---
 function renderEditor() {
@@ -2406,7 +1915,7 @@ const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(displ
   document.getElementById("rpg-cancel-btn").onclick = () => renderRPG();
 }
 
-// --- 6. PARSER (UPGRADED) ---
+// --- 6. PARSER (PIPE UPGRADE) ---
 function findLatestRpgBlock(chat) {
   if (!Array.isArray(chat)) return null;
 
@@ -2424,355 +1933,141 @@ function findLatestRpgBlock(chat) {
   return null;
 }
 
-function sanitizeJsonText(raw) {
-  if (typeof raw !== "string") return "";
-
-  return raw
-    .replace(/```json/gi, "")
-    .replace(/```/g, "")
-    .replace(/\r\n?/g, "\n")
-    .replace(/\u00a0/g, " ")
-    .replace(/[“”]/g, '"')
-    .replace(/[‘’]/g, "'")
-    .replace(/,\s*}/g, "}")
-    .replace(/,\s*]/g, "]")
-    .trim();
-}
-
-function patchArrayField(text, fieldName, patchFn) {
-  const key = `"${fieldName}":`;
-  const i = text.indexOf(key);
-  if (i < 0) return text;
-
-  const start = text.indexOf("[", i);
-  if (start < 0) return text;
-
-  // find matching closing ] with simple depth counter
-  let depth = 0;
-  let end = -1;
-  for (let p = start; p < text.length; p++) {
-    const ch = text[p];
-    if (ch === "[") depth++;
-    else if (ch === "]") {
-      depth--;
-      if (depth === 0) { end = p; break; }
-    }
-  }
-  if (end < 0) return text;
-
-  const before = text.slice(0, start);
-  const arr = text.slice(start, end + 1);
-  const after = text.slice(end + 1);
-
-  return before + patchFn(arr) + after;
-}
-
-/**
- * Attempts to repair common model-broken JSON patterns:
- * - missing commas between values
- * - stray quotes around numbers: "day":"1,  or  1"
- * Returns a "best effort" JSON string.
- */
-function repairJsonText(raw) {
-  let t = sanitizeJsonText(raw);
-
-  // Existing fixes (keep)
-  t = t.replace(/\[X\]\s*,\s*"/g, '[X]","');
-  t = t.replace(/("clock"\s*:\s*")([^"]*?),(")/g, '$1$2$3');
-  t = t.replace(/("month"\s*:\s*")([^"]*?),(")/g, '$1$2$3');
-
-  // Turn quoted numbers into numbers:  "hp_curr":"225" -> "hp_curr":225
-  t = t.replace(/:\s*"(\s*-?\d+(?:\.\d+)?\s*)"\s*(?=[,}\]])/g, ":$1");
-
-  // Day fixes
-  t = t.replace(/"day"\s*:\s*"(\d+)"\s*([,}])/g, '"day":$1$2');
-  t = t.replace(/"day"\s*:\s*(\d+)\s*"\s*([,}])/g, '"day":$1$2');
-
-  // ✅ SAFE stray-quote fix: only numeric fields we expect
-  // Example it fixes: "hp_curr":225"  -> "hp_curr":225
-  t = t.replace(
-    /"(hp_curr|hp_max|mp_curr|mp_max|round|dankcoin|bond)"\s*:\s*(-?\d+(?:\.\d+)?)\s*"\s*([,}\]])/g,
-    '"$1":$2$3'
-  );
-  // Also for meters: {"curr":25" ...}
-  t = t.replace(
-    /"(curr|max)"\s*:\s*(-?\d+(?:\.\d+)?)\s*"\s*([,}\]])/g,
-    '"$1":$2$3'
-  );
-
-  // ✅ Your month/clock quoting line goes HERE (after numeric cleanup, before arrays)
-  // Fixes: "month": Jan  -> "month":"Jan"
-  // Fixes: "clock": 23:05 -> "clock":"23:05"
-  t = t.replace(
-    /"(month|clock)"\s*:\s*([A-Za-z][A-Za-z ]*|\d{1,2}:\d{2}(?:\s*[AP]M)?)\s*([,}])/g,
-    '"$1":"$2"$3'
-  );
-
-  // Bond fraction fix
-  t = t.replace(
-    /"bond"\s*:\s*(?:"?\s*(\d+(?:\.\d+)?)\s*\/\s*100\s*"?)/g,
-    '"bond":$1'
-  );
-
-  // Array string fixes (keep yours)
-  const fixBrokenArrayStrings = (arrBody) =>
-    arrBody.replace(/([^"])\s*,\s*"/g, '$1","');
-
-  t = patchArrayField(t, "skills", fixBrokenArrayStrings);
-  t = patchArrayField(t, "inventory", fixBrokenArrayStrings);
-  t = patchArrayField(t, "passives", fixBrokenArrayStrings);
-  t = patchArrayField(t, "quests", fixBrokenArrayStrings);
-  t = patchArrayField(t, "env_effects", fixBrokenArrayStrings);
-  t = patchArrayField(t, "status_effects", fixBrokenArrayStrings);
-
-  // Trailing commas
-  t = t.replace(/,\s*}/g, "}").replace(/,\s*]/g, "]");
-  t = t.replace(/,\s*([\]}])/g, '$1');
-
-  return t;
-}
-
-function normalizeMeters(meters) {
-  if (!Array.isArray(meters)) return [];
-  return meters
-    .map((m) => {
-      if (!m || typeof m !== "object") return null;
-      const name = m.name ?? m.label ?? "";
-      if (!name) return null;
-      const curr = m.curr ?? m.value ?? 0;
-      const max = m.max ?? 100;
-      return { name: String(name), curr, max };
-    })
-    .filter(Boolean);
-}
-
-function normalizeEntity(entity, defaultTemplate = {}) {
-  const e = entity && typeof entity === "object" ? entity : {};
-  const base = JSON.parse(JSON.stringify(defaultTemplate));
-  const out = { ...base, ...e };
-
-  const ensureArr = (v) => (Array.isArray(v) ? v : []);
-  out.inventory = ensureArr(out.inventory);
-  out.skills = ensureArr(out.skills);
-  out.passives = ensureArr(out.passives);
-  out.masteries = ensureArr(out.masteries);
-
-  const statusA = ensureArr(out.status_effects);
-  const statusB = ensureArr(out.status);
-  out.status_effects = statusA.length ? statusA : statusB;
-
-  out.stats =
-    out.stats && typeof out.stats === "object"
-      ? out.stats
-      : { atk: 0, matk: 0, def: 0, satk: 0, sdef: 0 };
-
-  if (out.stats.satk === undefined && out.stats.extra_1 !== undefined) out.stats.satk = out.stats.extra_1;
-  if (out.stats.sdef === undefined && out.stats.extra_2 !== undefined) out.stats.sdef = out.stats.extra_2;
-
-  if (out.stats.satk === undefined) out.stats.satk = 0;
-  if (out.stats.sdef === undefined) out.stats.sdef = 0;
-
-  // remove legacy keys if present
-  if ("extra_1" in out.stats) delete out.stats.extra_1;
-  if ("extra_2" in out.stats) delete out.stats.extra_2;
-
-  out.dankcoin = toNumberOr(out.dankcoin ?? 0, 0);
-
-    // ---- bond compatibility ----
-  // Canonical: bond
-  // Legacy: "<Name> Bond", "Bond", "Bond:", etc.
-  const hasCanonicalBond =
-    Object.prototype.hasOwnProperty.call(e, "bond") ||
-    Object.prototype.hasOwnProperty.call(e, "Bond");
-
-  // If incoming did NOT explicitly provide bond, try to migrate from legacy keys
-  if (!hasCanonicalBond) {
-  const legacyKey = Object.keys(e).find(isLegacyBondKey);
-
-  if (legacyKey) {
-    const v = parseBondValue(e[legacyKey]); // ✅ handles "15/100"
-    if (Number.isFinite(v)) out.bond = v;
-  } else if (Object.prototype.hasOwnProperty.call(e, "Bond")) {
-    const v = parseBondValue(e.Bond);       // ✅ handles "15/100"
-    if (Number.isFinite(v)) out.bond = v;
-  }
-}
-
-  // Always delete legacy keys (prevents token bloat)
-  scrubLegacyBondKeys(out);
-  if ("Bond" in out) delete out.Bond;
-
-  // Additional explicit fallback for "Bond"
-  if (!("bond" in out) && "Bond" in out) {
-    out.bond = parseBondValue(out.Bond);
-    delete out.Bond;
-  }
-
-  // Clamp final bond
-  const b = parseBondValue(out.bond);
-  out.bond = clamp(b, Number.NEGATIVE_INFINITY, 101);
-
-
-  // Meters
-  out.meters = normalizeMeters(out.meters);
-
-  // Back-compat: convert old survival object into meters if meters missing
-  // survival: { "Thirst": 70, "Sanity": 90 } -> meters [{name, curr, max:100}]
-  if ((!out.meters || out.meters.length === 0) && out.survival && typeof out.survival === "object") {
-    const entries = Object.entries(out.survival);
-    out.meters = entries
-      .map(([k, v]) => ({ name: String(k), curr: v, max: 100 }))
-      .filter((m) => m.name);
-  }
-  if ("survival" in out) delete out.survival;
-
-  // Vehicle
-  if (out.vehicle === null || out.vehicle === undefined) out.vehicle = null;
-  else if (typeof out.vehicle === "object") {
-    out.vehicle.active = Boolean(out.vehicle.active);
-    out.vehicle.type = out.vehicle.type || "mecha";
-    out.vehicle.name = out.vehicle.name || "Vehicle";
-
-    out.vehicle.stats =
-      out.vehicle.stats && typeof out.vehicle.stats === "object"
-        ? out.vehicle.stats
-        : { atk: 0, matk: 0, def: 0, satk: 0, sdef: 0 };
-
-    if (out.vehicle.stats.satk === undefined && out.vehicle.stats.extra_1 !== undefined) out.vehicle.stats.satk = out.vehicle.stats.extra_1;
-    if (out.vehicle.stats.sdef === undefined && out.vehicle.stats.extra_2 !== undefined) out.vehicle.stats.sdef = out.vehicle.stats.extra_2;
-
-    if (out.vehicle.stats.satk === undefined) out.vehicle.stats.satk = 0;
-    if (out.vehicle.stats.sdef === undefined) out.vehicle.stats.sdef = 0;
-    if ("extra_1" in out.vehicle.stats) delete out.vehicle.stats.extra_1;
-    if ("extra_2" in out.vehicle.stats) delete out.vehicle.stats.extra_2;
-
-    out.vehicle.inventory = ensureArr(out.vehicle.inventory);
-    out.vehicle.skills = ensureArr(out.vehicle.skills);
-    out.vehicle.passives = ensureArr(out.vehicle.passives);
-    out.vehicle.status_effects = ensureArr(out.vehicle.status_effects);
-    if ((!out.vehicle.status_effects || out.vehicle.status_effects.length === 0) && Array.isArray(out.vehicle.status)) {
-      out.vehicle.status_effects = out.vehicle.status;
-    }
-
-    out.vehicle.dankcoin = toNumberOr(out.vehicle.dankcoin ?? 0, 0);
-    // --- VEHICLE BACK-COMPAT FIXES ---
-    // Accept EN-style keys for ships (and migrate them)
-    if (out.vehicle.mp_curr === undefined && out.vehicle.en !== undefined) {
-      out.vehicle.mp_curr = out.vehicle.en;
-    }
-    if (out.vehicle.mp_max === undefined && out.vehicle.en_max !== undefined) {
-      out.vehicle.mp_max = out.vehicle.en_max;
-    }
-    
-    // Some models use en_curr / enMax variants
-    if (out.vehicle.mp_curr === undefined && out.vehicle.en_curr !== undefined) {
-      out.vehicle.mp_curr = out.vehicle.en_curr;
-    }
-    if (out.vehicle.mp_max === undefined && out.vehicle.enMax !== undefined) {
-      out.vehicle.mp_max = out.vehicle.enMax;
-    }
-    
-    // If model accidentally dumped core vehicle fields into vehicle.stats, migrate them out
-    const vs = (out.vehicle.stats && typeof out.vehicle.stats === "object") ? out.vehicle.stats : {};
-    const moveOutOfStats = (key) => {
-      if (out.vehicle[key] === undefined && vs[key] !== undefined) {
-        out.vehicle[key] = vs[key];
-        delete vs[key];
-      }
-    };
-    
-    moveOutOfStats("hp_curr");
-    moveOutOfStats("hp_max");
-    moveOutOfStats("mp_curr");
-    moveOutOfStats("mp_max");
-    
-    // just in case the model put EN fields there too
-    if (out.vehicle.en === undefined && vs.en !== undefined) {
-      out.vehicle.en = vs.en;
-      delete vs.en;
-    }
-    if (out.vehicle.en_max === undefined && vs.en_max !== undefined) {
-      out.vehicle.en_max = vs.en_max;
-      delete vs.en_max;
-    }
-    
-    // ✅ KEEP EN KEYS (do NOT delete them)
-    
-    // write back migrated stats object
-    out.vehicle.stats = vs;
-    out.vehicle.meters = normalizeMeters(out.vehicle.meters);
-
-    // back-compat srvival->meters inside vehicle
-    if ((!out.vehicle.meters || out.vehicle.meters.length === 0) && out.vehicle.survival && typeof out.vehicle.survival === "object") {
-      out.vehicle.meters = Object.entries(out.vehicle.survival)
-        .map(([k, v]) => ({ name: String(k), curr: v, max: 100 }))
-        .filter((m) => m.name);
-    }
-    if ("survival" in out.vehicle) delete out.vehicle.survival;
-  } else out.vehicle = null;
-
-  return out;
-}
-
-function normalizeFullState(parsed) {
-  const base = JSON.parse(JSON.stringify(defaultState));
-  const incoming = parsed && typeof parsed === "object" ? parsed : {};
-  const mergedTop = { ...base, ...incoming };
-
-  const player = normalizeEntity(mergedTop, defaultState);
-
-  player.quests = Array.isArray(mergedTop.quests) ? mergedTop.quests : base.quests;
-  player.env_effects = Array.isArray(mergedTop.env_effects) ? mergedTop.env_effects : base.env_effects;
-
-  player.location = mergedTop.location ?? base.location;
-player.world_time = {
-  month: String(mergedTop.world_time?.month ?? "Jan").replace(/^"|"$/g, ''), // strip any extra quotes
-  day: toNumberOr(mergedTop.world_time?.day ?? 1),
-  clock: String(mergedTop.world_time?.clock ?? "12:00").replace(/^"|"$/g, '')
-};
-
-  // Combat
-  if (mergedTop.combat && typeof mergedTop.combat === "object") {
-    player.combat = {
-      active: Boolean(mergedTop.combat.active),
-      round: toNumberOr(mergedTop.combat.round ?? 1, 1),
-    };
-  } else {
-    player.combat = { active: false, round: 1 };
-  }
-
-  // Dungeon optional
-  if (mergedTop.dungeon && typeof mergedTop.dungeon === "object") player.dungeon = mergedTop.dungeon;
-  else if (player.dungeon) player.dungeon.active = false;
-
-  const entityTemplate = {
-    name: "Unit",
-    hp_curr: 0,
-    hp_max: 0,
-    mp_curr: 0,
-    mp_max: 0,
-    meters: [],
-    stats: { atk: 0, matk: 0, def: 0, satk: 0, sdef: 0 },
-    inventory: [],
-    skills: [],
-    passives: [],
-    masteries: [],
-    status_effects: [],
-    vehicle: null,
-    bond: 0,
-    dankcoin: 0,
-  };
-
-  const normList = (arr) => (Array.isArray(arr) ? arr : []).map((e) => normalizeEntity(e, entityTemplate));
-  player.party = normList(mergedTop.party);
-  player.enemies = normList(mergedTop.enemies);
-  player.npcs = normList(mergedTop.npcs);
-
-  return player;
-}
-
 function applyRpgState(nextState) {
   rpgState = nextState;
+}
+
+function parsePipeFormat(text) {
+  let newState = JSON.parse(JSON.stringify(defaultState));
+  newState.party = [];
+  newState.enemies = [];
+  newState.npcs = [];
+
+  let currentMode = "Global";
+  let currentEntity = newState; 
+
+  const lines = text.split('\n');
+
+  const getPipes = (line) => {
+    let data = {};
+    // Upgraded Regex: uses *? instead of +? so it successfully reads completely empty values like |INV:||
+    const matches = [...line.matchAll(/\|([^|:]+):\s*([^|]*?)(?=\||$)/g)];
+    matches.forEach(m => data[m[1].trim().toLowerCase()] = m[2].trim());
+    return data;
+  };
+
+  const splitNum = (str) => {
+    if (!str) return [0, 0];
+    const parts = str.split('/').map(s => parseFloat(s) || 0);
+    return [parts[0] ?? 0, parts[1] ?? 0];
+  };
+
+  const parseList = (str) => str ? str.split(';').map(s => s.trim()).filter(Boolean) : [];
+
+  for (let line of lines) {
+    line = line.trim();
+    if (!line) continue;
+
+    const headerMatch = line.match(/^\[(.*?)\]/);
+    if (headerMatch) {
+      // Fuzzy matching to prevent the "Bleed-over" bug if the AI makes a typo
+      const rawMode = headerMatch[1].toLowerCase();
+      if (rawMode.includes("player")) currentMode = "Player";
+      else if (rawMode.includes("party")) currentMode = "Party";
+      else if (rawMode.includes("enem")) currentMode = "Enemies";
+      else if (rawMode.includes("npc")) currentMode = "NPCs";
+      else currentMode = "Global";
+
+      if (currentMode === "Player") currentEntity = newState;
+      continue;
+    }
+
+    const isVehicle = line.startsWith('>');
+    let target = currentEntity; 
+    
+    if (isVehicle) {
+      if (!currentEntity.vehicle) currentEntity.vehicle = { active: true, stats: {}, inventory: [] };
+      currentEntity.vehicle.active = true;
+      target = currentEntity.vehicle;
+    }
+
+    const data = getPipes(line);
+    if (Object.keys(data).length === 0) continue; 
+
+    // 1. Group creation / Name mapping
+    if (!isVehicle && data.name && ["Party", "Enemies", "NPCs"].includes(currentMode)) {
+      const newEnt = { name: data.name, stats: {}, inventory: [], meters: [], skills: [], passives: [], masteries: [], status_effects: [] };
+      if (currentMode === "Party") newState.party.push(newEnt);
+      if (currentMode === "Enemies") newState.enemies.push(newEnt);
+      if (currentMode === "NPCs") newState.npcs.push(newEnt);
+      currentEntity = newEnt; 
+      target = currentEntity;
+    } else if (!isVehicle && data.name && currentMode === "Player") {
+      target.name = data.name;
+    }
+
+    // 2. Map Data safely checking against undefined so empty strings clear the data correctly
+    if (data.loc !== undefined) newState.location = data.loc;
+    if (data.time !== undefined) {
+      const tParts = data.time.split(',');
+      newState.world_time.month = (tParts[0] || "").split(' ')[0] || "Jan";
+      newState.world_time.day = parseInt((tParts[0] || "").split(' ')[1]) || 1;
+      newState.world_time.clock = (tParts[1] || "").trim() || "12:00";
+    }
+    if (data.combat !== undefined) {
+      if (data.combat.toLowerCase().includes('off')) {
+        newState.combat.active = false;
+        newState.combat.round = 1;
+      } else {
+        newState.combat.active = true;
+        newState.combat.round = parseInt(data.combat.replace(/[^0-9]/g, '')) || 1;
+      }
+    }
+
+    if (data.hp !== undefined) [target.hp_curr, target.hp_max] = splitNum(data.hp);
+    if (data.mp !== undefined) [target.mp_curr, target.mp_max] = splitNum(data.mp);
+    if (data.coin !== undefined) target.dankcoin = parseInt(data.coin) || 0;
+    if (data.bond !== undefined) target.bond = parseInt(data.bond) || 0;
+    if (data.type && isVehicle) target.type = data.type.toLowerCase();
+
+    if (data.inv !== undefined) target.inventory = parseList(data.inv);
+    if (data.skills !== undefined) target.skills = parseList(data.skills);
+    if (data.passives !== undefined) target.passives = parseList(data.passives);
+    if (data.masteries !== undefined) target.masteries = parseList(data.masteries);
+    if (data.quests !== undefined) newState.quests = parseList(data.quests);
+    if (data.env !== undefined) newState.env_effects = parseList(data.env);
+
+    // Failsafe: Catch Bond if the AI hides it inside Status
+    if (data.status !== undefined) {
+      let st = parseList(data.status);
+      const bondIdx = st.findIndex(s => s.toLowerCase().startsWith('bond:'));
+      if (bondIdx !== -1) {
+        target.bond = parseInt(st[bondIdx].split(':')[1]) || 0;
+        st.splice(bondIdx, 1);
+      }
+      target.status_effects = st;
+    }
+
+    if (data.stats !== undefined) {
+      if (!target.stats) target.stats = {};
+      const statParts = data.stats.split(',');
+      statParts.forEach(sp => {
+        const [sName, sVal] = sp.trim().split(':'); 
+        if (sName && sVal) target.stats[sName.toLowerCase().trim()] = sVal.trim();
+      });
+    }
+
+    if (data.meters !== undefined) {
+      target.meters = data.meters.split(';').map(mStr => {
+        const mParts = mStr.trim().split(':'); 
+        const name = mParts[0];
+        const [curr, max] = splitNum(mParts[1]);
+        return { name, curr, max };
+      }).filter(m => m.name);
+    }
+  }
+
+  return newState;
 }
 
 const checkMessage = async (manual = false) => {
@@ -2784,143 +2079,27 @@ const checkMessage = async (manual = false) => {
   renderRPG();
 
   const rawBlock = findLatestRpgBlock(chat);
-  console.log("RPG HUD: lastRpgMsgIndex =", lastRpgMsgIndex);
-  console.log("RPG HUD: msg.is_user =", chat[lastRpgMsgIndex]?.is_user);
-  console.log("RPG HUD: msg preview =", (chat[lastRpgMsgIndex]?.mes || "").slice(0, 220));
-  console.log("RPG HUD: rawBlock preview =", String(rawBlock).slice(0, 220));
   if (!rawBlock) {
     if (manual) console.warn("RPG HUD: no <rpg_state> block found in recent messages");
     return;
   }
 
-  // 1) try parse as-is
-  let jsonText = sanitizeJsonText(rawBlock);
   try {
-    const parsed = JSON.parse(jsonText);
+    let cleanText = rawBlock.replace(/```[a-z]*\n?/g, "").replace(/```/g, "").trim();
 
-    const normalized = normalizeFullState(parsed);
-    applyRpgState(normalized);
+    const parsedState = parsePipeFormat(cleanText);
+
+    applyRpgState(parsedState);
     renderRPG();
 
-  // Only rewrite on manual scan (not every auto scan)
-  if (manual) {
-    const ok = writeStateBackToChatMessage(rpgState);
-    if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after manual scan");
-  }
-  return;
-} catch (e1) {
-  setHudError({
-    kind: "parse",
-    message: String(e1?.message || e1),
-    detail: e1?.stack ? String(e1.stack) : "",
-    snippet: "",
-    caret: "",
-  });
-
-  // continue to repair attempt
-  if (manual) console.log("RPG HUD: Initial parse failed, attempting repair...");
-}
-
-
-// 2) repair then parse
-try {
-  jsonText = repairJsonText(rawBlock);
-
-  // ✅ DEBUG: show the repaired text near where it breaks
-if (manual) {
-  const inv = jsonText.indexOf('"inventory"');
-  if (inv !== -1) console.warn("RPG HUD: repaired around inventory:", jsonText.slice(inv, inv + 220));
-
-  const wt = jsonText.indexOf('"world_time"');
-  if (wt !== -1) console.warn("RPG HUD: repaired world_time:", jsonText.slice(Math.max(0, wt - 40), wt + 200));
-
-  const dayDebug = jsonText.indexOf('"day"');
-  if (dayDebug !== -1) console.warn("RPG HUD: repaired day area:", jsonText.slice(Math.max(0, dayDebug - 50), dayDebug + 200));
-}
-
-
-  const parsed2 = JSON.parse(jsonText);
-
-  const normalized2 = normalizeFullState(parsed2);
-  applyRpgState(normalized2);
-  renderRPG();
-
-  if (manual || AUTO_REWRITE_ON_REPAIR) {
-    const ok = writeStateBackToChatMessage(rpgState);
-    if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after repair");
-  }
-} catch (e2) {
-  const msg = String(e2?.message || e2);
-  const pos = extractJsonErrorPos(e2, jsonText);
-
-  let snippet = "";
-  let caret = "";
-  let caret2 = "";
-
-  // ✅ declare OUTSIDE the try so setHudError can see them
-  let caretAt = null;
-  let caretAt2 = null;
-
-  try {
-    if (Number.isFinite(pos)) {
-      const out = makeCaretSnippet(jsonText, pos, 200);
-      snippet = out.slice;
-      caret = out.caretLine;
-      caretAt = out.caretAt;
-
-      const guess = guessLikelyJsonErrorPos(jsonText, pos, msg);
-      if (Number.isFinite(guess) && guess !== pos) {
-        const out2 = makeCaretSnippet(jsonText, guess, 200);
-        if (out2.slice === snippet) {
-          caret2 = out2.caretLine;
-          caretAt2 = out2.caretAt;
-        }
-      }
-    } else {
-      const t = String(jsonText || "");
-
-      // Try message-based candidate scan first (more reliable than guessing near the end)
-      const cands = findLikelyJsonErrorCandidates(t, msg);
-
-      const idx =
-        (cands && cands.length ? cands[0].idx : null) ??
-        findMissingColonCandidate(t);
-
-      if (Number.isFinite(idx)) {
-        const out = makeCaretSnippet(t, idx, 200);
-        snippet = out.slice;
-        caretAt = out.caretAt;
-        caret = out.caretLine;
-      } else {
-        // final fallback: show the end (no caret)
-        const tailLen = 500;
-        snippet = t.slice(Math.max(0, t.length - tailLen));
-        caretAt = null;
-        caret = "";
-      }
+    if (manual) {
+      const ok = writeStateBackToChatMessage(rpgState);
+      if (!ok) console.warn("RPG HUD: couldn't write back after manual scan");
     }
-
-
-  } catch (snipErr) {
-    snippet = "(snippet generation failed) " + String(snipErr?.message || snipErr);
+  } catch (err) {
+    console.error("RPG HUD Parse Error:", err);
+    if (manual && window.toastr) window.toastr.error("Pipe Parser failed to read the block.");
   }
-
-  setHudError({
-    kind: "parse",
-    message: msg,
-    detail: e2?.stack ? String(e2.stack) : "",
-    snippet,
-    caret,
-    caret2,
-    caretAt,
-    caretAt2,
-  });
-
-  if (manual) {
-    console.error("RPG HUD Parse Error", e2);
-    if (snippet) console.warn("RPG HUD: JSON around error:", snippet);
-  }
-}
 };
 
 
@@ -2944,20 +2123,16 @@ import { eventSource, event_types } from '../../../../script.js';
 
 // --- PROMPT INJECTION (Toggleable Interceptor) ---
 eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, (payload) => {
-    if (!autoInjectState) return;
-    if (!rpgState || Object.keys(rpgState).length === 0) return;
+    if (!autoInjectState || !rpgState || Object.keys(rpgState).length === 0) return;
 
-    const exportObj = exportStateForChat(rpgState);
-    const json = JSON.stringify(exportObj);
+    const pipeString = buildPipeString(rpgState);
 
-    // Clearer instruction — avoids "MUST" language that can sometimes make models over-correct
-    const injection = `\n\n[System Note: Current RPG state for reference: <rpg_state>${json}</rpg_state>. Update values as needed based on the interaction and include the new <rpg_state> tag at the end of your response.]`;
+    const injection = `\n\n[System Note: Current RPG state for reference:\n${pipeString}\nUpdate values as needed based on the interaction and include the new <rpg_state> block at the end of your response.]`;
 
     payload.prompt += injection;
-    console.log("RPG HUD: Auto-inject applied (toggle ON)");
+    console.log("RPG HUD: Auto-inject applied (Pipe Format)");
 });
 
-// Listen for toggle changes (already good, but add debug)
 $(document).on('change', '#rpg-settings-autoinject', function() {
     autoInjectState = this.checked;
     if (window.toastr) {
@@ -2969,12 +2144,11 @@ $(document).on('change', '#rpg-settings-autoinject', function() {
 // --- 8. BOOT ---
 jQuery(() => {
   console.log("RPG HUD: boot start ✅");
-  // Make toasts stay until dismissed (sticky)
   try {
     if (window.toastr) {
       window.toastr.options = {
         ...window.toastr.options,
-        timeOut: 0,             // 0 = never auto-close
+        timeOut: 0,              
         extendedTimeOut: 0,
         tapToDismiss: true,
         closeButton: true,
@@ -2985,7 +2159,6 @@ jQuery(() => {
     }
   } catch {}
 
-  // Try to stabilize scrollbar gutter to avoid page-level right-edge shifts (best-effort)
   try {
     document.documentElement.style.scrollbarGutter = "stable";
   } catch {}
@@ -3006,7 +2179,7 @@ jQuery(() => {
 
   setTimeout(() => {
     Promise.resolve(checkMessage(true)).finally(() => {
-      hudToastArmed = true; // ✅ allow notag toast after initial boot scan
+      hudToastArmed = true; 
     });
   }, 300);
 
