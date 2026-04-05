@@ -701,7 +701,7 @@ function renderMiniUnitBars(list, options = {}) {
     titleColor = "#C0A040",
     barHpColor = "#4caf50",
     barMpColor = "#1976d2",
-    emptyText = "None",
+    emptyText = "",
     jumpType = null, 
   } = options;
 
@@ -881,8 +881,8 @@ function buildPipeString(stateObj) {
   let lines = ["[Global]"];
   lines.push(`|Loc:${stateObj.location || "Unknown"}||Time:${stateObj.world_time?.month} ${stateObj.world_time?.day},${stateObj.world_time?.clock}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
   
-  // If an array is empty, output "None" to match the prompt template perfectly
-  const safeJoin = (arr) => Array.isArray(arr) && arr.length ? arr.map(i => typeof i === 'object' ? i.name : i).join(";") : "None";
+  // If an array is empty, output "" to match the prompt template perfectly
+  const safeJoin = (arr) => Array.isArray(arr) && arr.length ? arr.map(i => typeof i === 'object' ? i.name : i).join(";") : "";
   
   const quests = safeJoin(stateObj.quests);
   const env = safeJoin(stateObj.env_effects);
