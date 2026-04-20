@@ -202,24 +202,45 @@ function findBestPipeErrorPosition(line) {
   const pipes = [...s.matchAll(/\|/g)].map(m => m.index ?? 0);
   if (!pipes.length) return 0;
 
+  // 1) triple-pipe: middle pipe is usually the accidental one
   const triple = s.indexOf("|||");
   if (triple !== -1) return triple + 1;
 
+  // 2) direct stray-pipe patterns inside text:
+  //    x| x
+  //    x |x
+  //    x|x
   for (let i = 0; i < pipes.length; i++) {
     const p = pipes[i];
-    const after = s.slice(p + 1);
-    const trimmedOffset = after.match(/^\s*/)?.[0]?.length ?? 0;
-    const next = after.slice(trimmedOffset);
+    const left = s[p - 1] ?? "";
+    const right = s[p + 1] ?? "";
+    const right2 = s[p + 2] ?? "";
 
-    if (next.startsWith("|")) return p;
+    const leftLooksText = /\S/.test(left) && left !== "|";
+    const rightLooksText = /\S/.test(right) && right !== "|";
 
-    if (!/^[A-Za-z][A-Za-z0-9_ ]*\s*:/.test(next)) {
-      return p;
+    // x|x
+    if (leftLooksText && rightLooksText) return p;
+
+    // x| x
+    if (leftLooksText && right === " " && /\S/.test(right2) && right2 !== "|") return p;
+
+    // x |x
+    if (left === " " && p >= 2) {
+      const left2 = s[p - 2] ?? "";
+      if (/\S/.test(left2) && left2 !== "|" && rightLooksText) return p;
     }
   }
 
-  if (pipes.length % 2 !== 0) return pipes[pipes.length - 1];
+  // 3) unmatched-pipe fallback:
+  // walk pipe pairs and return first opener that never closes
+  for (let i = 0; i < pipes.length; i += 2) {
+    const start = pipes[i];
+    const end = pipes[i + 1];
+    if (end === undefined) return start;
+  }
 
+  // 4) final fallback
   return pipes[pipes.length - 1];
 }
 
@@ -509,6 +530,13 @@ function getLatestRpgValidity(chat) {
   const pipePositions = [...line.matchAll(/\|/g)].map(m => m.index ?? 0);
   if (pipePositions.length > 0 && pipePositions.length % 2 !== 0) {
     const badPipePos = findBestPipeErrorPosition(line);
+    
+    console.log("RPG HUD odd-pipe debug", {
+      line,
+      badPipePos,
+      marked: line.slice(0, badPipePos) + "⟦|⟧" + line.slice(badPipePos + 1)
+    });
+    
     lastPipeError = makePipeError(i + 1, badPipePos, "Odd number of pipes found.", line);
     return {
       status: "invalid",
