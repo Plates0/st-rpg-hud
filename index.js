@@ -2369,7 +2369,7 @@ function parsePipeFormat(text) {
       target = currentEntity.vehicle;
     }
 
-    const data = getPipes(safeLine);
+    const data = getPipes(line);
     if (Object.keys(data).length === 0) continue; 
 
     // 1. Group creation / Name mapping
