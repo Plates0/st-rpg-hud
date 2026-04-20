@@ -92,7 +92,7 @@ const defaultState = {
   dankcoin: 0,
 
   location: "Unknown",
-  world_time: { month: "Jan", day: 1, clock: "12:00" },
+  world_time: { month: "Jan", day: 1, clock: "12:00", weather: "Unknown" },
 
   combat: { active: false, round: 1 },
 
@@ -1185,7 +1185,7 @@ function writeStateBackToChatMessage(stateObj) {
 
 function buildPipeString(stateObj) {
   let lines = ["[Global]"];
-  lines.push(`|Loc:${safePipeText(stateObj.location || "Unknown")}||Time:${safePipeText(stateObj.world_time?.month)} ${stateObj.world_time?.day},${safePipeText(stateObj.world_time?.clock)}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
+  lines.push(`|Loc:${safePipeText(stateObj.location || "Unknown")}||Time:${safePipeText(stateObj.world_time?.month)} ${stateObj.world_time?.day},${safePipeText(stateObj.world_time?.clock)}||Weather:${safePipeText(stateObj.world_time?.weather || "Unknown")}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
   
   // If an array is empty, output "" to match the prompt template perfectly
   const safeJoin = (arr) =>
@@ -1460,6 +1460,7 @@ function saveEditor() {
     rpgState.world_time.month = getStr("edit-month");
     rpgState.world_time.day = getVal("edit-day");
     rpgState.world_time.clock = getStr("edit-clock");
+    rpgState.world_time.weather = getStr("edit-weather");
     rpgState.quests = getList("edit-quests");
     rpgState.env_effects = getList("edit-env");
   }
@@ -1776,9 +1777,13 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
       <div style="background:rgba(255,255,255,0.05); padding:5px; border-radius:4px; margin-bottom:5px; font-size:0.85em; text-align:center;">
         <div style="color:#fff; font-weight:bold;">📍 ${escHtml(rpgState.location)}</div>
-        <div style="color:#aaa; font-size:0.9em;">📅 ${escHtml(time.month)} ${escHtml(time.day)} &nbsp;|&nbsp; ⏰ ${escHtml(
-          time.clock
-        )}</div>
+        <div style="color:#aaa; font-size:0.9em;">
+          📅 ${escHtml(time.month)} ${escHtml(time.day)}
+          &nbsp;|&nbsp;
+          ⏰ ${escHtml(time.clock)}
+          &nbsp;|&nbsp;
+          🌤️ ${escHtml(time.weather || "Unknown")}
+        </div>
         ${combatLine}
       </div>
 
@@ -2099,7 +2104,7 @@ const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(displ
         style="flex:1; background:#222; border:1px solid #555; color:white;"> 📍
     </div>
 
-    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:6px; margin-bottom:10px;">
+    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:6px; margin-bottom:10px;">
       <div>
         <div style="${labelStyle()}">Month</div>
         <input id="edit-month" type="text" value="${escAttr(rpgState.world_time?.month ?? "Jan")}"
@@ -2113,6 +2118,11 @@ const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(displ
       <div>
         <div style="${labelStyle()}">Clock</div>
         <input id="edit-clock" type="text" value="${escAttr(rpgState.world_time?.clock ?? "12:00")}"
+          style="width:100%; background:#222; border:1px solid #555; color:white;">
+      </div>
+      <div>
+        <div style="${labelStyle()}">Weather</div>
+        <input id="edit-weather" type="text" value="${escAttr(rpgState.world_time?.weather ?? "Unknown")}"
           style="width:100%; background:#222; border:1px solid #555; color:white;">
       </div>
     </div>
@@ -2359,7 +2369,6 @@ function parsePipeFormat(text) {
       target = currentEntity.vehicle;
     }
 
-    const safeLine = sanitizeBrokenPipeLine(line);
     const data = getPipes(safeLine);
     if (Object.keys(data).length === 0) continue; 
 
@@ -2383,6 +2392,9 @@ function parsePipeFormat(text) {
       newState.world_time.day = parseInt((tParts[0] || "").split(' ')[1]) || 1;
       newState.world_time.clock = (tParts[1] || "").trim() || "12:00";
     }
+    if (data.weather !== undefined) {
+    newState.world_time.weather = data.weather || "Unknown";
+  }
     if (data.combat !== undefined) {
       if (data.combat.toLowerCase().includes('off')) {
         newState.combat.active = false;
