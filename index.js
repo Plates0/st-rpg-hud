@@ -197,6 +197,34 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+function findBestPipeErrorPosition(line) {
+  const s = String(line ?? "");
+
+  // Case 1: triple pipe -> middle pipe is usually the accidental extra one
+  const triple = s.indexOf("|||");
+  if (triple !== -1) return triple + 1;
+
+  // Case 2: quadruple+ pipes -> point at the first suspicious extra pipe
+  const multi = s.match(/\|{3,}/);
+  if (multi && multi.index !== undefined) return multi.index + 1;
+
+  // Fallback: unmatched pipe logic
+  const positions = [...s.matchAll(/\|/g)].map(m => m.index ?? 0);
+  if (positions.length === 0) return 0;
+  if (positions.length % 2 === 0) return positions[positions.length - 1] ?? 0;
+
+  for (let i = 0; i < positions.length; i += 2) {
+    const start = positions[i];
+    const end = positions[i + 1];
+    if (end === undefined) return start;
+
+    const segment = s.slice(start + 1, end);
+    if (!segment.includes(":")) return start;
+  }
+
+  return positions[positions.length - 1] ?? 0;
+}
+
 function findUnmatchedPipePosition(line) {
   const positions = [...String(line).matchAll(/\|/g)].map(m => m.index ?? 0);
   if (positions.length % 2 === 0) return positions[positions.length - 1] ?? 0;
@@ -480,7 +508,7 @@ function getLatestRpgValidity(chat) {
 
     const pipePositions = [...t.matchAll(/\|/g)].map(m => m.index ?? 0);
     if (pipePositions.length > 0 && pipePositions.length % 2 !== 0) {
-      const badPipePos = findUnmatchedPipePosition(t);
+      const badPipePos = findBestPipeErrorPosition(t);
       lastPipeError = makePipeError(i + 1, badPipePos, "Odd number of pipes found.", t);
       return {
         status: "invalid",
