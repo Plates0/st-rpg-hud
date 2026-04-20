@@ -1448,7 +1448,7 @@ function saveEditor() {
   const energyCurrVal = getMixed("edit-mp-curr");
   const energyMaxVal  = getMixed("edit-mp-max");
   
-  if (isVehicle && display.type === "ship") {
+  if (isVehicle && (display.type === "ship" || display.type === "car")) {
     display.en_curr = energyCurrVal;
     display.en_max  = energyMaxVal;
     delete display.mp_curr;
