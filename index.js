@@ -1258,7 +1258,7 @@ function buildPipeString(stateObj) {
         : `||Meters:`;
   
     block.push(
-      `>Vehicle|Type:${safePipeText(v.type || "Mecha")}||Name:${safePipeText(v.name || "Vehicle")}||HP:${v.hp_curr ?? 0}/${v.hp_max ?? 0}${energyPipe}||Stats:${formatStats(v.stats)}${metersPipe}||INV:${safeJoin(v.inventory)}||Skills:${safeJoin(v.skills)}||Passives:${safeJoin(v.passives)}||Masteries:${safeJoin(v.masteries)}||Status:${safeJoin(v.status_effects)}|`
+      `>Vehicle|Type:${safePipeText(v.type || "Mecha")}||Name:${safePipeText(v.name || "Vehicle")}||HP:${v.hp_curr ?? 0}/${v.hp_max ?? 0}${energyPipe}||Stats:${formatStats(v.stats)}${metersPipe}||INV:${safeJoin(v.inventory)}||Skills:${safeJoin(v.skills)}||Passives:${safeJoin(v.passives)}||Status:${safeJoin(v.status_effects)}|`
     );
   }
     return block;
