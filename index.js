@@ -11,6 +11,20 @@ window.__rpgHudLoaded = true;
 // =====================================================
 
 // --- 0. XSS SAFETY HELPERS ---
+function getWeatherEmoji(weather) {
+  const w = String(weather || "").toLowerCase();
+
+  if (w.includes("blizzard") || w.includes("snow") || w.includes("sleet") || w.includes("hail")) return "❄️";
+  if (w.includes("thunder") || w.includes("storm") || w.includes("lightning")) return "⛈️";
+  if (w.includes("rain") || w.includes("drizzle") || w.includes("shower") || w.includes("rainy")) return "🌧️";
+  if (w.includes("fog") || w.includes("mist") || w.includes("foggy")) return "🌫️";
+  if (w.includes("cloud") || w.includes("overcast") || w.includes("cloudy")) return "⛅️";
+  if (w.includes("sun") || w.includes("clear") || w.includes("sunny")) return "☀️";
+  if (w.includes("wind") || w.includes("windy")) return "💨";
+
+  return "🌤️";
+}
+
 function escHtml(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
@@ -1782,7 +1796,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           &nbsp;|&nbsp;
           ⏰ ${escHtml(time.clock)}
           &nbsp;|&nbsp;
-          🌤️ ${escHtml(time.weather || "Unknown")}
+          ${getWeatherEmoji(time.weather)} ${escHtml(time.weather || "Unknown")}
         </div>
         ${combatLine}
       </div>
