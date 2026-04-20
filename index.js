@@ -2488,7 +2488,6 @@ function parsePipeFormat(text) {
     if (data.inv !== undefined) target.inventory = parseList(data.inv);
     if (data.skills !== undefined) target.skills = parseList(data.skills);
     if (data.passives !== undefined) target.passives = parseList(data.passives);
-    if (data.masteries !== undefined) target.masteries = parseList(data.masteries);
     if (data.quests !== undefined) newState.quests = parseList(data.quests);
     if (data.env !== undefined) newState.env_effects = parseList(data.env);
 
