@@ -196,6 +196,88 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+function openPipeErrorModal() {
+  const existing = document.getElementById("rpg-pipe-error-modal");
+  if (existing) existing.remove();
+
+  const detail =
+    lastPipeError?.message
+      ? `Line ${lastPipeError.line ?? "?"}, Char ${lastPipeError.char ?? "?"}\n\n${lastPipeError.snippet || ""}\n${pipeCaretLine(lastPipeError.char || 0)}\n${lastPipeError.message}`
+      : "No detailed pipe error is stored.";
+
+  const modal = document.createElement("div");
+  modal.id = "rpg-pipe-error-modal";
+  modal.style.cssText = `
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.72);
+    z-index: 300000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    box-sizing: border-box;
+  `;
+
+  modal.innerHTML = `
+    <div style="
+      width: min(720px, 100%);
+      max-height: 80vh;
+      background: rgba(15,15,20,0.98);
+      border: 2px solid #C0A040;
+      box-shadow: 0 0 18px rgba(0,0,0,0.6);
+      color: #E0E0E0;
+      font-family: ${escAttr(uiSettings.fontFamily || "'Courier New', Courier, monospace")};
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    ">
+      <div style="
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        padding:10px 12px;
+        border-bottom:1px solid #333;
+        background: rgba(255,255,255,0.04);
+      ">
+        <div style="font-weight:bold; color:#f1c40f;">🟡 Pipe Format Error</div>
+        <button id="rpg-pipe-error-close" style="
+          background:#444;
+          border:1px solid #777;
+          color:#fff;
+          cursor:pointer;
+          padding:4px 10px;
+          font-weight:bold;
+        ">Close</button>
+      </div>
+
+      <div style="
+        padding:12px;
+        overflow:auto;
+        font-size:0.9em;
+        line-height:1.4;
+      ">
+        <pre style="
+          margin:0;
+          white-space:pre-wrap;
+          word-break:break-word;
+          color:#ddd;
+        ">${escHtml(detail)}</pre>
+      </div>
+    </div>
+  `;
+
+  modal.onclick = (e) => {
+    if (e.target === modal) modal.remove();
+  };
+
+  document.body.appendChild(modal);
+
+  const closeBtn = document.getElementById("rpg-pipe-error-close");
+  if (closeBtn) closeBtn.onclick = () => modal.remove();
+}
+
 function makePipeError(lineNum, charPos, message, lineText) {
   return {
     line: lineNum,
@@ -1688,29 +1770,23 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       indicator.onclick = (e) => {
         e.stopPropagation();
     
-        if (latest.status === "valid") {
-          if (window.toastr) window.toastr.success("Latest <rpg_state> looks valid.");
-          else alert("Latest <rpg_state> looks valid.");
+        if (latest.status === "invalid") {
+          openPipeErrorModal();
           return;
         }
     
         if (latest.status === "notag") {
-          if (window.toastr) window.toastr.info("No <rpg_state> found in the latest AI message.");
-          else alert("No <rpg_state> found in the latest AI message.");
+          alert("No <rpg_state> found in the latest AI message.");
           return;
         }
     
         if (latest.status === "user") {
-          if (window.toastr) window.toastr.warning("The latest message is from the user, not the AI.");
-          else alert("The latest message is from the user, not the AI.");
+          alert("The latest message is from the user, not the AI.");
           return;
         }
     
-        const detail = latest.detail || "Unknown pipe formatting issue.";
-        if (window.toastr) {
-          window.toastr.warning(`<pre style="white-space:pre-wrap; margin:0;">${escHtml(detail)}</pre>`);
-        } else {
-          alert(detail);
+        if (latest.status === "valid") {
+          alert("Latest <rpg_state> looks valid.");
         }
       };
     }
