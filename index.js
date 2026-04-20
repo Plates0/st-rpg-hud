@@ -197,6 +197,24 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+function findUnmatchedPipePosition(line) {
+  const positions = [...String(line).matchAll(/\|/g)].map(m => m.index ?? 0);
+  if (positions.length % 2 === 0) return positions[positions.length - 1] ?? 0;
+
+  for (let i = 0; i < positions.length; i += 2) {
+    const start = positions[i];
+    const end = positions[i + 1];
+
+    if (end === undefined) return start;
+
+    const segment = line.slice(start + 1, end);
+
+    if (!segment.includes(":")) return start;
+  }
+
+  return positions[positions.length - 1] ?? 0;
+}
+
 function charNumToScroll(charPos) {
   const ch = Math.max(0, Number(charPos ?? 0));
   return Math.max(0, (ch - 8) * 8);
@@ -460,14 +478,14 @@ function getLatestRpgValidity(chat) {
     const t = originalLine.trim();
     if (!t) continue;
 
-    const pipeCount = (t.match(/\|/g) || []).length;
-    if (pipeCount > 0 && pipeCount % 2 !== 0) {
-      const lastPipe = t.lastIndexOf("|");
-      lastPipeError = makePipeError(i + 1, lastPipe >= 0 ? lastPipe : 0, "Odd number of pipes found.", t);
+    const pipePositions = [...t.matchAll(/\|/g)].map(m => m.index ?? 0);
+    if (pipePositions.length > 0 && pipePositions.length % 2 !== 0) {
+      const badPipePos = findUnmatchedPipePosition(t);
+      lastPipeError = makePipeError(i + 1, badPipePos, "Odd number of pipes found.", t);
       return {
         status: "invalid",
         label: "Format Warning",
-        detail: `Line ${i + 1}\n${t}\n${pipeCaretLine(lastPipe >= 0 ? lastPipe : 0)}\nOdd number of pipes found.`,
+        detail: `Line ${i + 1}\n${t}\n${pipeCaretLine(badPipePos)}\nOdd number of pipes found.`,
       };
     }
 
