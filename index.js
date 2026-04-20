@@ -2421,7 +2421,7 @@ function parsePipeFormat(text) {
 
     // 1. Group creation / Name mapping
     if (!isVehicle && data.name && ["Party", "Enemies", "NPCs"].includes(currentMode)) {
-      const newEnt = { name: data.name, stats: {}, inventory: [], meters: [], skills: [], passives: [], masteries: [], status_effects: [] };
+      const newEnt = { name: data.name, stats: {}, inventory: [], meters: [], skills: [], passives: [], status_effects: [] };
       if (currentMode === "Party") newState.party.push(newEnt);
       if (currentMode === "Enemies") newState.enemies.push(newEnt);
       if (currentMode === "NPCs") newState.npcs.push(newEnt);
