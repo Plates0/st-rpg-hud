@@ -1663,7 +1663,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
     const coin = toNumberOr(display.dankcoin ?? root.dankcoin ?? 0, 0);
 
-    const time = rpgState.world_time || { month: "???", day: 0, clock: "??:??" };
+    const time = rpgState.world_time || { month: "???", day: 0, clock: "??:??", weather: "Unknown" };
     const selectStyle = `background: transparent; border: none; color: ${headerColor}; font-weight: bold; font-size: 1em; cursor: pointer; outline: none; max-width: 170px; font-family:${FONT_FAMILY};`;
     const tabStyle = (name) =>
       `flex:0 0 auto; min-width:56px; text-align:center; cursor:pointer; padding:5px 8px; font-size:0.8em; border-radius:3px; user-select:none; ` +
