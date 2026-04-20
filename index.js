@@ -197,6 +197,11 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+function charNumToScroll(charPos) {
+  const ch = Math.max(0, Number(charPos ?? 0));
+  return Math.max(0, (ch - 8) * 8);
+}
+
 function openPipeErrorPanel(e) {
   if (e) e.stopPropagation();
   isErrorOpen = true;
@@ -216,8 +221,8 @@ function buildPipeErrorPanelHtml() {
   const snippet = String(lastPipeError?.snippet || "");
   const message = String(lastPipeError?.message || "No detailed pipe error is stored.");
 
-  const caretLine = pipeCaretLine(Math.max(0, charNum));
   const displaySnippet = snippet || "(no line captured)";
+  const caretLine = pipeCaretLine(charNum);
 
   return `
     <div id="rpg-error-overlay" style="
@@ -266,21 +271,38 @@ function buildPipeErrorPanelHtml() {
         background:rgba(255,255,255,0.04);
         border:1px solid #333;
         padding:8px;
-        overflow:hidden;
-        min-height:84px;
-        max-height:110px;
       ">
-        <div style="
+        <div id="rpg-error-scroll" style="
           overflow-x:auto;
           overflow-y:hidden;
-          white-space:nowrap;
-          font-size:0.8em;
-          line-height:1.45;
-          font-family:${uiSettings.fontFamily || "'Courier New', Courier, monospace"};
-          color:#ddd;
+          -webkit-overflow-scrolling: touch;
+          touch-action: pan-x;
+          white-space:normal;
+          min-height:72px;
+          max-height:96px;
         ">
-          <div style="display:inline-block; min-width:max-content;">${escHtml(displaySnippet)}</div>
-          <div style="display:inline-block; min-width:max-content; color:#f1c40f;">${escHtml(caretLine)}</div>
+          <div style="
+            display:block;
+            width:max-content;
+            min-width:100%;
+            white-space:pre;
+            font-size:0.82em;
+            line-height:1.45;
+            font-family:${uiSettings.fontFamily || "'Courier New', Courier, monospace"};
+            color:#ddd;
+          ">${escHtml(displaySnippet)}</div>
+
+          <div style="
+            display:block;
+            width:max-content;
+            min-width:100%;
+            white-space:pre;
+            font-size:0.82em;
+            line-height:1.45;
+            font-family:${uiSettings.fontFamily || "'Courier New', Courier, monospace"};
+            color:#f1c40f;
+            margin-top:2px;
+          ">${escHtml(caretLine)}</div>
         </div>
       </div>
 
@@ -1786,6 +1808,14 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     bind("rpg-min-btn", toggleMinimize);
     bind("rpg-settings-btn", toggleSettings);
     bind("rpg-error-close", closePipeErrorPanel);
+    
+    const errorScroll = document.getElementById("rpg-error-scroll");
+    if (errorScroll && isErrorOpen) {
+      requestAnimationFrame(() => {
+        const target = Math.max(0, charNumToScroll(lastPipeError?.char));
+        errorScroll.scrollLeft = target;
+      });
+    }
     
     const errorOverlay = document.getElementById("rpg-error-overlay");
     if (errorOverlay) errorOverlay.onclick = (e) => e.stopPropagation();
