@@ -1244,29 +1244,23 @@ function buildPipeString(stateObj) {
     block.push(`|INV:${safeJoin(ent.inventory)}||Skills:${safeJoin(ent.skills)}||Passives:${safeJoin(ent.passives)}||Masteries:${safeJoin(ent.masteries)}||Status:${safeJoin(ent.status_effects)}|`);
     
     if (ent.vehicle && ent.vehicle.active) {
-      const v = ent.vehicle;
-      const vType = String(v.type || "Mecha").toLowerCase();
-    
-      const energyPipe =
-        (vType === "car" || vType === "ship")
-          ? `||EN:${v.en_curr ?? v.mp_curr ?? 0}/${v.en_max ?? v.mp_max ?? 0}`
-          : `||MP:${v.mp_curr ?? v.en_curr ?? 0}/${v.mp_max ?? v.en_max ?? 0}`;
-    
-      block.push(
-        `>Vehicle|Type:${safePipeText(v.type || "Mecha")}||Name:${safePipeText(v.name || "Vehicle")}||HP:${v.hp_curr ?? 0}/${v.hp_max ?? 0}${energyPipe}|`
-      );
-    
-      block.push(`>Vehicle|Stats:${formatStats(v.stats)}|`);
-    
-      const vMeters = formatMeters(v.meters);
-      if (vMeters) {
-        block.push(`>Vehicle${vMeters}`);
-      }
-    
-      block.push(
-        `>Vehicle|INV:${safeJoin(v.inventory)}||Skills:${safeJoin(v.skills)}||Passives:${safeJoin(v.passives)}||Masteries:${safeJoin(v.masteries)}||Status:${safeJoin(v.status_effects)}|`
-      );
-    }
+    const v = ent.vehicle;
+    const vType = String(v.type || "Mecha").toLowerCase();
+  
+    const energyPipe =
+      (vType === "car" || vType === "ship")
+        ? `||EN:${v.en_curr ?? v.mp_curr ?? 0}/${v.en_max ?? v.mp_max ?? 0}`
+        : `||MP:${v.mp_curr ?? v.en_curr ?? 0}/${v.mp_max ?? v.en_max ?? 0}`;
+  
+    const metersPipe =
+      Array.isArray(v.meters) && v.meters.length
+        ? `||Meters:${v.meters.map(x => `${safePipeText(x.name)}:${x.curr}/${x.max}`).join(";")}`
+        : `||Meters:`;
+  
+    block.push(
+      `>Vehicle|Type:${safePipeText(v.type || "Mecha")}||Name:${safePipeText(v.name || "Vehicle")}||HP:${v.hp_curr ?? 0}/${v.hp_max ?? 0}${energyPipe}||Stats:${formatStats(v.stats)}${metersPipe}||INV:${safeJoin(v.inventory)}||Skills:${safeJoin(v.skills)}||Passives:${safeJoin(v.passives)}||Masteries:${safeJoin(v.masteries)}||Status:${safeJoin(v.status_effects)}|`
+    );
+  }
     return block;
   };
 
@@ -2459,38 +2453,34 @@ function parsePipeFormat(text) {
     }
 
     const vehicleType = String(target?.type || "").toLowerCase();
-  const prefersEn = isVehicle && (vehicleType === "car" || vehicleType === "ship");
-  const prefersMp = !isVehicle || vehicleType === "mecha" || vehicleType === "transport";
-  
-  if (data.hp !== undefined) {
-    [target.hp_curr, target.hp_max] = splitNum(data.hp);
-  }
-  
-  if (prefersEn) {
-    if (data.en !== undefined) {
-      [target.en_curr, target.en_max] = splitNum(data.en);
-    } else if (data.mp !== undefined) {
-      // fallback so old vehicle blocks still load
-      [target.en_curr, target.en_max] = splitNum(data.mp);
+    const prefersEn = isVehicle && (vehicleType === "car" || vehicleType === "ship");
+    const prefersMp = !isVehicle || vehicleType === "mecha" || vehicleType === "transport";
+    
+    if (data.hp !== undefined) {
+      [target.hp_curr, target.hp_max] = splitNum(data.hp);
     }
-  
-    // optional mirror for compatibility with old HUD logic
-    target.mp_curr = target.en_curr ?? 0;
-    target.mp_max = target.en_max ?? 0;
-  } else if (prefersMp) {
-    if (data.mp !== undefined) {
-      [target.mp_curr, target.mp_max] = splitNum(data.mp);
-    } else if (data.en !== undefined) {
-      // fallback if model outputs EN anyway
-      [target.mp_curr, target.mp_max] = splitNum(data.en);
+    
+    if (prefersEn) {
+      if (data.en !== undefined) {
+        [target.en_curr, target.en_max] = splitNum(data.en);
+      } else if (data.mp !== undefined) {
+        [target.en_curr, target.en_max] = splitNum(data.mp);
+      }
+    
+      target.mp_curr = target.en_curr ?? 0;
+      target.mp_max = target.en_max ?? 0;
+    } else if (prefersMp) {
+      if (data.mp !== undefined) {
+        [target.mp_curr, target.mp_max] = splitNum(data.mp);
+      } else if (data.en !== undefined) {
+        [target.mp_curr, target.mp_max] = splitNum(data.en);
+      }
+    
+      if (isVehicle) {
+        target.en_curr = target.mp_curr ?? 0;
+        target.en_max = target.mp_max ?? 0;
+      }
     }
-  
-    // keep EN mirrored for compatibility if you want
-    if (isVehicle) {
-      target.en_curr = target.mp_curr ?? 0;
-      target.en_max = target.mp_max ?? 0;
-    }
-  }
     if (data.coin !== undefined) target.dankcoin = parseInt(data.coin) || 0;
     if (data.bond !== undefined) target.bond = parseInt(data.bond) || 0;
     if (data.type && isVehicle) target.type = data.type.toLowerCase();
