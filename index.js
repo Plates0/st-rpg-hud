@@ -1682,6 +1682,38 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       if (e) e.stopPropagation();
       checkMessage(true);
     });
+    
+    const indicator = document.getElementById("rpg-latest-indicator");
+    if (indicator) {
+      indicator.onclick = (e) => {
+        e.stopPropagation();
+    
+        if (latest.status === "valid") {
+          if (window.toastr) window.toastr.success("Latest <rpg_state> looks valid.");
+          else alert("Latest <rpg_state> looks valid.");
+          return;
+        }
+    
+        if (latest.status === "notag") {
+          if (window.toastr) window.toastr.info("No <rpg_state> found in the latest AI message.");
+          else alert("No <rpg_state> found in the latest AI message.");
+          return;
+        }
+    
+        if (latest.status === "user") {
+          if (window.toastr) window.toastr.warning("The latest message is from the user, not the AI.");
+          else alert("The latest message is from the user, not the AI.");
+          return;
+        }
+    
+        const detail = latest.detail || "Unknown pipe formatting issue.";
+        if (window.toastr) {
+          window.toastr.warning(`<pre style="white-space:pre-wrap; margin:0;">${escHtml(detail)}</pre>`);
+        } else {
+          alert(detail);
+        }
+      };
+    }
 
     const dropdown = document.getElementById("rpg-char-select");
     if (dropdown) {
