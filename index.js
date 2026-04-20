@@ -1244,7 +1244,18 @@ function buildPipeString(stateObj) {
     block.push(`|INV:${safeJoin(ent.inventory)}||Skills:${safeJoin(ent.skills)}||Passives:${safeJoin(ent.passives)}||Masteries:${safeJoin(ent.masteries)}||Status:${safeJoin(ent.status_effects)}|`);
     
     if (ent.vehicle && ent.vehicle.active) {
-      block.push(`>Vehicle|Type:${safePipeText(ent.vehicle.type || "Mecha")}||Name:${safePipeText(ent.vehicle.name || "Vehicle")}||HP:${ent.vehicle.hp_curr ?? 0}/${ent.vehicle.hp_max ?? 0}|`);
+      const v = ent.vehicle;
+      block.push(
+        `>Vehicle|Type:${safePipeText(v.type || "Mecha")}||Name:${safePipeText(v.name || "Vehicle")}||HP:${v.hp_curr ?? 0}/${v.hp_max ?? 0}||MP:${v.mp_curr ?? v.en_curr ?? 0}/${v.mp_max ?? v.en_max ?? 0}||Coin:${v.dankcoin ?? 0}|`
+      );
+      block.push(`|Stats:${formatStats(v.stats)}|`);
+    
+      const vMeters = formatMeters(v.meters);
+      if (vMeters) block.push(vMeters);
+    
+      block.push(
+        `|INV:${safeJoin(v.inventory)}||Skills:${safeJoin(v.skills)}||Passives:${safeJoin(v.passives)}||Masteries:${safeJoin(v.masteries)}||Status:${safeJoin(v.status_effects)}|`
+      );
     }
     return block;
   };
@@ -2378,7 +2389,27 @@ function parsePipeFormat(text) {
     let target = currentEntity; 
     
     if (isVehicle) {
-      if (!currentEntity.vehicle) currentEntity.vehicle = { active: true, stats: {}, inventory: [] };
+      if (!currentEntity.vehicle) {
+        currentEntity.vehicle = {
+          active: true,
+          type: "mecha",
+          name: "Vehicle",
+          hp_curr: 0,
+          hp_max: 0,
+          mp_curr: 0,
+          mp_max: 0,
+          en_curr: 0,
+          en_max: 0,
+          meters: [],
+          stats: {},
+          inventory: [],
+          skills: [],
+          passives: [],
+          masteries: [],
+          status_effects: [],
+          dankcoin: 0,
+        };
+      }
       currentEntity.vehicle.active = true;
       target = currentEntity.vehicle;
     }
