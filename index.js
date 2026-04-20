@@ -190,6 +190,13 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+function safePipeText(value) {
+  return String(value ?? "")
+    .replace(/\|/g, "｜")   // turns dangerous pipe into a safe lookalike
+    .replace(/\r?\n/g, " ") // removes line breaks
+    .trim();
+}
+
 function indicatorColor(status) {
   switch (status) {
     case "valid":   return "#2ecc71";
@@ -879,10 +886,13 @@ function writeStateBackToChatMessage(stateObj) {
 
 function buildPipeString(stateObj) {
   let lines = ["[Global]"];
-  lines.push(`|Loc:${stateObj.location || "Unknown"}||Time:${stateObj.world_time?.month} ${stateObj.world_time?.day},${stateObj.world_time?.clock}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
+  lines.push(`|Loc:${safePipeText(stateObj.location || "Unknown")}||Time:${safePipeText(stateObj.world_time?.month)} ${stateObj.world_time?.day},${safePipeText(stateObj.world_time?.clock)}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
   
   // If an array is empty, output "" to match the prompt template perfectly
-  const safeJoin = (arr) => Array.isArray(arr) && arr.length ? arr.map(i => typeof i === 'object' ? i.name : i).join(";") : "";
+  const safeJoin = (arr) =>
+  Array.isArray(arr) && arr.length
+    ? arr.map(i => safePipeText(typeof i === 'object' ? i.name : i)).join(";")
+    : "";
   
   const quests = safeJoin(stateObj.quests);
   const env = safeJoin(stateObj.env_effects);
@@ -902,7 +912,7 @@ function buildPipeString(stateObj) {
 
   const formatMeters = (m) => {
     if (!Array.isArray(m) || !m.length) return "";
-    return `|Meters:` + m.map(x => `${x.name}:${x.curr}/${x.max}`).join(";") + `|`;
+    return `|Meters:` + m.map(x => `${safePipeText(x.name)}:${x.curr}/${x.max}`).join(";") + `|`;
   };
 
   const buildEntity = (ent, isPlayer = false, isPartyOrNPC = false) => {
@@ -911,7 +921,7 @@ function buildPipeString(stateObj) {
     let coinStr = (isPlayer || (ent.dankcoin !== undefined && ent.dankcoin !== null)) ? `||Coin:${ent.dankcoin ?? 0}` : "";
     let bondStr = isPartyOrNPC ? `||Bond:${ent.bond ?? 0}` : "";
     
-    let block = [`|Name:${ent.name || "Unknown"}||HP:${ent.hp_curr ?? 0}/${ent.hp_max ?? 0}||MP:${ent.mp_curr ?? 0}/${ent.mp_max ?? 0}${coinStr}${bondStr}|`];
+    let block = [`|Name:${safePipeText(ent.name || "Unknown")}||HP:${ent.hp_curr ?? 0}/${ent.hp_max ?? 0}||MP:${ent.mp_curr ?? 0}/${ent.mp_max ?? 0}${coinStr}${bondStr}|`];
     
     block.push(`|Stats:${formatStats(ent.stats)}|`);
     
@@ -921,7 +931,7 @@ function buildPipeString(stateObj) {
     block.push(`|INV:${safeJoin(ent.inventory)}||Skills:${safeJoin(ent.skills)}||Passives:${safeJoin(ent.passives)}||Masteries:${safeJoin(ent.masteries)}||Status:${safeJoin(ent.status_effects)}|`);
     
     if (ent.vehicle && ent.vehicle.active) {
-      block.push(`>Vehicle|Type:${ent.vehicle.type || "Mecha"}||Name:${ent.vehicle.name || "Vehicle"}||HP:${ent.vehicle.hp_curr ?? 0}/${ent.vehicle.hp_max ?? 0}|`);
+      block.push(`>Vehicle|Type:${safePipeText(ent.vehicle.type || "Mecha")}||Name:${safePipeText(ent.vehicle.name || "Vehicle")}||HP:${ent.vehicle.hp_curr ?? 0}/${ent.vehicle.hp_max ?? 0}|`);
     }
     return block;
   };
