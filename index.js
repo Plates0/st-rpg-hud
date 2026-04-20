@@ -202,32 +202,22 @@ function findBestPipeErrorPosition(line) {
   const pipes = [...s.matchAll(/\|/g)].map(m => m.index ?? 0);
   if (!pipes.length) return 0;
 
-  // 1) direct triple-pipe cases
   const triple = s.indexOf("|||");
   if (triple !== -1) return triple + 1;
 
-  // 2) look for a pipe followed by invalid field content like "x| x"
-  // valid next field usually looks like:
-  // |Key:
-  for (let i = 0; i < pipes.length - 1; i++) {
+  for (let i = 0; i < pipes.length; i++) {
     const p = pipes[i];
     const after = s.slice(p + 1);
-
-    // skip spaces after the pipe
     const trimmedOffset = after.match(/^\s*/)?.[0]?.length ?? 0;
     const next = after.slice(trimmedOffset);
 
-    // if next thing is another pipe, it's suspicious
     if (next.startsWith("|")) return p;
 
-    // if next thing does NOT look like FieldName:
-    // then this pipe is probably the accidental one
     if (!/^[A-Za-z][A-Za-z0-9_ ]*\s*:/.test(next)) {
       return p;
     }
   }
 
-  // 3) fallback: unmatched last pipe
   if (pipes.length % 2 !== 0) return pipes[pipes.length - 1];
 
   return pipes[pipes.length - 1];
@@ -510,58 +500,60 @@ function getLatestRpgValidity(chat) {
   const lines = rawText.split("\n");
 
   for (let i = 0; i < lines.length; i++) {
-    const originalLine = lines[i];
-    const t = originalLine.trim();
-    if (!t) continue;
+  const originalLine = lines[i];
+  const line = originalLine;
+  const trimmed = line.trim();
 
-    const pipePositions = [...t.matchAll(/\|/g)].map(m => m.index ?? 0);
-    if (pipePositions.length > 0 && pipePositions.length % 2 !== 0) {
-      const badPipePos = findBestPipeErrorPosition(t);
-      lastPipeError = makePipeError(i + 1, badPipePos, "Odd number of pipes found.", t);
+  if (!trimmed) continue;
+
+  const pipePositions = [...line.matchAll(/\|/g)].map(m => m.index ?? 0);
+  if (pipePositions.length > 0 && pipePositions.length % 2 !== 0) {
+    const badPipePos = findBestPipeErrorPosition(line);
+    lastPipeError = makePipeError(i + 1, badPipePos, "Odd number of pipes found.", line);
+    return {
+      status: "invalid",
+      label: "Format Warning",
+      detail: `Line ${i + 1}\n${line}\n${pipeCaretLine(badPipePos)}\nOdd number of pipes found.`,
+    };
+  }
+
+  const pipeSegments = [...line.matchAll(/\|([^|]*)\|/g)];
+  for (const seg of pipeSegments) {
+    const segText = seg[1];
+    const segStart = seg.index ?? 0;
+
+    if (!segText.includes(":")) {
+      lastPipeError = makePipeError(i + 1, segStart + 1, `Missing colon ':' inside |${segText}|`, line);
       return {
         status: "invalid",
         label: "Format Warning",
-        detail: `Line ${i + 1}\n${t}\n${pipeCaretLine(badPipePos)}\nOdd number of pipes found.`,
-      };
-    }
-
-    const pipeSegments = [...t.matchAll(/\|([^|]*)\|/g)];
-    for (const seg of pipeSegments) {
-      const segText = seg[1];
-      const segStart = seg.index ?? 0;
-
-      if (!segText.includes(":")) {
-        lastPipeError = makePipeError(i + 1, segStart + 1, `Missing colon ':' inside |${segText}|`, t);
-        return {
-          status: "invalid",
-          label: "Format Warning",
-          detail: `Line ${i + 1}\n${t}\n${pipeCaretLine(segStart + 1)}\nMissing colon ':' inside |${segText}|`,
-        };
-      }
-    }
-
-    const hpMatch = t.match(/\|HP:([^|]+)\|/);
-    if (hpMatch && !/^-?\d+(?:\.\d+)?\/-?\d+(?:\.\d+)?$/.test(hpMatch[1].trim())) {
-      const hpPos = t.indexOf("|HP:");
-      lastPipeError = makePipeError(i + 1, hpPos >= 0 ? hpPos + 1 : 0, `Invalid HP format: ${hpMatch[1]}`, t);
-      return {
-        status: "invalid",
-        label: "Format Warning",
-        detail: `Line ${i + 1}\n${t}\n${pipeCaretLine(hpPos >= 0 ? hpPos + 1 : 0)}\nInvalid HP format: ${hpMatch[1]}`,
-      };
-    }
-
-    const mpMatch = t.match(/\|MP:([^|]+)\|/);
-    if (mpMatch && !/^-?\d+(?:\.\d+)?\/-?\d+(?:\.\d+)?$/.test(mpMatch[1].trim())) {
-      const mpPos = t.indexOf("|MP:");
-      lastPipeError = makePipeError(i + 1, mpPos >= 0 ? mpPos + 1 : 0, `Invalid MP format: ${mpMatch[1]}`, t);
-      return {
-        status: "invalid",
-        label: "Format Warning",
-        detail: `Line ${i + 1}\n${t}\n${pipeCaretLine(mpPos >= 0 ? mpPos + 1 : 0)}\nInvalid MP format: ${mpMatch[1]}`,
+        detail: `Line ${i + 1}\n${line}\n${pipeCaretLine(segStart + 1)}\nMissing colon ':' inside |${segText}|`,
       };
     }
   }
+
+  const hpMatch = line.match(/\|HP:([^|]+)\|/);
+  if (hpMatch && !/^-?\d+(?:\.\d+)?\/-?\d+(?:\.\d+)?$/.test(hpMatch[1].trim())) {
+    const hpPos = line.indexOf("|HP:");
+    lastPipeError = makePipeError(i + 1, hpPos >= 0 ? hpPos + 1 : 0, `Invalid HP format: ${hpMatch[1]}`, line);
+    return {
+      status: "invalid",
+      label: "Format Warning",
+      detail: `Line ${i + 1}\n${line}\n${pipeCaretLine(hpPos >= 0 ? hpPos + 1 : 0)}\nInvalid HP format: ${hpMatch[1]}`,
+    };
+  }
+
+  const mpMatch = line.match(/\|MP:([^|]+)\|/);
+  if (mpMatch && !/^-?\d+(?:\.\d+)?\/-?\d+(?:\.\d+)?$/.test(mpMatch[1].trim())) {
+    const mpPos = line.indexOf("|MP:");
+    lastPipeError = makePipeError(i + 1, mpPos >= 0 ? mpPos + 1 : 0, `Invalid MP format: ${mpMatch[1]}`, line);
+    return {
+      status: "invalid",
+      label: "Format Warning",
+      detail: `Line ${i + 1}\n${line}\n${pipeCaretLine(mpPos >= 0 ? mpPos + 1 : 0)}\nInvalid MP format: ${mpMatch[1]}`,
+    };
+  }
+}
 
   lastPipeError = { line: null, char: null, message: "", snippet: "" };
   return { status: "valid", label: "Latest OK", detail: "" };
