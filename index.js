@@ -197,6 +197,44 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+function sanitizeBrokenPipeLine(line) {
+  const s = String(line ?? "");
+  let out = "";
+  let i = 0;
+
+  while (i < s.length) {
+    const ch = s[i];
+
+    if (ch !== "|") {
+      out += ch;
+      i++;
+      continue;
+    }
+
+    const rest = s.slice(i + 1);
+
+    // real pipe start if next token looks like FieldName:
+    if (/^\s*[A-Za-z][A-Za-z0-9_ ]*\s*:/.test(rest)) {
+      out += "|";
+      i++;
+      continue;
+    }
+
+    // real closing pipe if followed by another real field or end of line
+    if (/^\s*(\||$|>|\[)/.test(rest)) {
+      out += "|";
+      i++;
+      continue;
+    }
+
+    // otherwise it's probably a stray text pipe inside a value
+    out += "｜";
+    i++;
+  }
+
+  return out;
+}
+
 function findBestPipeErrorPosition(line) {
   const s = String(line ?? "");
   const pipes = [...s.matchAll(/\|/g)].map(m => m.index ?? 0);
@@ -2295,7 +2333,7 @@ function parsePipeFormat(text) {
   const parseList = (str) => str ? str.split(';').map(s => s.trim()).filter(Boolean) : [];
 
   for (let line of lines) {
-    line = line.trim();
+    line = sanitizeBrokenPipeLine(line).trim();
     if (!line) continue;
 
     const headerMatch = line.match(/^\[(.*?)\]/);
@@ -2321,7 +2359,8 @@ function parsePipeFormat(text) {
       target = currentEntity.vehicle;
     }
 
-    const data = getPipes(line);
+    const safeLine = sanitizeBrokenPipeLine(line);
+    const data = getPipes(safeLine);
     if (Object.keys(data).length === 0) continue; 
 
     // 1. Group creation / Name mapping
