@@ -2178,7 +2178,7 @@ const checkMessage = async (manual = false) => {
   console.error("RPG HUD Parse Error:", err);
   if (manual && window.toastr) window.toastr.error("Pipe Parser failed to read the block.");
 }
-}:
+};
 
 // --- 7. OBSERVER ---
 const setupObserver = () => {
