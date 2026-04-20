@@ -612,8 +612,10 @@ function getLatestRpgValidity(chat) {
     }
   }
 
-  const hpMatch = line.match(/\|HP:([^|]+)\|/);
-  if (hpMatch && !/^-?\d+(?:\.\d+)?\/-?\d+(?:\.\d+)?$/.test(hpMatch[1].trim())) {
+  const statPairRegex = /^(?:\?\?\?|∞|inf|infinity|-?\d+(?:\.\d+)?)\/(?:\?\?\?|∞|inf|infinity|-?\d+(?:\.\d+)?)$/i;
+
+const hpMatch = line.match(/\|HP:([^|]+)\|/);
+  if (hpMatch && !statPairRegex.test(hpMatch[1].trim())) {
     const hpPos = line.indexOf("|HP:");
     lastPipeError = makePipeError(i + 1, hpPos >= 0 ? hpPos + 1 : 0, `Invalid HP format: ${hpMatch[1]}`, line);
     return {
@@ -622,15 +624,26 @@ function getLatestRpgValidity(chat) {
       detail: `Line ${i + 1}\n${line}\n${pipeCaretLine(hpPos >= 0 ? hpPos + 1 : 0)}\nInvalid HP format: ${hpMatch[1]}`,
     };
   }
-
+  
   const mpMatch = line.match(/\|MP:([^|]+)\|/);
-  if (mpMatch && !/^-?\d+(?:\.\d+)?\/-?\d+(?:\.\d+)?$/.test(mpMatch[1].trim())) {
+  if (mpMatch && !statPairRegex.test(mpMatch[1].trim())) {
     const mpPos = line.indexOf("|MP:");
     lastPipeError = makePipeError(i + 1, mpPos >= 0 ? mpPos + 1 : 0, `Invalid MP format: ${mpMatch[1]}`, line);
     return {
       status: "invalid",
       label: "Format Warning",
       detail: `Line ${i + 1}\n${line}\n${pipeCaretLine(mpPos >= 0 ? mpPos + 1 : 0)}\nInvalid MP format: ${mpMatch[1]}`,
+    };
+  }
+  
+  const enMatch = line.match(/\|EN:([^|]+)\|/);
+  if (enMatch && !statPairRegex.test(enMatch[1].trim())) {
+    const enPos = line.indexOf("|EN:");
+    lastPipeError = makePipeError(i + 1, enPos >= 0 ? enPos + 1 : 0, `Invalid EN format: ${enMatch[1]}`, line);
+    return {
+      status: "invalid",
+      label: "Format Warning",
+      detail: `Line ${i + 1}\n${line}\n${pipeCaretLine(enPos >= 0 ? enPos + 1 : 0)}\nInvalid EN format: ${enMatch[1]}`,
     };
   }
 }
