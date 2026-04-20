@@ -1255,6 +1255,17 @@ function buildPipeString(stateObj) {
       block.push(
         `>Vehicle|Type:${safePipeText(v.type || "Mecha")}||Name:${safePipeText(v.name || "Vehicle")}||HP:${v.hp_curr ?? 0}/${v.hp_max ?? 0}${energyPipe}|`
       );
+    
+      block.push(`>Vehicle|Stats:${formatStats(v.stats)}|`);
+    
+      const vMeters = formatMeters(v.meters);
+      if (vMeters) {
+        block.push(`>Vehicle${vMeters}`);
+      }
+    
+      block.push(
+        `>Vehicle|INV:${safeJoin(v.inventory)}||Skills:${safeJoin(v.skills)}||Passives:${safeJoin(v.passives)}||Masteries:${safeJoin(v.masteries)}||Status:${safeJoin(v.status_effects)}|`
+      );
     }
     return block;
   };
