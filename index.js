@@ -212,28 +212,33 @@ function closePipeErrorPanel(e) {
 
 function buildPipeErrorPanelHtml() {
   const lineNum = lastPipeError?.line ?? "?";
-  const charNum = lastPipeError?.char ?? 0;
+  const charNum = Math.max(0, Number(lastPipeError?.char ?? 0));
   const snippet = String(lastPipeError?.snippet || "");
   const message = String(lastPipeError?.message || "No detailed pipe error is stored.");
+
+  const caretLine = pipeCaretLine(Math.max(0, charNum));
+  const displaySnippet = snippet || "(no line captured)";
 
   return `
     <div id="rpg-error-overlay" style="
       position:absolute; inset:0;
-      background: rgba(0,0,0,0.92);
+      background: rgba(0,0,0,0.94);
       border: 1px solid #333;
       z-index: 100001;
       display:flex;
       flex-direction:column;
       box-sizing:border-box;
       padding:10px;
+      overflow:hidden;
     ">
       <div style="
         display:flex;
         justify-content:space-between;
         align-items:center;
-        margin-bottom:10px;
+        margin-bottom:8px;
         border-bottom:1px solid #333;
         padding-bottom:6px;
+        flex:0 0 auto;
       ">
         <div style="font-weight:bold; color:#f1c40f;">🟡 PIPE ERROR</div>
         <button id="rpg-error-close" style="
@@ -247,44 +252,48 @@ function buildPipeErrorPanelHtml() {
         ">CLOSE</button>
       </div>
 
-      <div style="font-size:0.8em; color:#bbb; margin-bottom:8px;">
+      <div style="
+        font-size:0.78em;
+        color:#bbb;
+        margin-bottom:8px;
+        flex:0 0 auto;
+      ">
         Line ${escHtml(lineNum)} · Char ${escHtml(charNum)}
       </div>
 
       <div style="
-        flex:1;
-        overflow:auto;
+        flex:0 0 auto;
         background:rgba(255,255,255,0.04);
         border:1px solid #333;
         padding:8px;
-        font-size:0.8em;
+        overflow:hidden;
+        min-height:84px;
+        max-height:110px;
       ">
         <div style="
-          white-space:pre;
           overflow-x:auto;
           overflow-y:hidden;
+          white-space:nowrap;
+          font-size:0.8em;
+          line-height:1.45;
+          font-family:${uiSettings.fontFamily || "'Courier New', Courier, monospace"};
           color:#ddd;
-          font-family:${uiSettings.fontFamily || "'Courier New', Courier, monospace"};
-        ">${escHtml(snippet)}</div>
-
-        <div style="
-          white-space:pre;
-          overflow-x:auto;
-          overflow-y:hidden;
-          color:#f1c40f;
-          font-family:${uiSettings.fontFamily || "'Courier New', Courier, monospace"};
-          margin-top:2px;
-        ">${escHtml(pipeCaretLine(charNum))}</div>
+        ">
+          <div style="display:inline-block; min-width:max-content;">${escHtml(displaySnippet)}</div>
+          <div style="display:inline-block; min-width:max-content; color:#f1c40f;">${escHtml(caretLine)}</div>
+        </div>
       </div>
 
       <div style="
-        margin-top:10px;
+        margin-top:8px;
         padding:8px;
         background:rgba(255,255,255,0.04);
         border:1px solid #333;
-        font-size:0.78em;
+        font-size:0.76em;
         color:#ddd;
-        line-height:1.35;
+        line-height:1.3;
+        flex:1 1 auto;
+        overflow:auto;
       ">
         ${escHtml(message)}
       </div>
