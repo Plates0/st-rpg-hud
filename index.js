@@ -199,30 +199,38 @@ function applyHudTypography(container) {
 // --- 2. HELPERS ---
 function findBestPipeErrorPosition(line) {
   const s = String(line ?? "");
+  const pipes = [...s.matchAll(/\|/g)].map(m => m.index ?? 0);
+  if (!pipes.length) return 0;
 
-  // Case 1: triple pipe -> middle pipe is usually the accidental extra one
+  // 1) direct triple-pipe cases
   const triple = s.indexOf("|||");
   if (triple !== -1) return triple + 1;
 
-  // Case 2: quadruple+ pipes -> point at the first suspicious extra pipe
-  const multi = s.match(/\|{3,}/);
-  if (multi && multi.index !== undefined) return multi.index + 1;
+  // 2) look for a pipe followed by invalid field content like "x| x"
+  // valid next field usually looks like:
+  // |Key:
+  for (let i = 0; i < pipes.length - 1; i++) {
+    const p = pipes[i];
+    const after = s.slice(p + 1);
 
-  // Fallback: unmatched pipe logic
-  const positions = [...s.matchAll(/\|/g)].map(m => m.index ?? 0);
-  if (positions.length === 0) return 0;
-  if (positions.length % 2 === 0) return positions[positions.length - 1] ?? 0;
+    // skip spaces after the pipe
+    const trimmedOffset = after.match(/^\s*/)?.[0]?.length ?? 0;
+    const next = after.slice(trimmedOffset);
 
-  for (let i = 0; i < positions.length; i += 2) {
-    const start = positions[i];
-    const end = positions[i + 1];
-    if (end === undefined) return start;
+    // if next thing is another pipe, it's suspicious
+    if (next.startsWith("|")) return p;
 
-    const segment = s.slice(start + 1, end);
-    if (!segment.includes(":")) return start;
+    // if next thing does NOT look like FieldName:
+    // then this pipe is probably the accidental one
+    if (!/^[A-Za-z][A-Za-z0-9_ ]*\s*:/.test(next)) {
+      return p;
+    }
   }
 
-  return positions[positions.length - 1] ?? 0;
+  // 3) fallback: unmatched last pipe
+  if (pipes.length % 2 !== 0) return pipes[pipes.length - 1];
+
+  return pipes[pipes.length - 1];
 }
 
 function findUnmatchedPipePosition(line) {
