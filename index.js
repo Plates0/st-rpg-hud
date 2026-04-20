@@ -126,6 +126,7 @@ let charIndex = 0;
 let tabStripScrollLeft = 0; 
 let isSettingsOpen = false;
 let lastRpgMsgIndex = -1;
+let isErrorOpen = false;
 
 let lastIndicatorStatus = null;
 let hudToastArmed = false;
@@ -196,86 +197,99 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
-function openPipeErrorModal() {
-  const existing = document.getElementById("rpg-pipe-error-modal");
-  if (existing) existing.remove();
+function openPipeErrorPanel(e) {
+  if (e) e.stopPropagation();
+  isErrorOpen = true;
+  isSettingsOpen = false;
+  renderRPG();
+}
 
-  const detail =
-    lastPipeError?.message
-      ? `Line ${lastPipeError.line ?? "?"}, Char ${lastPipeError.char ?? "?"}\n\n${lastPipeError.snippet || ""}\n${pipeCaretLine(lastPipeError.char || 0)}\n${lastPipeError.message}`
-      : "No detailed pipe error is stored.";
+function closePipeErrorPanel(e) {
+  if (e) e.stopPropagation();
+  isErrorOpen = false;
+  renderRPG();
+}
 
-  const modal = document.createElement("div");
-  modal.id = "rpg-pipe-error-modal";
-  modal.style.cssText = `
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.72);
-    z-index: 300000;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 16px;
-    box-sizing: border-box;
-  `;
+function buildPipeErrorPanelHtml() {
+  const lineNum = lastPipeError?.line ?? "?";
+  const charNum = lastPipeError?.char ?? 0;
+  const snippet = String(lastPipeError?.snippet || "");
+  const message = String(lastPipeError?.message || "No detailed pipe error is stored.");
 
-  modal.innerHTML = `
-    <div style="
-      width: min(720px, 100%);
-      max-height: 80vh;
-      background: rgba(15,15,20,0.98);
-      border: 2px solid #C0A040;
-      box-shadow: 0 0 18px rgba(0,0,0,0.6);
-      color: #E0E0E0;
-      font-family: ${escAttr(uiSettings.fontFamily || "'Courier New', Courier, monospace")};
-      border-radius: 8px;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
+  return `
+    <div id="rpg-error-overlay" style="
+      position:absolute; inset:0;
+      background: rgba(0,0,0,0.92);
+      border: 1px solid #333;
+      z-index: 100001;
+      display:flex;
+      flex-direction:column;
+      box-sizing:border-box;
+      padding:10px;
     ">
       <div style="
         display:flex;
         justify-content:space-between;
         align-items:center;
-        padding:10px 12px;
+        margin-bottom:10px;
         border-bottom:1px solid #333;
-        background: rgba(255,255,255,0.04);
+        padding-bottom:6px;
       ">
-        <div style="font-weight:bold; color:#f1c40f;">🟡 Pipe Format Error</div>
-        <button id="rpg-pipe-error-close" style="
+        <div style="font-weight:bold; color:#f1c40f;">🟡 PIPE ERROR</div>
+        <button id="rpg-error-close" style="
           background:#444;
           border:1px solid #777;
           color:#fff;
           cursor:pointer;
-          padding:4px 10px;
+          font-size:10px;
+          padding:3px 10px;
           font-weight:bold;
-        ">Close</button>
+        ">CLOSE</button>
+      </div>
+
+      <div style="font-size:0.8em; color:#bbb; margin-bottom:8px;">
+        Line ${escHtml(lineNum)} · Char ${escHtml(charNum)}
       </div>
 
       <div style="
-        padding:12px;
+        flex:1;
         overflow:auto;
-        font-size:0.9em;
-        line-height:1.4;
+        background:rgba(255,255,255,0.04);
+        border:1px solid #333;
+        padding:8px;
+        font-size:0.8em;
       ">
-        <pre style="
-          margin:0;
-          white-space:pre-wrap;
-          word-break:break-word;
+        <div style="
+          white-space:pre;
+          overflow-x:auto;
+          overflow-y:hidden;
           color:#ddd;
-        ">${escHtml(detail)}</pre>
+          font-family:${uiSettings.fontFamily || "'Courier New', Courier, monospace"};
+        ">${escHtml(snippet)}</div>
+
+        <div style="
+          white-space:pre;
+          overflow-x:auto;
+          overflow-y:hidden;
+          color:#f1c40f;
+          font-family:${uiSettings.fontFamily || "'Courier New', Courier, monospace"};
+          margin-top:2px;
+        ">${escHtml(pipeCaretLine(charNum))}</div>
+      </div>
+
+      <div style="
+        margin-top:10px;
+        padding:8px;
+        background:rgba(255,255,255,0.04);
+        border:1px solid #333;
+        font-size:0.78em;
+        color:#ddd;
+        line-height:1.35;
+      ">
+        ${escHtml(message)}
       </div>
     </div>
   `;
-
-  modal.onclick = (e) => {
-    if (e.target === modal) modal.remove();
-  };
-
-  document.body.appendChild(modal);
-
-  const closeBtn = document.getElementById("rpg-pipe-error-close");
-  if (closeBtn) closeBtn.onclick = () => modal.remove();
 }
 
 function makePipeError(lineNum, charPos, message, lineText) {
@@ -1591,6 +1605,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       </div>
     `
       : "";
+      
+      const errorPanelHtml = isErrorOpen ? buildPipeErrorPanelHtml() : "";
 
       {
         const prevStrip = container.querySelector("#rpg-tab-strip");
@@ -1703,6 +1719,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           cursor:ew-resize; z-index:200000; background:transparent; touch-action:none;"></div>
 
       ${settingsPanelHtml}
+      ${errorPanelHtml}
     `;
 
 {
@@ -1759,6 +1776,10 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
     bind("rpg-min-btn", toggleMinimize);
     bind("rpg-settings-btn", toggleSettings);
+    bind("rpg-error-close", closePipeErrorPanel);
+    
+    const errorOverlay = document.getElementById("rpg-error-overlay");
+    if (errorOverlay) errorOverlay.onclick = (e) => e.stopPropagation();
 
     bind("rpg-scan-btn", (e) => {
       if (e) e.stopPropagation();
@@ -1771,22 +1792,40 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         e.stopPropagation();
     
         if (latest.status === "invalid") {
-          openPipeErrorModal();
+          openPipeErrorPanel(e);
           return;
         }
     
         if (latest.status === "notag") {
-          alert("No <rpg_state> found in the latest AI message.");
+          lastPipeError = {
+            line: null,
+            char: 0,
+            message: "No <rpg_state> found in the latest AI message.",
+            snippet: "",
+          };
+          openPipeErrorPanel(e);
           return;
         }
     
         if (latest.status === "user") {
-          alert("The latest message is from the user, not the AI.");
+          lastPipeError = {
+            line: null,
+            char: 0,
+            message: "The latest message is from the user, not the AI.",
+            snippet: "",
+          };
+          openPipeErrorPanel(e);
           return;
         }
     
         if (latest.status === "valid") {
-          alert("Latest <rpg_state> looks valid.");
+          lastPipeError = {
+            line: null,
+            char: 0,
+            message: "Latest <rpg_state> looks valid.",
+            snippet: "",
+          };
+          openPipeErrorPanel(e);
         }
       };
     }
