@@ -130,6 +130,12 @@ let lastRpgMsgIndex = -1;
 let lastIndicatorStatus = null;
 let hudToastArmed = false;
 let autoInjectState = false;
+let lastPipeError = {
+  line: null,
+  char: null,
+  message: "",
+  snippet: "",
+};
 
 // --- UI SETTINGS (font + scale) ---
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
@@ -190,6 +196,19 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+function makePipeError(lineNum, charPos, message, lineText) {
+  return {
+    line: lineNum,
+    char: charPos,
+    message,
+    snippet: lineText || "",
+  };
+}
+
+function pipeCaretLine(charPos) {
+  return `${" ".repeat(Math.max(0, charPos))}^`;
+}
+
 function safePipeText(value) {
   return String(value ?? "")
     .replace(/\|/g, "｜")   // turns dangerous pipe into a safe lookalike
@@ -277,12 +296,14 @@ function updateLatestStatusAndToast(chat) {
 
 function getLatestRpgValidity(chat) {
   if (!Array.isArray(chat) || chat.length === 0) {
+    lastPipeError = { line: null, char: null, message: "", snippet: "" };
     return { status: "nochat", label: "No chat", detail: "" };
   }
 
   const last = chat[chat.length - 1];
 
   if (last?.is_user) {
+    lastPipeError = { line: null, char: null, message: "", snippet: "" };
     return { status: "user", label: "Last is user", detail: "" };
   }
 
@@ -291,38 +312,77 @@ function getLatestRpgValidity(chat) {
   const m = mes.match(regex);
 
   if (!m) {
+    lastPipeError = { line: null, char: null, message: "", snippet: "" };
     return { status: "notag", label: "No <rpg_state>", detail: "" };
   }
 
   const rawText = m[1];
-  if (!rawText.includes('|')) {
-    return { status: "invalid", label: "No Pipes Found", detail: "The <rpg_state> block is empty or missing pipes." };
+  if (!rawText.includes("|")) {
+    lastPipeError = makePipeError(1, 0, "The <rpg_state> block is empty or missing pipes.", rawText);
+    return {
+      status: "invalid",
+      label: "No Pipes Found",
+      detail: `Line 1\n${rawText}\n${pipeCaretLine(0)}\nThe <rpg_state> block is empty or missing pipes.`,
+    };
   }
 
-  const lines = rawText.split('\n');
-  let errors = [];
+  const lines = rawText.split("\n");
 
-  lines.forEach((line, index) => {
-    const t = line.trim();
-    if (!t) return;
+  for (let i = 0; i < lines.length; i++) {
+    const originalLine = lines[i];
+    const t = originalLine.trim();
+    if (!t) continue;
 
     const pipeCount = (t.match(/\|/g) || []).length;
     if (pipeCount > 0 && pipeCount % 2 !== 0) {
-      errors.push(`Line ${index + 1}: Missing a pipe '|' (Odd number found).`);
+      const lastPipe = t.lastIndexOf("|");
+      lastPipeError = makePipeError(i + 1, lastPipe >= 0 ? lastPipe : 0, "Odd number of pipes found.", t);
+      return {
+        status: "invalid",
+        label: "Format Warning",
+        detail: `Line ${i + 1}\n${t}\n${pipeCaretLine(lastPipe >= 0 ? lastPipe : 0)}\nOdd number of pipes found.`,
+      };
     }
 
-    const pipeSegments = [...t.matchAll(/\|([^|]+)\|/g)];
-    pipeSegments.forEach(seg => {
-      if (!seg[1].includes(':')) {
-        errors.push(`Line ${index + 1}: Missing colon ':' inside ${seg[0]}`);
-      }
-    });
-  });
+    const pipeSegments = [...t.matchAll(/\|([^|]*)\|/g)];
+    for (const seg of pipeSegments) {
+      const segText = seg[1];
+      const segStart = seg.index ?? 0;
 
-  if (errors.length > 0) {
-    return { status: "invalid", label: "Format Warning", detail: errors.join("\n") };
+      if (!segText.includes(":")) {
+        lastPipeError = makePipeError(i + 1, segStart + 1, `Missing colon ':' inside |${segText}|`, t);
+        return {
+          status: "invalid",
+          label: "Format Warning",
+          detail: `Line ${i + 1}\n${t}\n${pipeCaretLine(segStart + 1)}\nMissing colon ':' inside |${segText}|`,
+        };
+      }
+    }
+
+    const hpMatch = t.match(/\|HP:([^|]+)\|/);
+    if (hpMatch && !/^-?\d+(?:\.\d+)?\/-?\d+(?:\.\d+)?$/.test(hpMatch[1].trim())) {
+      const hpPos = t.indexOf("|HP:");
+      lastPipeError = makePipeError(i + 1, hpPos >= 0 ? hpPos + 1 : 0, `Invalid HP format: ${hpMatch[1]}`, t);
+      return {
+        status: "invalid",
+        label: "Format Warning",
+        detail: `Line ${i + 1}\n${t}\n${pipeCaretLine(hpPos >= 0 ? hpPos + 1 : 0)}\nInvalid HP format: ${hpMatch[1]}`,
+      };
+    }
+
+    const mpMatch = t.match(/\|MP:([^|]+)\|/);
+    if (mpMatch && !/^-?\d+(?:\.\d+)?\/-?\d+(?:\.\d+)?$/.test(mpMatch[1].trim())) {
+      const mpPos = t.indexOf("|MP:");
+      lastPipeError = makePipeError(i + 1, mpPos >= 0 ? mpPos + 1 : 0, `Invalid MP format: ${mpMatch[1]}`, t);
+      return {
+        status: "invalid",
+        label: "Format Warning",
+        detail: `Line ${i + 1}\n${t}\n${pipeCaretLine(mpPos >= 0 ? mpPos + 1 : 0)}\nInvalid MP format: ${mpMatch[1]}`,
+      };
+    }
   }
 
+  lastPipeError = { line: null, char: null, message: "", snippet: "" };
   return { status: "valid", label: "Latest OK", detail: "" };
 }
 
@@ -2107,11 +2167,18 @@ const checkMessage = async (manual = false) => {
       if (!ok) console.warn("RPG HUD: couldn't write back after manual scan");
     }
   } catch (err) {
-    console.error("RPG HUD Parse Error:", err);
-    if (manual && window.toastr) window.toastr.error("Pipe Parser failed to read the block.");
-  }
-};
+  const msg = String(err?.message || err);
+  lastPipeError = {
+    line: null,
+    char: null,
+    message: msg,
+    snippet: rawBlock,
+  };
 
+  console.error("RPG HUD Parse Error:", err);
+  if (manual && window.toastr) window.toastr.error("Pipe Parser failed to read the block.");
+}
+}:
 
 // --- 7. OBSERVER ---
 const setupObserver = () => {
