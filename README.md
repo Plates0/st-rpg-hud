@@ -34,7 +34,7 @@ SCHEMA RULES:
 - Separate lists (like inventory, skills, masteries, quests, status, env) using semicolons (;).
 - Time must be formatted as Month Day,Clock (e.g. `Mar 7,12:00`).
 - Stats can contain equations (e.g., `ATK:210 (160+50+0)`) or raw integers (e.g., `ATK:10`).
-- Meters (Dynamic Stats): Store shields, Sanity, Hunger, Arousal (SEXUAL SITUATIONS ONLY), etc., using the format `Name:Curr/Max` inside a `|Meters:...|` pipe (e.g., `|Meters:Shield:30/80;Sanity:90/100|`). (Max is not capped at 100; add/remove as narrative dictates).
+- Meters (Dynamic Stats): Store shields, Sanity, Hunger, Arousal, etc., using the format `Name:Curr/Max` inside a `|Meters:...|` pipe (e.g., `|Meters:Shield:30/80;Sanity:90/100|`). (Max is not capped at 100; add/remove as narrative dictates).
 
 When updating the Time, do NOT default to 1-minute increments. 
 Advance the clock dynamically based on the narrative events of your response:
@@ -55,7 +55,7 @@ TEMPLATE:
 <rpg_state>
 [Global]
 |Loc:Unknown||Time:{{random:Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec}} {{random:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28}},{{random:06:00,08:30,10:00,12:15,14:45,17:00,19:30,22:00,01:15}}|Weather:{{random:Clear,Sunny,Partly Cloudy,Cloudy,Rain,Heavy Rain,Thunderstorm,Fog,Snow,Blizzard,Windy}}|Combat:Off|
-|Quests:||Env:|
+|Quests:||Env:||Weather:{{random:Clear,Sunny,Partly Cloudy,Cloudy,Rain,Heavy Rain,Thunderstorm,Fog,Snow,Blizzard,Windy}}|
 
 [Player]
 |Name:{{user}}||HP:0/0||MP:0/0||Coin:0|
