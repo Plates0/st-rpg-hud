@@ -54,7 +54,7 @@ Year: If Dec 31 rolls over, reset to Jan 1.
 TEMPLATE:
 <rpg_state>
 [Global]
-|Loc:Unknown||Time:{{random:Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec}} {{random:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28}},{{random:06:00,08:30,10:00,12:15,14:45,17:00,19:30,22:00,01:15}}||Combat:Off|
+|Loc:Unknown||Time:{{random:Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec}} {{random:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28}},{{random:06:00,08:30,10:00,12:15,14:45,17:00,19:30,22:00,01:15}}|Weather:{{random:Clear,Sunny,Partly Cloudy,Cloudy,Rain,Heavy Rain,Thunderstorm,Fog,Snow,Blizzard,Windy}}|Combat:Off|
 |Quests:||Env:|
 
 [Player]
