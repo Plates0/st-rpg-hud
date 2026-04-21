@@ -64,13 +64,13 @@ TEMPLATE:
 </rpg_state>
 
 II. VISIBILITY & PERSISTENCE
-NPCs: Default to "???" stats unless they:
+[NPCs]: Default to "???" stats (Rules do NOT apply to [Enemies] & [Party].) unless they:
 1. Enter combat.
 2. Receive damage, healing, or buffs.
 3. Are narratively revealed.
-4. Join the Party.
+4. Join the [Party].
 5. Always keep party members unless they decide to leave the party permanently.
-This does NOT apply to enemies.
+Coin is not shared.
 
 Bond: Always display the |Bond:| stat in the entity's pipe if active.
 
