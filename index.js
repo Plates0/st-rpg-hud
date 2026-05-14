@@ -540,14 +540,12 @@ function updateLatestStatusAndToast(chat) {
 
 function getLatestRpgValidity(chat) {
   if (!Array.isArray(chat) || chat.length === 0) {
-    lastPipeError = { line: null, char: null, message: "", snippet: "" };
     return { status: "nochat", label: "No chat", detail: "" };
   }
 
   const last = chat[chat.length - 1];
 
   if (last?.is_user) {
-    lastPipeError = { line: null, char: null, message: "", snippet: "" };
     return { status: "user", label: "Last is user", detail: "" };
   }
 
@@ -556,99 +554,36 @@ function getLatestRpgValidity(chat) {
   const m = mes.match(regex);
 
   if (!m) {
-    lastPipeError = { line: null, char: null, message: "", snippet: "" };
     return { status: "notag", label: "No <rpg_state>", detail: "" };
   }
 
   const rawText = m[1];
-  if (!rawText.includes("|")) {
-    lastPipeError = makePipeError(1, 0, "The <rpg_state> block is empty or missing pipes.", rawText);
-    return {
-      status: "invalid",
-      label: "No Pipes Found",
-      detail: `Line 1\n${rawText}\n${pipeCaretLine(0)}\nThe <rpg_state> block is empty or missing pipes.`,
-    };
+  if (!rawText.includes('|')) {
+    return { status: "invalid", label: "No Pipes Found", detail: "The <rpg_state> block is empty or missing pipes." };
   }
 
-  const lines = rawText.split("\n");
+  const lines = rawText.split('\n');
+  let errors = [];
 
-  for (let i = 0; i < lines.length; i++) {
-  const originalLine = lines[i];
-  const line = originalLine;
-  const trimmed = line.trim();
+  lines.forEach((line, index) => {
+    const t = line.trim();
+    if (!t || t.startsWith('[')) return;
 
-  if (!trimmed) continue;
-
-  const pipePositions = [...line.matchAll(/\|/g)].map(m => m.index ?? 0);
-  if (pipePositions.length > 0 && pipePositions.length % 2 !== 0) {
-    const badPipePos = findBestPipeErrorPosition(line);
-    
-    console.log("RPG HUD odd-pipe debug", {
-      line,
-      badPipePos,
-      marked: line.slice(0, badPipePos) + "⟦|⟧" + line.slice(badPipePos + 1)
+    // Upgraded check: properly handles adjacent pipes || without skipping
+    const pipeSegments = [...t.matchAll(/\|([^|]+)(?=\|)/g)];
+    pipeSegments.forEach(seg => {
+      const content = seg[1].trim();
+      // If there is content inside the pipe, it MUST have a colon
+      if (content && !content.includes(':')) {
+        errors.push(`Line ${index + 1}: Missing colon ':' inside |${content}|`);
+      }
     });
-    
-    lastPipeError = makePipeError(i + 1, badPipePos, "Odd number of pipes found.", line);
-    return {
-      status: "invalid",
-      label: "Format Warning",
-      detail: `Line ${i + 1}\n${line}\n${pipeCaretLine(badPipePos)}\nOdd number of pipes found.`,
-    };
+  });
+
+  if (errors.length > 0) {
+    return { status: "invalid", label: "Format Warning", detail: errors.join("\n") };
   }
 
-  const pipeSegments = [...line.matchAll(/\|([^|]*)\|/g)];
-  for (const seg of pipeSegments) {
-    const segText = seg[1];
-    const segStart = seg.index ?? 0;
-
-    if (!segText.includes(":")) {
-      lastPipeError = makePipeError(i + 1, segStart + 1, `Missing colon ':' inside |${segText}|`, line);
-      return {
-        status: "invalid",
-        label: "Format Warning",
-        detail: `Line ${i + 1}\n${line}\n${pipeCaretLine(segStart + 1)}\nMissing colon ':' inside |${segText}|`,
-      };
-    }
-  }
-
-  const statPairRegex = /^(?:\?\?\?|∞|inf|infinity|-?\d+(?:\.\d+)?)\/(?:\?\?\?|∞|inf|infinity|-?\d+(?:\.\d+)?)$/i;
-
-const hpMatch = line.match(/\|HP:([^|]+)\|/);
-  if (hpMatch && !statPairRegex.test(hpMatch[1].trim())) {
-    const hpPos = line.indexOf("|HP:");
-    lastPipeError = makePipeError(i + 1, hpPos >= 0 ? hpPos + 1 : 0, `Invalid HP format: ${hpMatch[1]}`, line);
-    return {
-      status: "invalid",
-      label: "Format Warning",
-      detail: `Line ${i + 1}\n${line}\n${pipeCaretLine(hpPos >= 0 ? hpPos + 1 : 0)}\nInvalid HP format: ${hpMatch[1]}`,
-    };
-  }
-  
-  const mpMatch = line.match(/\|MP:([^|]+)\|/);
-  if (mpMatch && !statPairRegex.test(mpMatch[1].trim())) {
-    const mpPos = line.indexOf("|MP:");
-    lastPipeError = makePipeError(i + 1, mpPos >= 0 ? mpPos + 1 : 0, `Invalid MP format: ${mpMatch[1]}`, line);
-    return {
-      status: "invalid",
-      label: "Format Warning",
-      detail: `Line ${i + 1}\n${line}\n${pipeCaretLine(mpPos >= 0 ? mpPos + 1 : 0)}\nInvalid MP format: ${mpMatch[1]}`,
-    };
-  }
-  
-  const enMatch = line.match(/\|EN:([^|]+)\|/);
-  if (enMatch && !statPairRegex.test(enMatch[1].trim())) {
-    const enPos = line.indexOf("|EN:");
-    lastPipeError = makePipeError(i + 1, enPos >= 0 ? enPos + 1 : 0, `Invalid EN format: ${enMatch[1]}`, line);
-    return {
-      status: "invalid",
-      label: "Format Warning",
-      detail: `Line ${i + 1}\n${line}\n${pipeCaretLine(enPos >= 0 ? enPos + 1 : 0)}\nInvalid EN format: ${enMatch[1]}`,
-    };
-  }
-}
-
-  lastPipeError = { line: null, char: null, message: "", snippet: "" };
   return { status: "valid", label: "Latest OK", detail: "" };
 }
 
@@ -1212,17 +1147,14 @@ function writeStateBackToChatMessage(stateObj) {
 
 function buildPipeString(stateObj) {
   let lines = ["[Global]"];
-  lines.push(`|Loc:${safePipeText(stateObj.location || "Unknown")}||Time:${safePipeText(stateObj.world_time?.month)} ${stateObj.world_time?.day},${safePipeText(stateObj.world_time?.clock)}||Weather:${safePipeText(stateObj.world_time?.weather || "Unknown")}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
+  lines.push(`|Loc:${stateObj.location || "Unknown"}||Time:${stateObj.world_time?.month} ${stateObj.world_time?.day},${stateObj.world_time?.clock}||Weather:${stateObj.world_time?.weather || "Unknown"}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
   
-  // If an array is empty, output "" to match the prompt template perfectly
-  const safeJoin = (arr) =>
-  Array.isArray(arr) && arr.length
-    ? arr.map(i => safePipeText(typeof i === 'object' ? i.name : i)).join(";")
-    : "";
+  const safeJoin = (arr) => Array.isArray(arr) && arr.length ? arr.map(i => typeof i === 'object' ? i.name : i).join(";") : "None";
   
+  // Explicitly keep pipes even if empty
   const quests = safeJoin(stateObj.quests);
   const env = safeJoin(stateObj.env_effects);
-  lines.push(`|Quests:${quests}||Env:${env}|`);
+  lines.push(`|Quests:${quests === "None" ? "" : quests}||Env:${env === "None" ? "" : env}|`);
   lines.push("");
 
   const formatStats = (s) => {
@@ -1236,44 +1168,27 @@ function buildPipeString(stateObj) {
     return parts.length ? parts.join(",") : "ATK:0,MATK:0,DEF:0,SATK:0,SDEF:0";
   };
 
+  // Fixed: Will output |Meters:| instead of omitting the pipe
   const formatMeters = (m) => {
-    if (!Array.isArray(m) || !m.length) return "";
-    return `|Meters:` + m.map(x => `${safePipeText(x.name)}:${x.curr}/${x.max}`).join(";") + `|`;
+    if (!Array.isArray(m) || !m.length) return "|Meters:|";
+    return `|Meters:` + m.map(x => `${x.name}:${x.curr}/${x.max}`).join(";") + `|`;
   };
 
   const buildEntity = (ent, isPlayer = false, isPartyOrNPC = false) => {
-    // FIXED: Allow Coin for EVERYONE.
-    // If it's the player, or if the entity has a coin value set, include it.
     let coinStr = (isPlayer || (ent.dankcoin !== undefined && ent.dankcoin !== null)) ? `||Coin:${ent.dankcoin ?? 0}` : "";
     let bondStr = isPartyOrNPC ? `||Bond:${ent.bond ?? 0}` : "";
     
-    let block = [`|Name:${safePipeText(ent.name || "Unknown")}||HP:${ent.hp_curr ?? 0}/${ent.hp_max ?? 0}||MP:${ent.mp_curr ?? 0}/${ent.mp_max ?? 0}${coinStr}${bondStr}|`];
-    
+    let block = [`|Name:${ent.name || "Unknown"}||HP:${ent.hp_curr ?? 0}/${ent.hp_max ?? 0}||MP:${ent.mp_curr ?? 0}/${ent.mp_max ?? 0}${coinStr}${bondStr}|`];
     block.push(`|Stats:${formatStats(ent.stats)}|`);
     
-    const meters = formatMeters(ent.meters);
-    if (meters) block.push(meters);
+    // Always push the meters pipe
+    block.push(formatMeters(ent.meters));
     
     block.push(`|INV:${safeJoin(ent.inventory)}||Skills:${safeJoin(ent.skills)}||Passives:${safeJoin(ent.passives)}||Masteries:${safeJoin(ent.masteries)}||Status:${safeJoin(ent.status_effects)}|`);
     
     if (ent.vehicle && ent.vehicle.active) {
-    const v = ent.vehicle;
-    const vType = String(v.type || "Mecha").toLowerCase();
-  
-    const energyPipe =
-      (vType === "car" || vType === "ship")
-        ? `||EN:${v.en_curr ?? v.mp_curr ?? 0}/${v.en_max ?? v.mp_max ?? 0}`
-        : `||MP:${v.mp_curr ?? v.en_curr ?? 0}/${v.mp_max ?? v.en_max ?? 0}`;
-  
-    const metersPipe =
-      Array.isArray(v.meters) && v.meters.length
-        ? `||Meters:${v.meters.map(x => `${safePipeText(x.name)}:${x.curr}/${x.max}`).join(";")}`
-        : `||Meters:`;
-  
-    block.push(
-      `>Vehicle|Type:${safePipeText(v.type || "Mecha")}||Name:${safePipeText(v.name || "Vehicle")}||HP:${v.hp_curr ?? 0}/${v.hp_max ?? 0}${energyPipe}||Stats:${formatStats(v.stats)}${metersPipe}||INV:${safeJoin(v.inventory)}||Skills:${safeJoin(v.skills)}||Passives:${safeJoin(v.passives)}||Status:${safeJoin(v.status_effects)}|`
-    );
-  }
+      block.push(`>Vehicle|Type:${ent.vehicle.type || "Mecha"}||Name:${ent.vehicle.name || "Vehicle"}||HP:${ent.vehicle.hp_curr ?? 0}/${ent.vehicle.hp_max ?? 0}|`);
+    }
     return block;
   };
 
@@ -2378,9 +2293,14 @@ function parsePipeFormat(text) {
 
   const splitNum = (str) => {
     if (!str) return [0, 0];
-    const parts = str.split('/').map(s => parseFloat(s) || 0);
-    return [parts[0] ?? 0, parts[1] ?? 0];
+    if (str.includes("???")) return ["???", "???"];
+    const parts = str.split('/');
+    let c = parts[0].trim();
+    // Keep the second part intact (don't parseFloat) to preserve math dropdowns
+    let m = parts.length > 1 ? parts.slice(1).join('/').trim() : c;
+    return [c, m];
   };
+
 
   const parseList = (str) => str ? str.split(';').map(s => s.trim()).filter(Boolean) : [];
 
