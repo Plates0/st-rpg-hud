@@ -1149,12 +1149,12 @@ function buildPipeString(stateObj) {
   let lines = ["[Global]"];
   lines.push(`|Loc:${stateObj.location || "Unknown"}||Time:${stateObj.world_time?.month} ${stateObj.world_time?.day},${stateObj.world_time?.clock}||Weather:${stateObj.world_time?.weather || "Unknown"}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
   
-  const safeJoin = (arr) => Array.isArray(arr) && arr.length ? arr.map(i => typeof i === 'object' ? i.name : i).join(";") : "None";
+  const safeJoin = (arr) => Array.isArray(arr) && arr.length ? arr.map(i => typeof i === 'object' ? i.name : i).join(";") : "";
   
   // Explicitly keep pipes even if empty
   const quests = safeJoin(stateObj.quests);
   const env = safeJoin(stateObj.env_effects);
-  lines.push(`|Quests:${quests === "" ? "" : quests}||Env:${env === "" ? "" : env}|`);
+  lines.push(`|Quests:${quests === "None" ? "" : quests}||Env:${env === "None" ? "" : env}|`);
   lines.push("");
 
   const formatStats = (s) => {
