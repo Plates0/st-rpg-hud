@@ -1154,7 +1154,7 @@ function buildPipeString(stateObj) {
   // Explicitly keep pipes even if empty
   const quests = safeJoin(stateObj.quests);
   const env = safeJoin(stateObj.env_effects);
-  lines.push(`|Quests:${quests === "None" ? "" : quests}||Env:${env === "None" ? "" : env}|`);
+  lines.push(`|Quests:${quests === "" ? "" : quests}||Env:${env === "" ? "" : env}|`);
   lines.push("");
 
   const formatStats = (s) => {
