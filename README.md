@@ -20,7 +20,7 @@ Go into the regex folder → install it → go back to SillyTavern → Extension
 - I got too lazy to create a menu directly in the extensions tab, so you'll just have to enable/disable it via extensions → manage extension → uncheck/check RPG HUD.
 
 ## RPG Guideline
-- If you're using this with Dankholme RPG, simply make a copy of the current RPG Toggle, disable it, then replace the copy with this guideline (there are two here, the first one is shorter, but if you have trouble with that, try the second. There's more variations in the thread on Discord.):
+- If you're using this with Dankholme RPG, simply make a copy of the current RPG Toggle, disable it, then replace the copy with this guideline (There's occasionaly more variations in the thread on Discord.):
 
 ---
 ```
