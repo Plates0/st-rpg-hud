@@ -1,29 +1,3 @@
-# RPG HUD (SillyTavern Extension, Pipe Format)
-
-Shows an RPG HUD panel that reads a single <rpg_state> block from chat and renders stats, party/enemy summaries, meters, and an editor.
-
-## Install
-SillyTavern → Extensions → Install extension → paste this repo URL:
-https://github.com/Plates0/st-rpg-hud
-
-(Optional) specify a branch (e.g. main or dev).
-
-## IMPORTANT
-**MAKE SURE TO DOWNLOAD AND ENABLE THE REGEX SCRIPTS TO HIDE THE JSON AND SAVE TOKENS (Also read the RPG Guideline section)**
-Go into the regex folder → install it → go back to SillyTavern → Extensions → Regex → import → select the installed file (enable them if they aren't already enabled).
-
-## Usage
-- Ensure your character / system prompt outputs exactly one <rpg_state>...</rpg_state> block at the end of each assistant reply.
-- Open the ⚙️ settings on the HUD for Scan/Edit/Reset and appearance options.
-
-## Enabling/Disabling
-- I got too lazy to create a menu directly in the extensions tab, so you'll just have to enable/disable it via extensions → manage extension → uncheck/check RPG HUD.
-
-## RPG Guideline
-- If you're using this with Dankholme RPG, simply make a copy of the current RPG Toggle, disable it, then replace the copy with this guideline (There's occasionaly more variations in the thread on Discord.):
-
----
-```
 <RPG Guidelines>
 
 I. STATE & PIPE FORMAT (MANDATORY)
@@ -32,13 +6,12 @@ CRITICAL: Do not use Markdown code blocks. Just the raw tag and text.
 UNKNOWN VALUES: Use "???" for unknown numbers or hidden stats.
 SCHEMA RULES:
 - Separate lists (like inventory, skills, masteries, quests, status, env) using semicolons (;).
-- Time must be formatted as Month Day,Clock (e.g. `Mar 7,12:00`).
+- Time must be formatted as Month Day,Clock
 - Stats can contain equations (e.g., `ATK:210 (160+50+0)`) or raw integers (e.g., `ATK:10`).
 - Meters (Dynamic Stats): Store shields, Sanity, Hunger, Arousal, etc., using the format `Name:Curr/Max` inside a `|Meters:...|` pipe (e.g., `|Meters:Shield:30/80;Sanity:90/100|`). (Max is not capped at 100; add/remove as narrative dictates).
 
-When updating the Time, do NOT default to 1-minute increments. 
+When updating the Time, do NOT default to 1-minute increments unless it makes sense. 
 Advance the clock dynamically based on the narrative events of your response:
-- Conversation/Interaction: Advance 5–15 minutes.
 - Short Travel/Exploration: Advance 30–60 minutes.
 - Significant Events/Dungeons: Advance 1–3 hours.
 - Rest/Sleep: Advance 8 hours, or however long {{user}} states.
@@ -54,7 +27,7 @@ Year: If Dec 31 rolls over, reset to Jan 1.
 TEMPLATE:
 <rpg_state>
 [Global]
-|Loc:Unknown||Time:{{random:Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec}} {{random:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28}},{{random:06:00,08:30,10:00,12:15,14:45,17:00,19:30,22:00,01:15}}||Weather:{{random:Clear,Sunny,Partly Cloudy,Cloudy,Rain,Heavy Rain,Thunderstorm,Fog,Snow,Blizzard,Windy}}||Combat:Off|
+|Loc:Unknown||Time:{{random:Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec}} {{random:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28}},{{random:06:00,08:30,10:00,12:15,14:45,17:00,19:30,22:00,01:15}}||Combat:Off|
 |Quests:||Env:|
 
 [Player]
@@ -70,7 +43,8 @@ II. VISIBILITY & PERSISTENCE
 3. Are narratively revealed.
 4. Join the [Party].
 5. Always keep party members unless they decide to leave the party permanently.
-Coin is not shared.
+Coin is not shared. [Party] & [Enemies] share same keys as [Player]
+
 
 Bond: Always display the |Bond:| stat in the entity's pipe if active.
 
@@ -91,7 +65,7 @@ Env: Track active environmental pressures (sanity, hunger, weather, oxygen).
 - Example: "Dungeon Corruption -4 Sanity/Hunger Per Turn" or "Sandstorm -10 HP Per Turn"
 
 Examples (Inventory/Skills):
-- "Heavy Strike (MP-20) ATK*1.5"
+- "Heavy Strike (MP-20) ATK*1.5, A Powerful Strike."
 - "Iron Sword +10 ATK [X]"
 - "Healing Whispers (MP-15) Heal target MATK*1, recovers 15 Sanity"
 
@@ -147,15 +121,12 @@ Shared Skills: List skills granted to the wielder by the weapon inside the [Play
 Inventory: Add "Living Weapon ({{user}}) [X]" to the Wielder's inventory pipe.
 
 VII. UI COMPONENTS (HTML IN NARRATIVE)
-Output these HTML blocks in the main response text (NOT inside the <rpg_state> block) when relevant.
+Output these HTML blocks in the main response text (NOT inside the <rpg_state> block) when relevant. ALWAYS show math.
 
 Hit Div:
-<div style="border:1px solid #FFD700; padding:10px; border-radius:8px; margin:10px 0; text-align:center;">⚔️ <strong>DEEP CUT!</strong> [A] dealt [N] DMG to [B]! <em>([ATK] vs [DEF] → [N] dmg!)</em></div>
+<div style="border:1px solid #FFD700; padding:10px; border-radius:8px; margin:10px 0; text-align:center;">⚔️ <strong>DEEP CUT!</strong> [A] dealt [N] DMG to [B]! <em>([X ATK] vs [X DEF] → [N] dmg!)</em></div>
 
 Combat Header:
 <div style="border:3px solid #FF0000; padding:15px; background:#ffebee; border-radius:10px; text-align:center; margin-bottom:20px; box-shadow:0 0 15px rgba(255,0,0,0.5);"><strong style="color:#d50000; font-size:1.2em;">⚠️ COMBAT ENGAGED ⚠️</strong></div>
 
 </RPG Guidelines>
-```
----
-- Otherwise, create a new lorebook entry, paste it into the box, check Non-recursable, Prevent further recursion, set the order to be very high, and set it as always active (blue dot).
