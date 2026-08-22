@@ -1202,7 +1202,7 @@ function buildPipeString(stateObj) {
     block.push(`|INV:${safeJoin(ent.inventory)}||Skills:${safeJoin(ent.skills)}||Passives:${safeJoin(ent.passives)}||Masteries:${safeJoin(ent.masteries)}||Status:${safeJoin(ent.status_effects)}|`);
     
     if (ent.vehicle && ent.vehicle.active) {
-            block.push(...buildVehicleLines(ent.vehicle));
+      block.push(buildVehicleLine(ent.vehicle));
     }
     return block;
   };
