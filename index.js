@@ -1,3 +1,135 @@
+// =====================================================================
+// RPG HUD — FORMAT REFERENCE
+// Last schema change: 2026-08-22 (vehicles, bonds, timers, year)
+//
+// This describes what the PARSER ACCEPTS. The AI guideline describes the
+// narrower subset the model is told to WRITE. When they disagree, this wins.
+// ---------------------------------------------------------------------
+//
+// BLOCK DISCOVERY
+//   <rpg_state> ... </rpg_state>   case-insensitive, attributes allowed.
+//   Only non-user messages are scanned; the NEWEST match wins and its index
+//   is cached in lastRpgMsgIndex. Markdown code fences are stripped first.
+//   State lives ONLY in the block. localStorage holds UI prefs, nothing else.
+//
+// LINE TYPES
+//   [Header]  Section switch. FUZZY: contains "player"/"party"/"enem"/"npc";
+//             anything else falls back to Global.
+//   >...      Targets the CURRENT entity's .vehicle (auto-creates it and sets
+//             active=true). Text between ">" and the first "|" is decorative,
+//             so ">Vehicle|..." and ">|..." are identical. A vehicle may be
+//             written as ONE long line or split across several ">" lines —
+//             every ">" line retargets the same vehicle object.
+//   |...|     Data for the current entity.
+//   Blank lines are skipped. Every line first passes sanitizeBrokenPipeLine(),
+//   which rewrites stray in-text "|" to the lookalike "｜".
+//
+// PIPE GRAMMAR      /\|([^|:]+):\s*([^|]*?)(?=\||$)/g
+//   Fields are separated by "||"; the line opens and closes with "|".
+//   KEY   : no "|" and no ":". Trimmed + lowercased on read.
+//   VALUE : anything up to the next "|". MAY contain ":" "/" "," "(" ")".
+//   Key ABSENT  -> field left unchanged.
+//   Key PRESENT but empty ("|INV:|") -> field CLEARED.
+//   A literal "|" inside a value will corrupt the line. Use safePipeText().
+//
+// GLOBAL KEYS   (read into newState regardless of which line they appear on)
+//   Loc      free text
+//   Time     "Month Day[ Year],HH:MM"   year optional; if omitted it is
+//            CARRIED FORWARD from the previous parse rather than cleared.
+//   Weather  free text (drives getWeatherEmoji)
+//   Combat   contains "off" -> inactive; otherwise digits -> round number
+//   Quests   ";"-separated list
+//   Env      ";"-separated list
+//   Bonds    permanent ledger, see below
+//   Timers   cooldowns/durations/doom clocks, see below
+//
+// ENTITY KEYS
+//   Name      In [Party]/[Enemies]/[NPCs] a NON-">" line with Name: STARTS a
+//             new entity; later lines attach to it. In [Player] it renames the
+//             player. On a ">" line it names the vehicle.
+//   HP        "curr/max". Kept as STRINGS so "300 ((100+100)*1.5)" survives.
+//             "???" -> both sides "???". Numbers >= 999999999 render as ∞.
+//   MP / EN   Same shape. ship+car prefer en_*, everything else mp_*; the
+//             parser MIRRORS both onto vehicles so either key works.
+//             CAVEAT: target.type is read BEFORE data.type is applied, so on a
+//             single-line vehicle the type is still the default when energy is
+//             classified — harmless only because of the mirroring.
+//   Coin      integer -> .dankcoin
+//   Bond      integer; "∞" -> 101. Party/NPC only.
+//             FAILSAFE: a "Bond:n" entry hiding inside Status is extracted
+//             into .bond and removed from the status list.
+//   Stats     "ATK:1,MATK:2,DEF:3,SATK:4,SDEF:5" — comma-separated, arbitrary
+//             keys accepted, values may carry math: "210 (160+50+0)".
+//   Meters    "Name:curr/max;Name:curr/max" — arbitrary count, max uncapped.
+//   INV / Skills / Passives / Masteries / Status   ";"-separated lists.
+//   Type      vehicle only: mecha | ship | car | transport
+//
+// BONDS LEDGER      |Bonds:Name:Value;Name:Value|
+//   Append-only roster that outlives a character leaving the scene.
+//   Name/value split on the LAST ":" so names may contain colons.
+//   Keyed by BASE NAME: bondBaseName() strips "(...)", "[...]", and any
+//   " - suffix", so "Alice (Battle Form)" == "Alice". Stored under the base.
+//   Value "∞" -> 101. Negative values allowed.
+//   MERGE ORDER on every parse: previous memory -> block -> live party/NPC
+//   |Bond:| values (live wins). A name the model drops is RESTORED from memory.
+//   purgeBondsFromHistory() is the only code that edits old messages: it
+//   surgically rewrites just the |Bonds:| pipe in every message AND in
+//   msg.swipes[]. It never touches anything else.
+//
+// TIMERS            |Timers:[Owner/]Name:Value[:KIND];...|
+//   Name = before the FIRST ":". KIND = after the LAST ":" if it is one of
+//   CD/BUFF/DEBUFF/DOOM, else the whole remainder is the value and KIND
+//   defaults to CD. That split is what lets a clock time live in the value.
+//   VALUE is either:
+//     "2/3"              turns remaining/total (drives the progress bar)
+//     "47"               bare turn count, no bar
+//     "Jan 6[ 1023],14:00"  world-time deadline (year inherited if omitted)
+//     "14:00"            next occurrence of that clock time
+//   AUTO-REPAIR: if combat.round increased AND a turn value is byte-identical
+//   to last parse, the HUD decrements it and flags .repaired (shown as "*").
+//   If the model DID update it, the HUD leaves it alone — no double-ticking.
+//   Timers the model drops are NOT restored (dropping a finished CD is correct).
+//
+// PARSE PIPELINE (order matters)
+//   1. fresh deep clone of defaultState
+//   2. line-by-line pipe parse
+//   3. bonds  = mergeBondLedger(previous, block) then live bonds overwrite
+//   4. timers = mergeTimers(previous, block)  [auto-repair happens here]
+//   5. world_time.year carried forward if the block omitted it
+//   6. maybeReportListChanges() diffs INV/Skills/Passives/Masteries vs the
+//      previous parse and toasts only SHRINKAGE (a dropped description).
+//      Equip-tag-only changes are ignored; adds/removes go to console.
+//
+// WRITE-BACK
+//   buildPipeString() rebuilds the ENTIRE block from current state and regex-
+//   replaces it in chat[lastRpgMsgIndex], then saveChat().
+//   Callers: saveEditor · manual ↻ scan · remove/clear character · remind ·
+//            bond commit · timer commit · ⏭ advance turn.
+//   The automatic observer scan NEVER writes.
+//   *** NEVER run buildPipeString over an OLD message — it would stamp today's
+//       state onto that message's history. Edit old messages surgically only.
+//   LOSSY BY DESIGN: anything the parser doesn't read is dropped on rewrite,
+//   and a vehicle is only emitted while active — unchecking Active DELETES it.
+//   KNOWN GAP: resetRPG() does not write back, so a reset reverts on the next
+//   scan. Left as-is intentionally; most users start a new chat instead.
+//
+// OBSERVER
+//   MutationObserver on #chat, 1200ms debounce -> checkMessage(false).
+//   Skipped entirely while bondsEditMode || timersEditMode is true so inline
+//   inputs aren't wiped mid-typing.
+//
+// INDICATOR DOT
+//   green = latest block parses · yellow = pipe/colon error (tap for caret
+//   panel) · red = latest message is the user's · grey = no <rpg_state>.
+//
+// ADDING A NEW FIELD — touch all five:
+//   1. defaultState                      2. parsePipeFormat  (read the key)
+//   3. buildPipeString / buildEntity     (write the key)
+//   4. the editor (render + saveEditor)  5. the AI guideline
+//   Forget #3 and it silently vanishes on the next write-back. That was the
+//   original vehicle bug.
+// =====================================================================
+
 console.log("RPG HUD: index.js loaded ✅", new Date().toISOString());
 window.__rpgHudLoaded = true;
 
@@ -106,7 +238,7 @@ const defaultState = {
   dankcoin: 0,
 
   location: "Unknown",
-  world_time: { month: "Jan", day: 1, clock: "12:00", weather: "Unknown" },
+  world_time: { month: "Jan", day: 1, year: "2055", clock: "12:00", weather: "Unknown" },
 
   combat: { active: false, round: 1 },
 
@@ -130,10 +262,15 @@ const defaultState = {
   party: [],
   enemies: [],
   npcs: [],
+  bonds: [],
+  timers: [],
 };
 
 let rpgState = JSON.parse(JSON.stringify(defaultState));
 let activeTab = "inventory";
+let bondsEditMode = false;
+let timersEditMode = false;
+let bondsSnapshot = [];
 let isMinimized = false;
 let scanTimer = null;
 let charIndex = 0;
@@ -161,6 +298,7 @@ const defaultUiSettings = {
   fontScale: 1.0,
   hudWidth: 280,
   hudHeight: 0,
+  changeAlerts: true,
 };
 
 let uiSettings = (() => {
@@ -211,6 +349,103 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+// --- CHANGE ALERTS ---
+let lastListSnapshot = null;
+let lastChatKey = null;
+
+const WATCHED_LISTS = [
+  { key: "inventory", label: "Item" },
+  { key: "skills", label: "Skill" },
+  { key: "passives", label: "Passive" },
+  { key: "masteries", label: "Mastery" },
+];
+
+function entryBaseName(s) {
+  return String(s ?? "").replace(/[\(\[\{].*$/, " ").replace(/\s+/g, " ").trim();
+}
+
+function stripStatusTags(s) {
+  return String(s ?? "").replace(/\[[^\]]*\]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function listToMap(list) {
+  const m = new Map();
+  (Array.isArray(list) ? list : []).forEach((i) => {
+    const text = String(typeof i === "object" ? (i?.name ?? "") : (i ?? "")).trim();
+    const key = entryBaseName(text).toLowerCase();
+    if (!key || m.has(key)) return;
+    m.set(key, text);
+  });
+  return m;
+}
+
+function snapshotLists(ent) {
+  const snap = {};
+  WATCHED_LISTS.forEach(({ key }) => { snap[key] = listToMap(ent?.[key]); });
+  return snap;
+}
+
+function diffLists(prev, next) {
+  const out = [];
+  WATCHED_LISTS.forEach(({ key, label }) => {
+    const a = prev?.[key] || new Map();
+    const b = next?.[key] || new Map();
+
+    b.forEach((text, k) => {
+      if (!a.has(k)) { out.push({ type: "added", label, name: text }); return; }
+      const before = a.get(k);
+      if (before === text) return;
+      // equipping/unequipping only -> not a real change
+      if (stripStatusTags(before) === stripStatusTags(text)) return;
+
+      const shrank = text.length < before.length - 2;
+      out.push({ type: shrank ? "lost" : "changed", label, name: text, before });
+    });
+
+    a.forEach((text, k) => {
+      if (!b.has(k)) out.push({ type: "removed", label, name: text });
+    });
+  });
+  return out;
+}
+
+function currentChatKey(context) {
+  return [context?.chatId, context?.characterId, context?.groupId].map((v) => String(v ?? "")).join("|");
+}
+
+function maybeReportListChanges() {
+  const next = snapshotLists(rpgState);
+  const prev = lastListSnapshot;
+  lastListSnapshot = next;
+
+  if (!prev) return;                    // first scan is baseline only
+  if (!uiSettings.changeAlerts) return;
+
+  const diffs = diffLists(prev, next);
+  if (!diffs.length) return;
+  console.log("RPG HUD: list changes", diffs);
+
+  const lost = diffs.filter((d) => d.type === "lost");
+  if (!lost.length) return;
+
+  const shown = lost.slice(0, 4);
+  const body =
+    shown
+      .map((d) =>
+        `${escHtml(d.label)}: <b>${escHtml(d.name)}</b>` +
+        `<br><span style="opacity:0.7;">was: ${escHtml(d.before)}</span>`
+      )
+      .join("<br><br>") +
+    (lost.length > 4 ? `<br><br>(+${lost.length - 4} more)` : "") +
+    (diffs.length > lost.length
+      ? `<br><br><span style="opacity:0.6;">${diffs.length - lost.length} other change(s) — see console</span>`
+      : "");
+
+  if (window.toastr?.warning) {
+    window.toastr.warning(body, "⚠️ Description dropped", { escapeHtml: false });
+  }
+}
+
 function sanitizeBrokenPipeLine(line) {
   const s = String(line ?? "");
   let out = "";
@@ -651,6 +886,322 @@ function parseBondValue(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// --- BOND LEDGER ---
+function bondBaseName(n) {
+  return String(n ?? "")
+    .replace(/[\(\[\{].*$/, " ")      // "Alice (Battle Form)" -> "Alice"
+    .replace(/\s*[-–—:]\s.*$/, " ")   // "Alice - Awakened"    -> "Alice"
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normBondName(n) {
+  return bondBaseName(n).toLowerCase();
+}
+
+function upsertBond(list, name, value) {
+  if (!Array.isArray(list)) return;
+  const key = normBondName(name);
+  if (!key) return;
+  const display = bondBaseName(name) || String(name).trim();
+  const hit = list.find((b) => normBondName(b.name) === key);
+  if (hit) {
+    hit.name = display;
+    hit.bond = value;
+  } else {
+    list.push({ name: display, bond: value });
+  }
+}
+
+function parseBondLedger(str) {
+  const out = [];
+  if (!str) return out;
+  String(str).split(";").forEach((chunk) => {
+    const s = chunk.trim();
+    if (!s) return;
+    const idx = s.lastIndexOf(":");
+    if (idx === -1) return;
+    const name = s.slice(0, idx).trim();
+    if (!name) return;
+    upsertBond(out, name, parseBondValue(s.slice(idx + 1)));
+  });
+  return out;
+}
+
+function formatBondLedger(list) {
+  if (!Array.isArray(list) || !list.length) return "";
+  return list
+    .filter((b) => b && b.name)
+    .map((b) => `${safePipeText(b.name)}:${b.bond >= 101 ? "∞" : b.bond}`)
+    .join(";");
+}
+
+function mergeBondLedger(prevList, parsedList) {
+  const out = [];
+  (Array.isArray(prevList) ? prevList : []).forEach((b) => upsertBond(out, b.name, b.bond));
+  (Array.isArray(parsedList) ? parsedList : []).forEach((b) => upsertBond(out, b.name, b.bond));
+  return out;
+}
+
+// Live party/NPC bonds are authoritative — push them into the ledger
+function syncLiveBondsIntoLedger(state) {
+  if (!state) return;
+  if (!Array.isArray(state.bonds)) state.bonds = [];
+  const live = [
+    ...(Array.isArray(state.party) ? state.party : []),
+    ...(Array.isArray(state.npcs) ? state.npcs : []),
+  ];
+  live.forEach((u) => {
+    if (!u || !u.name) return;
+    if (u.bond === undefined || u.bond === null || u.bond === "") return;
+    upsertBond(state.bonds, u.name, parseBondValue(u.bond));
+  });
+}
+
+function bondLedgerToEditorText(list) {
+  if (!Array.isArray(list) || !list.length) return "";
+  return list
+    .filter((b) => b && b.name)
+    .map((b) => `${b.name} | ${b.bond >= 101 ? "∞" : b.bond}`)
+    .join("\n");
+}
+
+function parseBondLedgerFromText(text) {
+  const out = [];
+  String(text || "").split("\n").forEach((raw) => {
+    const line = raw.trim();
+    if (!line) return;
+    let parts = line.split("|").map((s) => s.trim());
+    if (parts.length < 2) parts = line.split(":").map((s) => s.trim());
+    if (parts.length < 2 || !parts[0]) return;
+    upsertBond(out, parts[0], parseBondValue(parts[1]));
+  });
+  return out;
+}
+
+// --- TIMERS ---
+const TIMER_KINDS = ["CD", "BUFF", "DEBUFF", "DOOM"];
+const KIND_RANK = { DOOM: 0, DEBUFF: 1, BUFF: 2, CD: 3 };
+const TIMER_MONTHS = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+const TIMER_MONTH_DAYS = [31,28,31,30,31,30,31,31,30,31,30,31];
+const YEAR_MINUTES = 365 * 1440;
+
+function monthIndex(m) {
+  const i = TIMER_MONTHS.indexOf(String(m || "").trim().slice(0, 3).toLowerCase());
+  return i === -1 ? 0 : i;
+}
+
+function clockToMinutes(clock) {
+  const m = String(clock || "").match(/(\d{1,2})\s*:\s*(\d{1,2})/);
+  if (!m) return 0;
+  return (parseInt(m[1], 10) || 0) * 60 + (parseInt(m[2], 10) || 0);
+}
+
+function worldMinutes(month, day, clock, year) {
+  const mi = monthIndex(month);
+  let days = 0;
+  for (let i = 0; i < mi; i++) days += TIMER_MONTH_DAYS[i];
+  days += Math.max(1, parseInt(day, 10) || 1) - 1;
+  const y = parseInt(year, 10);
+  const base = Number.isFinite(y) ? y * YEAR_MINUTES : 0;
+  return base + days * 1440 + clockToMinutes(clock);
+}
+
+function nowWorldMinutes() {
+  const t = rpgState.world_time || {};
+  return worldMinutes(t.month, t.day, t.clock, t.year);
+}
+
+function parseDeadline(val) {
+  const s = String(val || "").trim();
+  const t = rpgState.world_time || {};
+
+  const full = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2})(?:\s+(\d{1,4}))?\s*,\s*(\d{1,2}\s*:\s*\d{1,2})$/);
+  if (full) return worldMinutes(full[1], full[2], full[4], full[3] ?? t.year);
+
+  const clockOnly = s.match(/^(\d{1,2}\s*:\s*\d{1,2})$/);
+  if (clockOnly) {
+    let target = worldMinutes(t.month, t.day, clockOnly[1], t.year);
+    if (target <= nowWorldMinutes()) target += 1440;
+    return target;
+  }
+  return null;
+}
+
+function minutesUntil(targetMin) {
+  let d = targetMin - nowWorldMinutes();
+  if (d < -YEAR_MINUTES / 2) d += YEAR_MINUTES; // Dec -> Jan rollover
+  return d;
+}
+
+function formatMinutes(mins) {
+  const a = Math.max(0, Math.round(mins));
+  const d = Math.floor(a / 1440);
+  const h = Math.floor((a % 1440) / 60);
+  const m = a % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function timerKindStyle(kind) {
+  switch (String(kind || "CD").toUpperCase()) {
+    case "DOOM":   return { color: "#ff5252", icon: "☠️", zero: "TRIGGERED" };
+    case "DEBUFF": return { color: "#ff9800", icon: "⚠️", zero: "ENDED" };
+    case "BUFF":   return { color: "#69f0ae", icon: "✨", zero: "ENDED" };
+    default:       return { color: "#90caf9", icon: "⏳", zero: "READY" };
+  }
+}
+
+function timerInfo(t) {
+  const kind = String(t?.kind || "CD").toUpperCase();
+  const raw = String(t?.value ?? "").trim();
+  const zero = timerKindStyle(kind).zero;
+
+  const turns = raw.match(/^(-?\d+)\s*\/\s*(\d+)$/);
+  if (turns) {
+    const cur = parseInt(turns[1], 10);
+    const max = parseInt(turns[2], 10);
+    return { kind, mode: "turns", done: cur <= 0,
+      pct: max > 0 ? clamp((cur / max) * 100, 0, 100) : 0,
+      label: cur <= 0 ? zero : `${cur} turn${cur === 1 ? "" : "s"}`,
+      sortKey: cur <= 0 ? Infinity : cur };
+  }
+
+  const bare = raw.match(/^(-?\d+)$/);
+  if (bare) {
+    const cur = parseInt(bare[1], 10);
+    return { kind, mode: "turns", done: cur <= 0, pct: null,
+      label: cur <= 0 ? zero : `${cur} turn${cur === 1 ? "" : "s"}`,
+      sortKey: cur <= 0 ? Infinity : cur };
+  }
+
+  const dl = parseDeadline(raw);
+  if (dl !== null) {
+    const left = minutesUntil(dl);
+    return { kind, mode: "time", done: left <= 0, pct: null,
+      label: left <= 0 ? zero : formatMinutes(left),
+      sortKey: left <= 0 ? Infinity : left / 60 };
+  }
+
+  return { kind, mode: "raw", done: false, pct: null, label: raw || "?", sortKey: Infinity };
+}
+
+function timerDelta(t) {
+  if (!t || t.prev == null) return "";
+  const a = String(t.prev), b = String(t.value);
+  if (a === b) return "";
+
+  const pa = parseDeadline(a), pb = parseDeadline(b);
+  if (pa !== null && pb !== null) {
+    const d = pb - pa;
+    return d ? `${d > 0 ? "▲" : "▼"}${formatMinutes(Math.abs(d))}` : "";
+  }
+  const na = a.match(/^(-?\d+)/), nb = b.match(/^(-?\d+)/);
+  if (na && nb) {
+    const d = parseInt(nb[1], 10) - parseInt(na[1], 10);
+    return d ? `${d > 0 ? "▲" : "▼"}${Math.abs(d)}` : "";
+  }
+  return "";
+}
+
+function timerKey(t) {
+  return `${String(t?.owner || "").trim().toLowerCase()}|${String(t?.name || "").trim().toLowerCase()}`;
+}
+
+// name = before first ":", kind = after last ":" (if recognized), value = the middle
+function parseTimers(str) {
+  const out = [];
+  if (!str) return out;
+
+  String(str).split(";").forEach((chunk) => {
+    const s = chunk.trim();
+    if (!s) return;
+
+    const firstColon = s.indexOf(":");
+    let left = firstColon === -1 ? s : s.slice(0, firstColon);
+    let rest = firstColon === -1 ? "" : s.slice(firstColon + 1);
+
+    let kind = "CD";
+    const lastColon = rest.lastIndexOf(":");
+    if (lastColon !== -1) {
+      const cand = rest.slice(lastColon + 1).trim().toUpperCase();
+      if (TIMER_KINDS.includes(cand)) { kind = cand; rest = rest.slice(0, lastColon); }
+    } else if (TIMER_KINDS.includes(rest.trim().toUpperCase())) {
+      kind = rest.trim().toUpperCase();
+      rest = "";
+    }
+
+    let owner = "";
+    let name = left.trim();
+    const slash = name.indexOf("/");
+    if (slash !== -1) {
+      owner = name.slice(0, slash).trim();
+      name = name.slice(slash + 1).trim();
+    }
+    if (!name) return;
+
+    out.push({ owner, name, value: rest.trim(), kind });
+  });
+  return out;
+}
+
+function formatTimers(list) {
+  if (!Array.isArray(list) || !list.length) return "";
+  const clean = (s) => safePipeText(s).replace(/;/g, ",");
+  return list
+    .filter((t) => t && t.name)
+    .map((t) => {
+      const owner = String(t.owner || "").trim();
+      const nm = clean(owner ? `${owner}/${t.name}` : t.name);
+      return `${nm}:${clean(t.value || "0")}:${String(t.kind || "CD").toUpperCase()}`;
+    })
+    .join(";");
+}
+
+// Auto-repair: if the round advanced but the model left a turn timer untouched, tick it
+function mergeTimers(prevState, nextState) {
+  const prevList = Array.isArray(prevState?.timers) ? prevState.timers : [];
+  const prevMap = new Map(prevList.map((t) => [timerKey(t), t]));
+
+  const prevRound = prevState?.combat?.active ? toNumberOr(prevState?.combat?.round, 0) : 0;
+  const nextRound = nextState?.combat?.active ? toNumberOr(nextState?.combat?.round, 0) : 0;
+  const roundAdvanced = nextRound > prevRound;
+
+  return (Array.isArray(nextState.timers) ? nextState.timers : []).map((t) => {
+    const old = prevMap.get(timerKey(t));
+    const out = { ...t, prev: old ? old.value : null };
+
+    if (roundAdvanced && old && String(old.value) === String(t.value)) {
+      const m = String(t.value).match(/^(\d+)\s*\/\s*(\d+)$/);
+      if (m && parseInt(m[1], 10) > 0) {
+        out.value = `${parseInt(m[1], 10) - 1}/${m[2]}`;
+        out.repaired = true;
+      }
+    }
+    return out;
+  });
+}
+
+function advanceTimerTurn() {
+  if (!Array.isArray(rpgState.timers)) return;
+  rpgState.timers.forEach((t) => {
+    const m = String(t.value || "").match(/^(\d+)\s*\/\s*(\d+)$/);
+    if (m && parseInt(m[1], 10) > 0) {
+      t.prev = t.value;
+      t.value = `${parseInt(m[1], 10) - 1}/${m[2]}`;
+      return;
+    }
+    const b = String(t.value || "").match(/^(\d+)$/);
+    if (b && parseInt(b[1], 10) > 0) {
+      t.prev = t.value;
+      t.value = String(parseInt(b[1], 10) - 1);
+    }
+  });
+  renderRPG();
+  writeStateBackToChatMessage(rpgState);
+}
+
 function safeParseFloat(v, fallback = 0) {
   const n = parseFloat(v);
   return Number.isFinite(n) ? n : fallback;
@@ -1060,6 +1611,407 @@ function renderPartyTab() {
   return `${partyHtml}${divider}${npcHtml}`;
 }
 
+// Bond Tracker
+function renderBondsTab() {
+  if (!Array.isArray(rpgState.bonds)) rpgState.bonds = [];
+  const list = rpgState.bonds;
+
+  const party = Array.isArray(rpgState.party) ? rpgState.party : [];
+  const npcs = Array.isArray(rpgState.npcs) ? rpgState.npcs : [];
+
+  const jumpIdxFor = (name) => {
+    const key = normBondName(name);
+    let i = party.findIndex((u) => normBondName(u?.name) === key);
+    if (i !== -1) return charIndexFor("party", i);
+    i = npcs.findIndex((u) => normBondName(u?.name) === key);
+    if (i !== -1) return charIndexFor("npc", i);
+    return null;
+  };
+
+  const btn = (id, text, color) =>
+    `<button id="${id}" style="background:#333; border:1px solid ${color}; color:${color};
+      cursor:pointer; font-size:0.9em; padding:1px 7px; font-weight:bold;">${text}</button>`;
+
+  const header = `
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:4px; margin-bottom:4px;">
+      <span style="color:#f06292; font-weight:bold;">❤️ Bonds</span>
+      <span style="display:flex; gap:4px;">
+        ${bondsEditMode ? btn("rpg-bond-add", "+", "#69f0ae") : ""}
+        ${bondsEditMode ? btn("rpg-bond-edit", "✓", "#69f0ae") : btn("rpg-bond-edit", "✎", "#4FC3F7")}
+      </span>
+    </div>`;
+
+  if (!list.length && !bondsEditMode) {
+    return header + `<div style="opacity:0.5; font-style:italic;">No bonds recorded</div>`;
+  }
+
+  if (bondsEditMode) {
+    const rows = list
+      .map((b, i) => {
+        const val = parseBondValue(b?.bond);
+        const label = val >= 101 ? "∞" : String(val);
+        return `
+        <div style="display:flex; gap:4px; align-items:center; padding:2px 0; border-bottom:1px solid #333;">
+          <input class="rpg-bond-name" data-i="${i}" type="text" value="${escAttr(b?.name ?? "")}"
+            style="flex:1 1 auto; min-width:0; background:#222; border:1px solid #555; color:#fff;
+                   font-family:inherit; font-size:1em;">
+          <input class="rpg-bond-val" data-i="${i}" type="text" value="${escAttr(label)}"
+            style="flex:0 0 46px; width:46px; background:#222; border:1px solid #555; color:#f06292;
+                   font-family:inherit; font-size:1em; text-align:center;">
+          <button class="rpg-bond-del" data-i="${i}" title="Delete"
+            style="flex:0 0 auto; background:#333; border:1px solid #ff5252; color:#ff5252;
+                   cursor:pointer; font-size:0.85em; padding:1px 5px; font-weight:bold;">✕</button>
+        </div>`;
+      })
+      .join("");
+
+    return (
+      header +
+      rows +
+      `<div style="font-size:0.7em; color:#666; margin-top:4px; line-height:1.3;">
+         Blank name deletes the row. ✓ writes to the message.
+       </div>`
+    );
+  }
+
+  const rows = [...list]
+    .sort((a, b) => parseBondValue(b.bond) - parseBondValue(a.bond))
+    .map((b) => {
+      const val = parseBondValue(b.bond);
+      const label = val >= 101 ? "∞" : String(val);
+      const pct = val >= 101 ? 100 : clamp(Math.abs(val), 0, 100);
+      const color = val < 0 ? "#ff5252" : "#f06292";
+      const idx = jumpIdxFor(b.name);
+      const dot = idx !== null
+        ? `<span title="In scene" style="color:#69f0ae;">●</span>`
+        : `<span title="Away" style="color:#666;">○</span>`;
+      const nameHtml = idx !== null
+        ? `<span class="rpg-jump" data-idx="${idx}" style="cursor:pointer; text-decoration:underline; text-decoration-color:#555;">${escHtml(b.name)}</span>`
+        : `<span>${escHtml(b.name)}</span>`;
+
+      return `
+        <div style="padding:4px 0; border-bottom:1px solid #333;">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+            <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${dot} ${nameHtml}</span>
+            <span style="color:${color}; flex:0 0 auto;">${escHtml(label)}/100</span>
+          </div>
+          <div style="width:100%; background:#333; height:4px; border-radius:2px; overflow:hidden; margin-top:3px;">
+            <div style="height:100%; background:${color}; width:${pct}%"></div>
+          </div>
+        </div>`;
+    })
+    .join("");
+
+  return header + rows;
+}
+
+// Read the live inputs back into state WITHOUT re-rendering (keeps focus)
+function readBondInputs() {
+  if (!Array.isArray(rpgState.bonds)) return;
+  document.querySelectorAll(".rpg-bond-name").forEach((el) => {
+    const i = Number(el.dataset.i);
+    if (rpgState.bonds[i]) rpgState.bonds[i].name = el.value;
+  });
+  document.querySelectorAll(".rpg-bond-val").forEach((el) => {
+    const i = Number(el.dataset.i);
+    if (rpgState.bonds[i]) {
+      rpgState.bonds[i].bond = clamp(parseBondValue(el.value), Number.NEGATIVE_INFINITY, 101);
+    }
+  });
+}
+
+function commitBondsEdit() {
+  readBondInputs();
+
+  const cleaned = [];
+  (rpgState.bonds || []).forEach((b) => {
+    if (b && String(b.name || "").trim()) upsertBond(cleaned, b.name, b.bond);
+  });
+
+  const nowKeys = new Set(cleaned.map((b) => normBondName(b.name)));
+  const removed = bondsSnapshot.filter((n) => !nowKeys.has(normBondName(n)));
+
+  rpgState.bonds = cleaned;
+  bondsEditMode = false;
+  bondsSnapshot = [];
+  renderRPG();
+
+  const ok = writeStateBackToChatMessage(rpgState);
+  if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after bond edit");
+
+  if (removed.length) {
+    const label = removed.join(", ");
+    const yes = confirm(
+      `Scrub from |Bonds:| in ALL earlier messages?\n\n${label}\n\n` +
+      `If you skip this, the AI can still see them in older blocks and may add them back.\n\n` +
+      `This edits your chat history and cannot be undone.`
+    );
+    if (yes) {
+      const n = purgeBondsFromHistory(removed);
+      if (window.toastr) window.toastr.info(`Scrubbed ${removed.length} name(s) from ${n} message(s).`);
+    }
+  }
+}
+
+function flushBondsEdit() {
+  if (bondsEditMode) commitBondsEdit();
+}
+
+function bindBondsTab() {
+  const editBtn = document.getElementById("rpg-bond-edit");
+  if (editBtn) {
+    editBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (bondsEditMode) {
+        commitBondsEdit();
+      } else {
+        bondsEditMode = true;
+		bondsSnapshot = (rpgState.bonds || []).map((b) => b?.name).filter(Boolean);
+        renderRPG();
+      }
+    };
+  }
+
+  const addBtn = document.getElementById("rpg-bond-add");
+  if (addBtn) {
+    addBtn.onclick = (e) => {
+      e.stopPropagation();
+      readBondInputs();
+      if (!Array.isArray(rpgState.bonds)) rpgState.bonds = [];
+      rpgState.bonds.push({ name: "", bond: 0 });
+      renderRPG();
+      const inputs = document.querySelectorAll(".rpg-bond-name");
+      inputs[inputs.length - 1]?.focus();
+    };
+  }
+
+  document.querySelectorAll(".rpg-bond-del").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      readBondInputs();
+      const i = Number(el.dataset.i);
+      if (Number.isFinite(i)) rpgState.bonds.splice(i, 1);
+      renderRPG();
+    };
+  });
+
+  document.querySelectorAll(".rpg-bond-name, .rpg-bond-val").forEach((el) => {
+    el.onclick = (e) => e.stopPropagation();
+  });
+}
+
+function renderTimersTab() {
+  if (!Array.isArray(rpgState.timers)) rpgState.timers = [];
+  const list = rpgState.timers;
+
+  const btn = (id, text, color, title) =>
+    `<button id="${id}" title="${escAttr(title || "")}" style="background:#333; border:1px solid ${color};
+      color:${color}; cursor:pointer; font-size:0.9em; padding:1px 7px; font-weight:bold;">${text}</button>`;
+
+  const header = `
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:4px; margin-bottom:4px;">
+      <span style="color:#90caf9; font-weight:bold;">⏱️ Timers</span>
+      <span style="display:flex; gap:4px;">
+        ${timersEditMode ? btn("rpg-timer-add", "+", "#69f0ae", "Add") : btn("rpg-timer-turn", "⏭", "#C0A040", "Advance one turn")}
+        ${timersEditMode ? btn("rpg-timer-edit", "✓", "#69f0ae", "Save") : btn("rpg-timer-edit", "✎", "#4FC3F7", "Edit")}
+      </span>
+    </div>`;
+
+  if (!list.length && !timersEditMode) {
+    return header + `<div style="opacity:0.5; font-style:italic;">No active timers</div>`;
+  }
+
+  if (timersEditMode) {
+    const opts = (sel) =>
+      TIMER_KINDS.map((k) => `<option value="${k}" ${String(sel).toUpperCase() === k ? "selected" : ""}>${k}</option>`).join("");
+
+    const rows = list.map((t, i) => `
+      <div style="display:flex; gap:3px; align-items:center; padding:2px 0; border-bottom:1px solid #333;">
+        <input class="rpg-timer-name" data-i="${i}" type="text" value="${escAttr(t?.owner ? t.owner + "/" + t.name : (t?.name ?? ""))}"
+          style="flex:1 1 auto; min-width:0; background:#222; border:1px solid #555; color:#fff; font-family:inherit; font-size:1em;">
+        <input class="rpg-timer-val" data-i="${i}" type="text" value="${escAttr(t?.value ?? "")}"
+          style="flex:0 0 64px; width:64px; background:#222; border:1px solid #555; color:#90caf9; font-family:inherit; font-size:1em; text-align:center;">
+        <select class="rpg-timer-kind" data-i="${i}"
+          style="flex:0 0 62px; background:#222; border:1px solid #555; color:#ddd; font-family:inherit; font-size:0.9em;">${opts(t?.kind)}</select>
+        <button class="rpg-timer-del" data-i="${i}" title="Delete"
+          style="flex:0 0 auto; background:#333; border:1px solid #ff5252; color:#ff5252; cursor:pointer; font-size:0.85em; padding:1px 5px; font-weight:bold;">✕</button>
+      </div>`).join("");
+
+    return header + rows + `
+      <div style="font-size:0.7em; color:#666; margin-top:4px; line-height:1.35;">
+        Value: <span style="color:#888;">2/3</span> (turns) or <span style="color:#888;">Jan 6,14:00</span> (deadline).<br>
+        Name may be <span style="color:#888;">Owner/Skill</span>. Blank name deletes.
+      </div>`;
+  }
+
+  const rows = list
+    .map((t, i) => ({ t, i, info: timerInfo(t) }))
+    .sort((a, b) => {
+      const ka = KIND_RANK[a.info.kind] ?? 9, kb = KIND_RANK[b.info.kind] ?? 9;
+      if (ka !== kb) return ka - kb;
+      return a.info.sortKey - b.info.sortKey;
+    })
+    .map(({ t, info }) => {
+      const st = timerKindStyle(info.kind);
+      const dim = info.done && info.kind !== "DOOM" ? "opacity:0.55;" : "";
+      const delta = timerDelta(t);
+      const ownerTag = t.owner
+        ? `<span style="font-size:0.75em; color:#888;">${escHtml(t.owner)}·</span>`
+        : "";
+      const mark = t.repaired ? `<span title="Auto-ticked by the HUD" style="color:#C0A040;">*</span>` : "";
+      const bar = info.pct === null ? "" : `
+        <div style="width:100%; background:#333; height:3px; border-radius:2px; overflow:hidden; margin-top:3px;">
+          <div style="height:100%; background:${st.color}; width:${info.pct}%"></div>
+        </div>`;
+
+      return `
+        <div style="padding:4px 0; border-bottom:1px solid #333; ${dim}">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+            <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+              ${st.icon} ${ownerTag}${escHtml(t.name)}${mark}
+            </span>
+            <span style="flex:0 0 auto; color:${st.color};">
+              ${escHtml(info.label)}
+              ${delta ? `<span style="font-size:0.75em; color:#888;"> ${escHtml(delta)}</span>` : ""}
+            </span>
+          </div>
+          ${bar}
+        </div>`;
+    })
+    .join("");
+
+  return header + rows;
+}
+
+function readTimerInputs() {
+  if (!Array.isArray(rpgState.timers)) return;
+  document.querySelectorAll(".rpg-timer-name").forEach((el) => {
+    const i = Number(el.dataset.i);
+    if (!rpgState.timers[i]) return;
+    const raw = String(el.value || "").trim();
+    const slash = raw.indexOf("/");
+    const looksOwned = slash !== -1 && !/^\d+\s*\/\s*\d+$/.test(raw);
+    rpgState.timers[i].owner = looksOwned ? raw.slice(0, slash).trim() : "";
+    rpgState.timers[i].name = looksOwned ? raw.slice(slash + 1).trim() : raw;
+  });
+  document.querySelectorAll(".rpg-timer-val").forEach((el) => {
+    const i = Number(el.dataset.i);
+    if (rpgState.timers[i]) rpgState.timers[i].value = String(el.value || "").trim();
+  });
+  document.querySelectorAll(".rpg-timer-kind").forEach((el) => {
+    const i = Number(el.dataset.i);
+    if (rpgState.timers[i]) rpgState.timers[i].kind = String(el.value || "CD").toUpperCase();
+  });
+}
+
+function commitTimersEdit() {
+  readTimerInputs();
+  rpgState.timers = (rpgState.timers || []).filter((t) => t && String(t.name || "").trim());
+  timersEditMode = false;
+  renderRPG();
+  const ok = writeStateBackToChatMessage(rpgState);
+  if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after timer edit");
+}
+
+function bindTimersTab() {
+  const editBtn = document.getElementById("rpg-timer-edit");
+  if (editBtn) {
+    editBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (timersEditMode) commitTimersEdit();
+      else { timersEditMode = true; renderRPG(); }
+    };
+  }
+
+  const turnBtn = document.getElementById("rpg-timer-turn");
+  if (turnBtn) turnBtn.onclick = (e) => { e.stopPropagation(); advanceTimerTurn(); };
+
+  const addBtn = document.getElementById("rpg-timer-add");
+  if (addBtn) {
+    addBtn.onclick = (e) => {
+      e.stopPropagation();
+      readTimerInputs();
+      if (!Array.isArray(rpgState.timers)) rpgState.timers = [];
+      rpgState.timers.push({ owner: "", name: "", value: "1/1", kind: "CD" });
+      renderRPG();
+      const inputs = document.querySelectorAll(".rpg-timer-name");
+      inputs[inputs.length - 1]?.focus();
+    };
+  }
+
+  document.querySelectorAll(".rpg-timer-del").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      readTimerInputs();
+      const i = Number(el.dataset.i);
+      if (Number.isFinite(i)) rpgState.timers.splice(i, 1);
+      renderRPG();
+    };
+  });
+
+  document.querySelectorAll(".rpg-timer-name, .rpg-timer-val, .rpg-timer-kind").forEach((el) => {
+    el.onclick = (e) => e.stopPropagation();
+  });
+}
+
+function flushInlineEdits() {
+  if (bondsEditMode) commitBondsEdit();
+  if (timersEditMode) commitTimersEdit();
+}
+
+// Strips bond after deleting
+function stripBondsFromText(text, keys) {
+  return String(text).replace(
+    /(<rpg_state\b[^>]*>)([\s\S]*?)(<\/rpg_state>)/gi,
+    (full, open, body, close) => {
+      const newBody = body.replace(/\|Bonds:([^|]*)\|/gi, (m, val) => {
+        const kept = String(val)
+          .split(";")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .filter((chunk) => {
+            const i = chunk.lastIndexOf(":");
+            const nm = i === -1 ? chunk : chunk.slice(0, i);
+            return !keys.has(normBondName(nm));
+          });
+        return `|Bonds:${kept.join(";")}|`;
+      });
+      return open + newBody + close;
+    }
+  );
+}
+
+function purgeBondsFromHistory(names) {
+  const keys = new Set((names || []).map(normBondName).filter(Boolean));
+  if (!keys.size) return 0;
+
+  const chat = SillyTavern.getContext()?.chat;
+  if (!Array.isArray(chat)) return 0;
+
+  let changed = 0;
+  chat.forEach((msg) => {
+    if (!msg || typeof msg.mes !== "string") return;
+    if (!/<rpg_state\b/i.test(msg.mes)) return;
+
+    const next = stripBondsFromText(msg.mes, keys);
+    if (next !== msg.mes) {
+      msg.mes = next;
+      changed++;
+    }
+    // alternate swipes hold their own copy of the block
+    if (Array.isArray(msg.swipes)) {
+      msg.swipes = msg.swipes.map((s) =>
+        typeof s === "string" ? stripBondsFromText(s, keys) : s
+      );
+    }
+  });
+
+  if (changed) {
+    try { window.saveChat?.(); } catch (e) { console.warn("RPG HUD: saveChat failed", e); }
+  }
+  return changed;
+}
+
 // --- METERS (generic bar stats) ---
 function meterColorByName(name) {
   const k = String(name || "").toLowerCase();
@@ -1146,8 +2098,12 @@ function writeStateBackToChatMessage(stateObj) {
 // --- 3. ACTIONS ---
 
 function buildPipeString(stateObj) {
+  syncLiveBondsIntoLedger(stateObj);
+	
   let lines = ["[Global]"];
-  lines.push(`|Loc:${stateObj.location || "Unknown"}||Time:${stateObj.world_time?.month} ${stateObj.world_time?.day},${stateObj.world_time?.clock}||Weather:${stateObj.world_time?.weather || "Unknown"}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
+  const wt = stateObj.world_time || {};
+  const yearStr = wt.year ? ` ${wt.year}` : "";
+  lines.push(`|Loc:${stateObj.location || "Unknown"}||Time:${wt.month} ${wt.day}${yearStr},${wt.clock}||Weather:${wt.weather || "Unknown"}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
   
   const safeJoin = (arr) => Array.isArray(arr) && arr.length ? arr.map(i => typeof i === 'object' ? i.name : i).join(";") : "";
   
@@ -1155,6 +2111,8 @@ function buildPipeString(stateObj) {
   const quests = safeJoin(stateObj.quests);
   const env = safeJoin(stateObj.env_effects);
   lines.push(`|Quests:${quests === "None" ? "" : quests}||Env:${env === "None" ? "" : env}|`);
+  lines.push(`|Bonds:${formatBondLedger(stateObj.bonds)}|`);
+  lines.push(`|Timers:${formatTimers(stateObj.timers)}|`);
   lines.push("");
 
   const formatStats = (s) => {
@@ -1269,11 +2227,13 @@ function resetRPG(e) {
 }
 function toggleMinimize(e) {
   if (e) e.stopPropagation();
+  flushInlineEdits();
   isMinimized = !isMinimized;
   isSettingsOpen = false;
   renderRPG();
 }
 function switchTab(tabName) {
+  flushInlineEdits();
   activeTab = tabName;
   renderRPG();
 }
@@ -1283,6 +2243,7 @@ function jumpToChar(e) {
 }
 function toggleSettings(e) {
   if (e) e.stopPropagation();
+  flushInlineEdits();
   isSettingsOpen = !isSettingsOpen;
   renderRPG();
 }
@@ -1431,10 +2392,12 @@ function saveEditor() {
     rpgState.location = getStr("edit-location");
     rpgState.world_time.month = getStr("edit-month");
     rpgState.world_time.day = getVal("edit-day");
+	rpgState.world_time.year = getStr("edit-year").trim();
     rpgState.world_time.clock = getStr("edit-clock");
     rpgState.world_time.weather = getStr("edit-weather");
     rpgState.quests = getList("edit-quests");
     rpgState.env_effects = getList("edit-env");
+	rpgState.bonds = parseBondLedgerFromText(getStr("edit-bonds"));
   }
 
   renderRPG();
@@ -1677,9 +2640,13 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
              <button id="rpg-settings-clear-party" style="background:#333; border:1px solid #C0A040; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 Party</button>
 			 <button id="rpg-settings-insert" style="background:#333; border:1px solid #4CAF50; color:#A5D6A7; cursor:pointer; padding:8px 10px; font-weight:bold;">Insert State</button>
              <button id="rpg-settings-remind" style="background:#333; border:1px solid #9C27B0; color:#E1BEE7; cursor:pointer; padding:8px 10px; font-weight:bold;">Remind State</button>
-			 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px;">
+			 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
     			<span title="Automatically reminds the AI of stats on every message">Auto-Inject Prompt</span>
    			 <input type="checkbox" id="rpg-settings-autoinject" ${autoInjectState ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
+		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="Warn when an item/skill/passive loses its description">Change Alerts</span>
+   			 <input type="checkbox" id="rpg-settings-changealerts" ${uiSettings.changeAlerts ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
 		  </div>
              <button id="rpg-settings-reset" style="background:#b71c1c; border:1px solid #ff5252; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold; grid-column:1 / span 2;">X Reset</button>
           </div>
@@ -1750,7 +2717,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       <div style="background:rgba(255,255,255,0.05); padding:5px; border-radius:4px; margin-bottom:5px; font-size:0.85em; text-align:center;">
         <div style="color:#fff; font-weight:bold;">📍 ${escHtml(rpgState.location)}</div>
         <div style="color:#aaa; font-size:0.9em;">
-          📅 ${escHtml(time.month)} ${escHtml(time.day)}
+          📅 ${escHtml(time.month)} ${escHtml(time.day)}${time.year ? `, ${escHtml(time.year)}` : ""}
           &nbsp;|&nbsp;
           ⏰ ${escHtml(time.clock)}
           &nbsp;|&nbsp;
@@ -1792,6 +2759,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
       <div id="rpg-tab-strip" style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid #555; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
         <div id="tab-party" style="${tabStyle("party")}">Party</div>
+		<div id="tab-bonds" style="${tabStyle("bonds")}">Bonds</div>
+	    <div id="tab-timers" style="${tabStyle("timers")}">Timers</div>
         <div id="tab-inv" style="${tabStyle("inventory")}">Items</div>
         <div id="tab-skill" style="${tabStyle("skills")}">Skills</div>
         <div id="tab-pass" style="${tabStyle("passives")}">Passive</div>
@@ -1802,6 +2771,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
       <div style="height: 110px; overflow-y: auto; font-size: 0.8em; padding:5px; background:rgba(0,0,0,0.3); scrollbar-gutter:stable;">
         ${activeTab === "party" ? renderPartyTab() : ""}
+		${activeTab === "bonds" ? renderBondsTab() : ""}
+		${activeTab === "timers" ? renderTimersTab() : ""}
         ${activeTab === "inventory" ? makeList(inv, "No Items") : ""}
         ${activeTab === "skills" ? makeList(skills, "No Skills Learned") : ""}
         ${activeTab === "passives" ? makeList(passives, "No Passives") : ""}
@@ -1888,6 +2859,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 }
 
     bindJumpLinks();
+	bindBondsTab();
+    bindTimersTab();
 
     const bind = (id, fn) => {
       const el = document.getElementById(id);
@@ -1965,6 +2938,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     }
 
     bind("tab-party", () => switchTab("party"));
+	bind("tab-bonds", () => switchTab("bonds"));
+	bind("tab-timers", () => switchTab("timers"));
     bind("tab-inv", () => switchTab("inventory"));
     bind("tab-skill", () => switchTab("skills"));
     bind("tab-pass", () => switchTab("passives"));
@@ -2076,7 +3051,7 @@ const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(displ
         style="flex:1; background:#222; border:1px solid #555; color:white;"> 📍
     </div>
 
-    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:6px; margin-bottom:10px;">
+    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:6px; margin-bottom:10px;">
       <div>
         <div style="${labelStyle()}">Month</div>
         <input id="edit-month" type="text" value="${escAttr(rpgState.world_time?.month ?? "Jan")}"
@@ -2085,6 +3060,11 @@ const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(displ
       <div>
         <div style="${labelStyle()}">Day</div>
         <input id="edit-day" type="number" value="${escAttr(rpgState.world_time?.day ?? 1)}"
+          style="width:100%; background:#222; border:1px solid #555; color:white;">
+      </div>
+	  <div>
+        <div style="${labelStyle()}">Year</div>
+        <input id="edit-year" type="text" value="${escAttr(rpgState.world_time?.year ?? "")}"
           style="width:100%; background:#222; border:1px solid #555; color:white;">
       </div>
       <div>
@@ -2110,6 +3090,13 @@ const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(displ
       <div style="${labelStyle()}">Env Effects</div>
       <textarea id="edit-env" style="width:100%; height:40px; background:#222; border:1px solid #555; color:white;">${escTextarea(
         (rpgState.env_effects || []).join("\n")
+      )}</textarea>
+    </div>
+
+	<div style="border-top:1px solid #555; padding-top:5px; margin-top:5px;">
+      <div style="${labelStyle()}">Bond Ledger (Name | value)</div>
+      <textarea id="edit-bonds" style="width:100%; height:60px; background:#222; border:1px solid #555; color:white;">${escTextarea(
+        bondLedgerToEditorText(rpgState.bonds)
       )}</textarea>
     </div>
   </div>
@@ -2385,9 +3372,13 @@ function parsePipeFormat(text) {
     // 2. Map Data safely checking against undefined so empty strings clear the data correctly
     if (data.loc !== undefined) newState.location = data.loc;
     if (data.time !== undefined) {
-      const tParts = data.time.split(',');
-      newState.world_time.month = (tParts[0] || "").split(' ')[0] || "Jan";
-      newState.world_time.day = parseInt((tParts[0] || "").split(' ')[1]) || 1;
+      const tParts = String(data.time).split(',');
+      const datePart = (tParts[0] || "").trim().split(/\s+/);
+      newState.world_time.month = datePart[0] || "Jan";
+      newState.world_time.day = parseInt(datePart[1]) || 1;
+      if (datePart[2] !== undefined && /^\d{1,4}$/.test(datePart[2])) {
+        newState.world_time.year = datePart[2];
+      }
       newState.world_time.clock = (tParts[1] || "").trim() || "12:00";
     }
     if (data.weather !== undefined) {
@@ -2442,6 +3433,8 @@ function parsePipeFormat(text) {
     if (data.passives !== undefined) target.passives = parseList(data.passives);
     if (data.quests !== undefined) newState.quests = parseList(data.quests);
     if (data.env !== undefined) newState.env_effects = parseList(data.env);
+	if (data.bonds !== undefined) newState.bonds = parseBondLedger(data.bonds);
+    if (data.timers !== undefined) newState.timers = parseTimers(data.timers);
 
     // Failsafe: Catch Bond if the AI hides it inside Status
     if (data.status !== undefined) {
@@ -2473,15 +3466,28 @@ function parsePipeFormat(text) {
     }
   }
 
+  newState.bonds = mergeBondLedger(rpgState?.bonds, newState.bonds);
+  syncLiveBondsIntoLedger(newState);
+  newState.timers = mergeTimers(rpgState, newState);
+  if (!newState.world_time.year && rpgState?.world_time?.year) {
+    newState.world_time.year = rpgState.world_time.year;
+  }
+
   return newState;
 }
 
 const checkMessage = async (manual = false) => {
+  if (bondsEditMode) return;
   if (manual) console.log("RPG HUD: Manual Scan...");
 
   const context = SillyTavern.getContext();
   const chat = context?.chat;
   if (!Array.isArray(chat) || chat.length === 0) return;
+  const chatKey = currentChatKey(context);
+  if (chatKey !== lastChatKey) {
+    lastChatKey = chatKey;
+    lastListSnapshot = null;
+  }
   renderRPG();
 
   const rawBlock = findLatestRpgBlock(chat);
@@ -2496,6 +3502,7 @@ const checkMessage = async (manual = false) => {
     const parsedState = parsePipeFormat(cleanText);
 
     applyRpgState(parsedState);
+	maybeReportListChanges();
     renderRPG();
 
     if (manual) {
