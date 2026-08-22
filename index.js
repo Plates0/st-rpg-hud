@@ -106,7 +106,7 @@ const defaultState = {
   dankcoin: 0,
 
   location: "Unknown",
-  world_time: { month: "Jan", day: 1, clock: "12:00", weather: "Unknown" },
+  world_time: { month: "Jan", day: 1, year: "2055", clock: "12:00", weather: "Unknown" },
 
   combat: { active: false, round: 1 },
 
@@ -166,6 +166,7 @@ const defaultUiSettings = {
   fontScale: 1.0,
   hudWidth: 280,
   hudHeight: 0,
+  changeAlerts: true,
 };
 
 let uiSettings = (() => {
@@ -216,6 +217,103 @@ function applyHudTypography(container) {
 }
 
 // --- 2. HELPERS ---
+// --- CHANGE ALERTS ---
+let lastListSnapshot = null;
+let lastChatKey = null;
+
+const WATCHED_LISTS = [
+  { key: "inventory", label: "Item" },
+  { key: "skills", label: "Skill" },
+  { key: "passives", label: "Passive" },
+  { key: "masteries", label: "Mastery" },
+];
+
+function entryBaseName(s) {
+  return String(s ?? "").replace(/[\(\[\{].*$/, " ").replace(/\s+/g, " ").trim();
+}
+
+function stripStatusTags(s) {
+  return String(s ?? "").replace(/\[[^\]]*\]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function listToMap(list) {
+  const m = new Map();
+  (Array.isArray(list) ? list : []).forEach((i) => {
+    const text = String(typeof i === "object" ? (i?.name ?? "") : (i ?? "")).trim();
+    const key = entryBaseName(text).toLowerCase();
+    if (!key || m.has(key)) return;
+    m.set(key, text);
+  });
+  return m;
+}
+
+function snapshotLists(ent) {
+  const snap = {};
+  WATCHED_LISTS.forEach(({ key }) => { snap[key] = listToMap(ent?.[key]); });
+  return snap;
+}
+
+function diffLists(prev, next) {
+  const out = [];
+  WATCHED_LISTS.forEach(({ key, label }) => {
+    const a = prev?.[key] || new Map();
+    const b = next?.[key] || new Map();
+
+    b.forEach((text, k) => {
+      if (!a.has(k)) { out.push({ type: "added", label, name: text }); return; }
+      const before = a.get(k);
+      if (before === text) return;
+      // equipping/unequipping only -> not a real change
+      if (stripStatusTags(before) === stripStatusTags(text)) return;
+
+      const shrank = text.length < before.length - 2;
+      out.push({ type: shrank ? "lost" : "changed", label, name: text, before });
+    });
+
+    a.forEach((text, k) => {
+      if (!b.has(k)) out.push({ type: "removed", label, name: text });
+    });
+  });
+  return out;
+}
+
+function currentChatKey(context) {
+  return [context?.chatId, context?.characterId, context?.groupId].map((v) => String(v ?? "")).join("|");
+}
+
+function maybeReportListChanges() {
+  const next = snapshotLists(rpgState);
+  const prev = lastListSnapshot;
+  lastListSnapshot = next;
+
+  if (!prev) return;                    // first scan is baseline only
+  if (!uiSettings.changeAlerts) return;
+
+  const diffs = diffLists(prev, next);
+  if (!diffs.length) return;
+  console.log("RPG HUD: list changes", diffs);
+
+  const lost = diffs.filter((d) => d.type === "lost");
+  if (!lost.length) return;
+
+  const shown = lost.slice(0, 4);
+  const body =
+    shown
+      .map((d) =>
+        `${escHtml(d.label)}: <b>${escHtml(d.name)}</b>` +
+        `<br><span style="opacity:0.7;">was: ${escHtml(d.before)}</span>`
+      )
+      .join("<br><br>") +
+    (lost.length > 4 ? `<br><br>(+${lost.length - 4} more)` : "") +
+    (diffs.length > lost.length
+      ? `<br><br><span style="opacity:0.6;">${diffs.length - lost.length} other change(s) — see console</span>`
+      : "");
+
+  if (window.toastr?.warning) {
+    window.toastr.warning(body, "⚠️ Description dropped", { escapeHtml: false });
+  }
+}
+
 function sanitizeBrokenPipeLine(line) {
   const s = String(line ?? "");
   let out = "";
@@ -767,29 +865,31 @@ function clockToMinutes(clock) {
   return (parseInt(m[1], 10) || 0) * 60 + (parseInt(m[2], 10) || 0);
 }
 
-function worldMinutes(month, day, clock) {
+function worldMinutes(month, day, clock, year) {
   const mi = monthIndex(month);
   let days = 0;
   for (let i = 0; i < mi; i++) days += TIMER_MONTH_DAYS[i];
   days += Math.max(1, parseInt(day, 10) || 1) - 1;
-  return days * 1440 + clockToMinutes(clock);
+  const y = parseInt(year, 10);
+  const base = Number.isFinite(y) ? y * YEAR_MINUTES : 0;
+  return base + days * 1440 + clockToMinutes(clock);
 }
 
 function nowWorldMinutes() {
   const t = rpgState.world_time || {};
-  return worldMinutes(t.month, t.day, t.clock);
+  return worldMinutes(t.month, t.day, t.clock, t.year);
 }
 
-// "Jan 6,14:00" or bare "14:00" (= next occurrence) -> absolute minutes, else null
 function parseDeadline(val) {
   const s = String(val || "").trim();
-  const full = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2})\s*,\s*(\d{1,2}\s*:\s*\d{1,2})$/);
-  if (full) return worldMinutes(full[1], full[2], full[3]);
+  const t = rpgState.world_time || {};
+
+  const full = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2})(?:\s+(\d{1,4}))?\s*,\s*(\d{1,2}\s*:\s*\d{1,2})$/);
+  if (full) return worldMinutes(full[1], full[2], full[4], full[3] ?? t.year);
 
   const clockOnly = s.match(/^(\d{1,2}\s*:\s*\d{1,2})$/);
   if (clockOnly) {
-    const t = rpgState.world_time || {};
-    let target = worldMinutes(t.month, t.day, clockOnly[1]);
+    let target = worldMinutes(t.month, t.day, clockOnly[1], t.year);
     if (target <= nowWorldMinutes()) target += 1440;
     return target;
   }
@@ -1869,7 +1969,9 @@ function buildPipeString(stateObj) {
   syncLiveBondsIntoLedger(stateObj);
 	
   let lines = ["[Global]"];
-  lines.push(`|Loc:${stateObj.location || "Unknown"}||Time:${stateObj.world_time?.month} ${stateObj.world_time?.day},${stateObj.world_time?.clock}||Weather:${stateObj.world_time?.weather || "Unknown"}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
+  const wt = stateObj.world_time || {};
+  const yearStr = wt.year ? ` ${wt.year}` : "";
+  lines.push(`|Loc:${stateObj.location || "Unknown"}||Time:${wt.month} ${wt.day}${yearStr},${wt.clock}||Weather:${wt.weather || "Unknown"}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
   
   const safeJoin = (arr) => Array.isArray(arr) && arr.length ? arr.map(i => typeof i === 'object' ? i.name : i).join(";") : "";
   
@@ -2158,6 +2260,7 @@ function saveEditor() {
     rpgState.location = getStr("edit-location");
     rpgState.world_time.month = getStr("edit-month");
     rpgState.world_time.day = getVal("edit-day");
+	rpgState.world_time.year = getStr("edit-year").trim();
     rpgState.world_time.clock = getStr("edit-clock");
     rpgState.world_time.weather = getStr("edit-weather");
     rpgState.quests = getList("edit-quests");
@@ -2405,9 +2508,13 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
              <button id="rpg-settings-clear-party" style="background:#333; border:1px solid #C0A040; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 Party</button>
 			 <button id="rpg-settings-insert" style="background:#333; border:1px solid #4CAF50; color:#A5D6A7; cursor:pointer; padding:8px 10px; font-weight:bold;">Insert State</button>
              <button id="rpg-settings-remind" style="background:#333; border:1px solid #9C27B0; color:#E1BEE7; cursor:pointer; padding:8px 10px; font-weight:bold;">Remind State</button>
-			 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px;">
+			 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
     			<span title="Automatically reminds the AI of stats on every message">Auto-Inject Prompt</span>
    			 <input type="checkbox" id="rpg-settings-autoinject" ${autoInjectState ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
+		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="Warn when an item/skill/passive loses its description">Change Alerts</span>
+   			 <input type="checkbox" id="rpg-settings-changealerts" ${uiSettings.changeAlerts ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
 		  </div>
              <button id="rpg-settings-reset" style="background:#b71c1c; border:1px solid #ff5252; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold; grid-column:1 / span 2;">X Reset</button>
           </div>
@@ -2478,7 +2585,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       <div style="background:rgba(255,255,255,0.05); padding:5px; border-radius:4px; margin-bottom:5px; font-size:0.85em; text-align:center;">
         <div style="color:#fff; font-weight:bold;">📍 ${escHtml(rpgState.location)}</div>
         <div style="color:#aaa; font-size:0.9em;">
-          📅 ${escHtml(time.month)} ${escHtml(time.day)}
+          📅 ${escHtml(time.month)} ${escHtml(time.day)}${time.year ? `, ${escHtml(time.year)}` : ""}
           &nbsp;|&nbsp;
           ⏰ ${escHtml(time.clock)}
           &nbsp;|&nbsp;
@@ -2812,7 +2919,7 @@ const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(displ
         style="flex:1; background:#222; border:1px solid #555; color:white;"> 📍
     </div>
 
-    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:6px; margin-bottom:10px;">
+    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:6px; margin-bottom:10px;">
       <div>
         <div style="${labelStyle()}">Month</div>
         <input id="edit-month" type="text" value="${escAttr(rpgState.world_time?.month ?? "Jan")}"
@@ -2821,6 +2928,11 @@ const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(displ
       <div>
         <div style="${labelStyle()}">Day</div>
         <input id="edit-day" type="number" value="${escAttr(rpgState.world_time?.day ?? 1)}"
+          style="width:100%; background:#222; border:1px solid #555; color:white;">
+      </div>
+	  <div>
+        <div style="${labelStyle()}">Year</div>
+        <input id="edit-year" type="text" value="${escAttr(rpgState.world_time?.year ?? "")}"
           style="width:100%; background:#222; border:1px solid #555; color:white;">
       </div>
       <div>
@@ -3128,9 +3240,13 @@ function parsePipeFormat(text) {
     // 2. Map Data safely checking against undefined so empty strings clear the data correctly
     if (data.loc !== undefined) newState.location = data.loc;
     if (data.time !== undefined) {
-      const tParts = data.time.split(',');
-      newState.world_time.month = (tParts[0] || "").split(' ')[0] || "Jan";
-      newState.world_time.day = parseInt((tParts[0] || "").split(' ')[1]) || 1;
+      const tParts = String(data.time).split(',');
+      const datePart = (tParts[0] || "").trim().split(/\s+/);
+      newState.world_time.month = datePart[0] || "Jan";
+      newState.world_time.day = parseInt(datePart[1]) || 1;
+      if (datePart[2] !== undefined && /^\d{1,4}$/.test(datePart[2])) {
+        newState.world_time.year = datePart[2];
+      }
       newState.world_time.clock = (tParts[1] || "").trim() || "12:00";
     }
     if (data.weather !== undefined) {
@@ -3221,6 +3337,9 @@ function parsePipeFormat(text) {
   newState.bonds = mergeBondLedger(rpgState?.bonds, newState.bonds);
   syncLiveBondsIntoLedger(newState);
   newState.timers = mergeTimers(rpgState, newState);
+  if (!newState.world_time.year && rpgState?.world_time?.year) {
+    newState.world_time.year = rpgState.world_time.year;
+  }
 
   return newState;
 }
@@ -3232,6 +3351,11 @@ const checkMessage = async (manual = false) => {
   const context = SillyTavern.getContext();
   const chat = context?.chat;
   if (!Array.isArray(chat) || chat.length === 0) return;
+  const chatKey = currentChatKey(context);
+  if (chatKey !== lastChatKey) {
+    lastChatKey = chatKey;
+    lastListSnapshot = null;
+  }
   renderRPG();
 
   const rawBlock = findLatestRpgBlock(chat);
@@ -3246,6 +3370,7 @@ const checkMessage = async (manual = false) => {
     const parsedState = parsePipeFormat(cleanText);
 
     applyRpgState(parsedState);
+	maybeReportListChanges();
     renderRPG();
 
     if (manual) {
