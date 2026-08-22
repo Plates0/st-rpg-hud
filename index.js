@@ -3589,6 +3589,22 @@ $(document).on('change', '#rpg-settings-autoinject', function() {
     console.log("RPG HUD: Auto-inject toggle set to", autoInjectState);
 });
 
+// --- ST EVENT TRIGGERS (more reliable than the DOM observer for edits) ---
+[
+  "MESSAGE_UPDATED",
+  "MESSAGE_EDITED",
+  "MESSAGE_SWIPED",
+  "MESSAGE_RECEIVED",
+  "MESSAGE_DELETED",
+].forEach((name) => {
+  const evt = event_types?.[name];
+  if (!evt) return;
+  eventSource.on(evt, () => {
+    // small delay: some events fire before chat[] is updated
+    setTimeout(() => checkMessage(), 150);
+  });
+});
+
 // --- 8. BOOT ---
 jQuery(() => {
   console.log("RPG HUD: boot start ✅");
