@@ -1174,6 +1174,21 @@ function buildPipeString(stateObj) {
     return `|Meters:` + m.map(x => `${x.name}:${x.curr}/${x.max}`).join(";") + `|`;
   };
 
+  // Vehicle: one line, same keys as an entity
+  const buildVehicleLine = (v) => {
+    const vType   = String(v.type || "mecha").toLowerCase();
+    const usesEn  = (vType === "ship" || vType === "car");
+    const eKey    = usesEn ? "EN" : "MP";
+    const eCurr   = usesEn ? (v.en_curr ?? v.mp_curr ?? 0) : (v.mp_curr ?? v.en_curr ?? 0);
+    const eMax    = usesEn ? (v.en_max  ?? v.mp_max  ?? 0) : (v.mp_max  ?? v.en_max  ?? 0);
+    const coinStr = (v.dankcoin !== undefined && v.dankcoin !== null) ? `||Coin:${v.dankcoin}` : "";
+    const meters  = Array.isArray(v.meters) && v.meters.length
+      ? v.meters.map(x => `${x.name}:${x.curr}/${x.max}`).join(";")
+      : "";
+
+    return `>Vehicle|Type:${vType}||Name:${v.name || "Vehicle"}||HP:${v.hp_curr ?? 0}/${v.hp_max ?? 0}||${eKey}:${eCurr}/${eMax}${coinStr}||Stats:${formatStats(v.stats)}||Meters:${meters}||INV:${safeJoin(v.inventory)}||Skills:${safeJoin(v.skills)}||Passives:${safeJoin(v.passives)}||Masteries:${safeJoin(v.masteries)}||Status:${safeJoin(v.status_effects)}|`;
+  };
+
   const buildEntity = (ent, isPlayer = false, isPartyOrNPC = false) => {
     let coinStr = (isPlayer || (ent.dankcoin !== undefined && ent.dankcoin !== null)) ? `||Coin:${ent.dankcoin ?? 0}` : "";
     let bondStr = isPartyOrNPC ? `||Bond:${ent.bond ?? 0}` : "";
@@ -1187,7 +1202,7 @@ function buildPipeString(stateObj) {
     block.push(`|INV:${safeJoin(ent.inventory)}||Skills:${safeJoin(ent.skills)}||Passives:${safeJoin(ent.passives)}||Masteries:${safeJoin(ent.masteries)}||Status:${safeJoin(ent.status_effects)}|`);
     
     if (ent.vehicle && ent.vehicle.active) {
-      block.push(`>Vehicle|Type:${ent.vehicle.type || "Mecha"}||Name:${ent.vehicle.name || "Vehicle"}||HP:${ent.vehicle.hp_curr ?? 0}/${ent.vehicle.hp_max ?? 0}|`);
+      block.push(buildVehicleLine(ent.vehicle));
     }
     return block;
   };
@@ -2342,6 +2357,7 @@ function parsePipeFormat(text) {
           inventory: [],
           skills: [],
           passives: [],
+		  masteries: [],
           status_effects: [],
         };
       }
@@ -2353,14 +2369,16 @@ function parsePipeFormat(text) {
     if (Object.keys(data).length === 0) continue; 
 
     // 1. Group creation / Name mapping
-    if (!isVehicle && data.name && ["Party", "Enemies", "NPCs"].includes(currentMode)) {
+    if (isVehicle) {
+      if (data.name) target.name = data.name;
+    } else if (data.name && ["Party", "Enemies", "NPCs"].includes(currentMode)) {
       const newEnt = { name: data.name, stats: {}, inventory: [], meters: [], skills: [], passives: [], masteries: [], status_effects: [] };
       if (currentMode === "Party") newState.party.push(newEnt);
       if (currentMode === "Enemies") newState.enemies.push(newEnt);
       if (currentMode === "NPCs") newState.npcs.push(newEnt);
-      currentEntity = newEnt; 
+      currentEntity = newEnt;
       target = currentEntity;
-    } else if (!isVehicle && data.name && currentMode === "Player") {
+    } else if (data.name && currentMode === "Player") {
       target.name = data.name;
     }
 
