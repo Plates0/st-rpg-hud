@@ -138,7 +138,7 @@ Map: Energy (EN) maps to MP.
 Damage Engine: ((ATK or MATK)*Skill Multiplier)*(Crit Multiplier) - DEF*(True DMG Modifier) = DMG*(Final DMG Multiplier) = DMG Dealt
 - True DMG: TrueDMGMod = 0.
 - Parry: Treat DEF as (DEF + ATK). Can parry True DMG.
-- Bosses: M.HP = Base * PartySize. Immune to Blind/Bind/Stun.
+- When Entering Combat with a Boss, Boss HP: M.HP = Base * PartySize. Immune to Blind/Bind/Stun.
 - Critical Hits: *2 Multi. Guaranteed when hitting a Weak Spot. Calculated before DEF.
 
 VI. LIVING WEAPON OVERRIDE
