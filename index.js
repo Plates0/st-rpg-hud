@@ -131,11 +131,13 @@ const defaultState = {
   enemies: [],
   npcs: [],
   bonds: [],
+  timers: [],
 };
 
 let rpgState = JSON.parse(JSON.stringify(defaultState));
 let activeTab = "inventory";
 let bondsEditMode = false;
+let timersEditMode = false;
 let bondsSnapshot = [];
 let isMinimized = false;
 let scanTimer = null;
@@ -747,6 +749,227 @@ function parseBondLedgerFromText(text) {
   return out;
 }
 
+// --- TIMERS ---
+const TIMER_KINDS = ["CD", "BUFF", "DEBUFF", "DOOM"];
+const KIND_RANK = { DOOM: 0, DEBUFF: 1, BUFF: 2, CD: 3 };
+const TIMER_MONTHS = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+const TIMER_MONTH_DAYS = [31,28,31,30,31,30,31,31,30,31,30,31];
+const YEAR_MINUTES = 365 * 1440;
+
+function monthIndex(m) {
+  const i = TIMER_MONTHS.indexOf(String(m || "").trim().slice(0, 3).toLowerCase());
+  return i === -1 ? 0 : i;
+}
+
+function clockToMinutes(clock) {
+  const m = String(clock || "").match(/(\d{1,2})\s*:\s*(\d{1,2})/);
+  if (!m) return 0;
+  return (parseInt(m[1], 10) || 0) * 60 + (parseInt(m[2], 10) || 0);
+}
+
+function worldMinutes(month, day, clock) {
+  const mi = monthIndex(month);
+  let days = 0;
+  for (let i = 0; i < mi; i++) days += TIMER_MONTH_DAYS[i];
+  days += Math.max(1, parseInt(day, 10) || 1) - 1;
+  return days * 1440 + clockToMinutes(clock);
+}
+
+function nowWorldMinutes() {
+  const t = rpgState.world_time || {};
+  return worldMinutes(t.month, t.day, t.clock);
+}
+
+// "Jan 6,14:00" or bare "14:00" (= next occurrence) -> absolute minutes, else null
+function parseDeadline(val) {
+  const s = String(val || "").trim();
+  const full = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2})\s*,\s*(\d{1,2}\s*:\s*\d{1,2})$/);
+  if (full) return worldMinutes(full[1], full[2], full[3]);
+
+  const clockOnly = s.match(/^(\d{1,2}\s*:\s*\d{1,2})$/);
+  if (clockOnly) {
+    const t = rpgState.world_time || {};
+    let target = worldMinutes(t.month, t.day, clockOnly[1]);
+    if (target <= nowWorldMinutes()) target += 1440;
+    return target;
+  }
+  return null;
+}
+
+function minutesUntil(targetMin) {
+  let d = targetMin - nowWorldMinutes();
+  if (d < -YEAR_MINUTES / 2) d += YEAR_MINUTES; // Dec -> Jan rollover
+  return d;
+}
+
+function formatMinutes(mins) {
+  const a = Math.max(0, Math.round(mins));
+  const d = Math.floor(a / 1440);
+  const h = Math.floor((a % 1440) / 60);
+  const m = a % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function timerKindStyle(kind) {
+  switch (String(kind || "CD").toUpperCase()) {
+    case "DOOM":   return { color: "#ff5252", icon: "☠️", zero: "TRIGGERED" };
+    case "DEBUFF": return { color: "#ff9800", icon: "⚠️", zero: "ENDED" };
+    case "BUFF":   return { color: "#69f0ae", icon: "✨", zero: "ENDED" };
+    default:       return { color: "#90caf9", icon: "⏳", zero: "READY" };
+  }
+}
+
+function timerInfo(t) {
+  const kind = String(t?.kind || "CD").toUpperCase();
+  const raw = String(t?.value ?? "").trim();
+  const zero = timerKindStyle(kind).zero;
+
+  const turns = raw.match(/^(-?\d+)\s*\/\s*(\d+)$/);
+  if (turns) {
+    const cur = parseInt(turns[1], 10);
+    const max = parseInt(turns[2], 10);
+    return { kind, mode: "turns", done: cur <= 0,
+      pct: max > 0 ? clamp((cur / max) * 100, 0, 100) : 0,
+      label: cur <= 0 ? zero : `${cur} turn${cur === 1 ? "" : "s"}`,
+      sortKey: cur <= 0 ? Infinity : cur };
+  }
+
+  const bare = raw.match(/^(-?\d+)$/);
+  if (bare) {
+    const cur = parseInt(bare[1], 10);
+    return { kind, mode: "turns", done: cur <= 0, pct: null,
+      label: cur <= 0 ? zero : `${cur} turn${cur === 1 ? "" : "s"}`,
+      sortKey: cur <= 0 ? Infinity : cur };
+  }
+
+  const dl = parseDeadline(raw);
+  if (dl !== null) {
+    const left = minutesUntil(dl);
+    return { kind, mode: "time", done: left <= 0, pct: null,
+      label: left <= 0 ? zero : formatMinutes(left),
+      sortKey: left <= 0 ? Infinity : left / 60 };
+  }
+
+  return { kind, mode: "raw", done: false, pct: null, label: raw || "?", sortKey: Infinity };
+}
+
+function timerDelta(t) {
+  if (!t || t.prev == null) return "";
+  const a = String(t.prev), b = String(t.value);
+  if (a === b) return "";
+
+  const pa = parseDeadline(a), pb = parseDeadline(b);
+  if (pa !== null && pb !== null) {
+    const d = pb - pa;
+    return d ? `${d > 0 ? "▲" : "▼"}${formatMinutes(Math.abs(d))}` : "";
+  }
+  const na = a.match(/^(-?\d+)/), nb = b.match(/^(-?\d+)/);
+  if (na && nb) {
+    const d = parseInt(nb[1], 10) - parseInt(na[1], 10);
+    return d ? `${d > 0 ? "▲" : "▼"}${Math.abs(d)}` : "";
+  }
+  return "";
+}
+
+function timerKey(t) {
+  return `${String(t?.owner || "").trim().toLowerCase()}|${String(t?.name || "").trim().toLowerCase()}`;
+}
+
+// name = before first ":", kind = after last ":" (if recognized), value = the middle
+function parseTimers(str) {
+  const out = [];
+  if (!str) return out;
+
+  String(str).split(";").forEach((chunk) => {
+    const s = chunk.trim();
+    if (!s) return;
+
+    const firstColon = s.indexOf(":");
+    let left = firstColon === -1 ? s : s.slice(0, firstColon);
+    let rest = firstColon === -1 ? "" : s.slice(firstColon + 1);
+
+    let kind = "CD";
+    const lastColon = rest.lastIndexOf(":");
+    if (lastColon !== -1) {
+      const cand = rest.slice(lastColon + 1).trim().toUpperCase();
+      if (TIMER_KINDS.includes(cand)) { kind = cand; rest = rest.slice(0, lastColon); }
+    } else if (TIMER_KINDS.includes(rest.trim().toUpperCase())) {
+      kind = rest.trim().toUpperCase();
+      rest = "";
+    }
+
+    let owner = "";
+    let name = left.trim();
+    const slash = name.indexOf("/");
+    if (slash !== -1) {
+      owner = name.slice(0, slash).trim();
+      name = name.slice(slash + 1).trim();
+    }
+    if (!name) return;
+
+    out.push({ owner, name, value: rest.trim(), kind });
+  });
+  return out;
+}
+
+function formatTimers(list) {
+  if (!Array.isArray(list) || !list.length) return "";
+  const clean = (s) => safePipeText(s).replace(/;/g, ",");
+  return list
+    .filter((t) => t && t.name)
+    .map((t) => {
+      const owner = String(t.owner || "").trim();
+      const nm = clean(owner ? `${owner}/${t.name}` : t.name);
+      return `${nm}:${clean(t.value || "0")}:${String(t.kind || "CD").toUpperCase()}`;
+    })
+    .join(";");
+}
+
+// Auto-repair: if the round advanced but the model left a turn timer untouched, tick it
+function mergeTimers(prevState, nextState) {
+  const prevList = Array.isArray(prevState?.timers) ? prevState.timers : [];
+  const prevMap = new Map(prevList.map((t) => [timerKey(t), t]));
+
+  const prevRound = prevState?.combat?.active ? toNumberOr(prevState?.combat?.round, 0) : 0;
+  const nextRound = nextState?.combat?.active ? toNumberOr(nextState?.combat?.round, 0) : 0;
+  const roundAdvanced = nextRound > prevRound;
+
+  return (Array.isArray(nextState.timers) ? nextState.timers : []).map((t) => {
+    const old = prevMap.get(timerKey(t));
+    const out = { ...t, prev: old ? old.value : null };
+
+    if (roundAdvanced && old && String(old.value) === String(t.value)) {
+      const m = String(t.value).match(/^(\d+)\s*\/\s*(\d+)$/);
+      if (m && parseInt(m[1], 10) > 0) {
+        out.value = `${parseInt(m[1], 10) - 1}/${m[2]}`;
+        out.repaired = true;
+      }
+    }
+    return out;
+  });
+}
+
+function advanceTimerTurn() {
+  if (!Array.isArray(rpgState.timers)) return;
+  rpgState.timers.forEach((t) => {
+    const m = String(t.value || "").match(/^(\d+)\s*\/\s*(\d+)$/);
+    if (m && parseInt(m[1], 10) > 0) {
+      t.prev = t.value;
+      t.value = `${parseInt(m[1], 10) - 1}/${m[2]}`;
+      return;
+    }
+    const b = String(t.value || "").match(/^(\d+)$/);
+    if (b && parseInt(b[1], 10) > 0) {
+      t.prev = t.value;
+      t.value = String(parseInt(b[1], 10) - 1);
+    }
+  });
+  renderRPG();
+  writeStateBackToChatMessage(rpgState);
+}
+
 function safeParseFloat(v, fallback = 0) {
   const n = parseFloat(v);
   return Number.isFinite(n) ? n : fallback;
@@ -1345,6 +1568,165 @@ function bindBondsTab() {
   });
 }
 
+function renderTimersTab() {
+  if (!Array.isArray(rpgState.timers)) rpgState.timers = [];
+  const list = rpgState.timers;
+
+  const btn = (id, text, color, title) =>
+    `<button id="${id}" title="${escAttr(title || "")}" style="background:#333; border:1px solid ${color};
+      color:${color}; cursor:pointer; font-size:0.9em; padding:1px 7px; font-weight:bold;">${text}</button>`;
+
+  const header = `
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:4px; margin-bottom:4px;">
+      <span style="color:#90caf9; font-weight:bold;">⏱️ Timers</span>
+      <span style="display:flex; gap:4px;">
+        ${timersEditMode ? btn("rpg-timer-add", "+", "#69f0ae", "Add") : btn("rpg-timer-turn", "⏭", "#C0A040", "Advance one turn")}
+        ${timersEditMode ? btn("rpg-timer-edit", "✓", "#69f0ae", "Save") : btn("rpg-timer-edit", "✎", "#4FC3F7", "Edit")}
+      </span>
+    </div>`;
+
+  if (!list.length && !timersEditMode) {
+    return header + `<div style="opacity:0.5; font-style:italic;">No active timers</div>`;
+  }
+
+  if (timersEditMode) {
+    const opts = (sel) =>
+      TIMER_KINDS.map((k) => `<option value="${k}" ${String(sel).toUpperCase() === k ? "selected" : ""}>${k}</option>`).join("");
+
+    const rows = list.map((t, i) => `
+      <div style="display:flex; gap:3px; align-items:center; padding:2px 0; border-bottom:1px solid #333;">
+        <input class="rpg-timer-name" data-i="${i}" type="text" value="${escAttr(t?.owner ? t.owner + "/" + t.name : (t?.name ?? ""))}"
+          style="flex:1 1 auto; min-width:0; background:#222; border:1px solid #555; color:#fff; font-family:inherit; font-size:1em;">
+        <input class="rpg-timer-val" data-i="${i}" type="text" value="${escAttr(t?.value ?? "")}"
+          style="flex:0 0 64px; width:64px; background:#222; border:1px solid #555; color:#90caf9; font-family:inherit; font-size:1em; text-align:center;">
+        <select class="rpg-timer-kind" data-i="${i}"
+          style="flex:0 0 62px; background:#222; border:1px solid #555; color:#ddd; font-family:inherit; font-size:0.9em;">${opts(t?.kind)}</select>
+        <button class="rpg-timer-del" data-i="${i}" title="Delete"
+          style="flex:0 0 auto; background:#333; border:1px solid #ff5252; color:#ff5252; cursor:pointer; font-size:0.85em; padding:1px 5px; font-weight:bold;">✕</button>
+      </div>`).join("");
+
+    return header + rows + `
+      <div style="font-size:0.7em; color:#666; margin-top:4px; line-height:1.35;">
+        Value: <span style="color:#888;">2/3</span> (turns) or <span style="color:#888;">Jan 6,14:00</span> (deadline).<br>
+        Name may be <span style="color:#888;">Owner/Skill</span>. Blank name deletes.
+      </div>`;
+  }
+
+  const rows = list
+    .map((t, i) => ({ t, i, info: timerInfo(t) }))
+    .sort((a, b) => {
+      const ka = KIND_RANK[a.info.kind] ?? 9, kb = KIND_RANK[b.info.kind] ?? 9;
+      if (ka !== kb) return ka - kb;
+      return a.info.sortKey - b.info.sortKey;
+    })
+    .map(({ t, info }) => {
+      const st = timerKindStyle(info.kind);
+      const dim = info.done && info.kind !== "DOOM" ? "opacity:0.55;" : "";
+      const delta = timerDelta(t);
+      const ownerTag = t.owner
+        ? `<span style="font-size:0.75em; color:#888;">${escHtml(t.owner)}·</span>`
+        : "";
+      const mark = t.repaired ? `<span title="Auto-ticked by the HUD" style="color:#C0A040;">*</span>` : "";
+      const bar = info.pct === null ? "" : `
+        <div style="width:100%; background:#333; height:3px; border-radius:2px; overflow:hidden; margin-top:3px;">
+          <div style="height:100%; background:${st.color}; width:${info.pct}%"></div>
+        </div>`;
+
+      return `
+        <div style="padding:4px 0; border-bottom:1px solid #333; ${dim}">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+            <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+              ${st.icon} ${ownerTag}${escHtml(t.name)}${mark}
+            </span>
+            <span style="flex:0 0 auto; color:${st.color};">
+              ${escHtml(info.label)}
+              ${delta ? `<span style="font-size:0.75em; color:#888;"> ${escHtml(delta)}</span>` : ""}
+            </span>
+          </div>
+          ${bar}
+        </div>`;
+    })
+    .join("");
+
+  return header + rows;
+}
+
+function readTimerInputs() {
+  if (!Array.isArray(rpgState.timers)) return;
+  document.querySelectorAll(".rpg-timer-name").forEach((el) => {
+    const i = Number(el.dataset.i);
+    if (!rpgState.timers[i]) return;
+    const raw = String(el.value || "").trim();
+    const slash = raw.indexOf("/");
+    const looksOwned = slash !== -1 && !/^\d+\s*\/\s*\d+$/.test(raw);
+    rpgState.timers[i].owner = looksOwned ? raw.slice(0, slash).trim() : "";
+    rpgState.timers[i].name = looksOwned ? raw.slice(slash + 1).trim() : raw;
+  });
+  document.querySelectorAll(".rpg-timer-val").forEach((el) => {
+    const i = Number(el.dataset.i);
+    if (rpgState.timers[i]) rpgState.timers[i].value = String(el.value || "").trim();
+  });
+  document.querySelectorAll(".rpg-timer-kind").forEach((el) => {
+    const i = Number(el.dataset.i);
+    if (rpgState.timers[i]) rpgState.timers[i].kind = String(el.value || "CD").toUpperCase();
+  });
+}
+
+function commitTimersEdit() {
+  readTimerInputs();
+  rpgState.timers = (rpgState.timers || []).filter((t) => t && String(t.name || "").trim());
+  timersEditMode = false;
+  renderRPG();
+  const ok = writeStateBackToChatMessage(rpgState);
+  if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after timer edit");
+}
+
+function bindTimersTab() {
+  const editBtn = document.getElementById("rpg-timer-edit");
+  if (editBtn) {
+    editBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (timersEditMode) commitTimersEdit();
+      else { timersEditMode = true; renderRPG(); }
+    };
+  }
+
+  const turnBtn = document.getElementById("rpg-timer-turn");
+  if (turnBtn) turnBtn.onclick = (e) => { e.stopPropagation(); advanceTimerTurn(); };
+
+  const addBtn = document.getElementById("rpg-timer-add");
+  if (addBtn) {
+    addBtn.onclick = (e) => {
+      e.stopPropagation();
+      readTimerInputs();
+      if (!Array.isArray(rpgState.timers)) rpgState.timers = [];
+      rpgState.timers.push({ owner: "", name: "", value: "1/1", kind: "CD" });
+      renderRPG();
+      const inputs = document.querySelectorAll(".rpg-timer-name");
+      inputs[inputs.length - 1]?.focus();
+    };
+  }
+
+  document.querySelectorAll(".rpg-timer-del").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      readTimerInputs();
+      const i = Number(el.dataset.i);
+      if (Number.isFinite(i)) rpgState.timers.splice(i, 1);
+      renderRPG();
+    };
+  });
+
+  document.querySelectorAll(".rpg-timer-name, .rpg-timer-val, .rpg-timer-kind").forEach((el) => {
+    el.onclick = (e) => e.stopPropagation();
+  });
+}
+
+function flushInlineEdits() {
+  if (bondsEditMode) commitBondsEdit();
+  if (timersEditMode) commitTimersEdit();
+}
+
 // Strips bond after deleting
 function stripBondsFromText(text, keys) {
   return String(text).replace(
@@ -1496,6 +1878,7 @@ function buildPipeString(stateObj) {
   const env = safeJoin(stateObj.env_effects);
   lines.push(`|Quests:${quests === "None" ? "" : quests}||Env:${env === "None" ? "" : env}|`);
   lines.push(`|Bonds:${formatBondLedger(stateObj.bonds)}|`);
+  lines.push(`|Timers:${formatTimers(stateObj.timers)}|`);
   lines.push("");
 
   const formatStats = (s) => {
@@ -1610,13 +1993,13 @@ function resetRPG(e) {
 }
 function toggleMinimize(e) {
   if (e) e.stopPropagation();
-  flushBondsEdit();
+  flushInlineEdits();
   isMinimized = !isMinimized;
   isSettingsOpen = false;
   renderRPG();
 }
 function switchTab(tabName) {
-  flushBondsEdit();
+  flushInlineEdits();
   activeTab = tabName;
   renderRPG();
 }
@@ -1626,6 +2009,7 @@ function jumpToChar(e) {
 }
 function toggleSettings(e) {
   if (e) e.stopPropagation();
+  flushInlineEdits();
   isSettingsOpen = !isSettingsOpen;
   renderRPG();
 }
@@ -2137,6 +2521,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       <div id="rpg-tab-strip" style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid #555; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
         <div id="tab-party" style="${tabStyle("party")}">Party</div>
 		<div id="tab-bonds" style="${tabStyle("bonds")}">Bonds</div>
+	    <div id="tab-timers" style="${tabStyle("timers")}">Timers</div>
         <div id="tab-inv" style="${tabStyle("inventory")}">Items</div>
         <div id="tab-skill" style="${tabStyle("skills")}">Skills</div>
         <div id="tab-pass" style="${tabStyle("passives")}">Passive</div>
@@ -2148,6 +2533,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       <div style="height: 110px; overflow-y: auto; font-size: 0.8em; padding:5px; background:rgba(0,0,0,0.3); scrollbar-gutter:stable;">
         ${activeTab === "party" ? renderPartyTab() : ""}
 		${activeTab === "bonds" ? renderBondsTab() : ""}
+		${activeTab === "timers" ? renderTimersTab() : ""}
         ${activeTab === "inventory" ? makeList(inv, "No Items") : ""}
         ${activeTab === "skills" ? makeList(skills, "No Skills Learned") : ""}
         ${activeTab === "passives" ? makeList(passives, "No Passives") : ""}
@@ -2235,6 +2621,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
     bindJumpLinks();
 	bindBondsTab();
+    bindTimersTab();
 
     const bind = (id, fn) => {
       const el = document.getElementById(id);
@@ -2313,6 +2700,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
     bind("tab-party", () => switchTab("party"));
 	bind("tab-bonds", () => switchTab("bonds"));
+	bind("tab-timers", () => switchTab("timers"));
     bind("tab-inv", () => switchTab("inventory"));
     bind("tab-skill", () => switchTab("skills"));
     bind("tab-pass", () => switchTab("passives"));
@@ -2798,6 +3186,7 @@ function parsePipeFormat(text) {
     if (data.quests !== undefined) newState.quests = parseList(data.quests);
     if (data.env !== undefined) newState.env_effects = parseList(data.env);
 	if (data.bonds !== undefined) newState.bonds = parseBondLedger(data.bonds);
+    if (data.timers !== undefined) newState.timers = parseTimers(data.timers);
 
     // Failsafe: Catch Bond if the AI hides it inside Status
     if (data.status !== undefined) {
@@ -2831,6 +3220,7 @@ function parsePipeFormat(text) {
 
   newState.bonds = mergeBondLedger(rpgState?.bonds, newState.bonds);
   syncLiveBondsIntoLedger(newState);
+  newState.timers = mergeTimers(rpgState, newState);
 
   return newState;
 }
