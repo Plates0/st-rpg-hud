@@ -130,6 +130,7 @@ const defaultState = {
   party: [],
   enemies: [],
   npcs: [],
+  bonds: [],
 };
 
 let rpgState = JSON.parse(JSON.stringify(defaultState));
@@ -651,6 +652,90 @@ function parseBondValue(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// --- BOND LEDGER ---
+function normBondName(n) {
+  return String(n ?? "").trim().toLowerCase();
+}
+
+function upsertBond(list, name, value) {
+  if (!Array.isArray(list)) return;
+  const key = normBondName(name);
+  if (!key) return;
+  const hit = list.find((b) => normBondName(b.name) === key);
+  if (hit) {
+    hit.name = name;
+    hit.bond = value;
+  } else {
+    list.push({ name, bond: value });
+  }
+}
+
+function parseBondLedger(str) {
+  const out = [];
+  if (!str) return out;
+  String(str).split(";").forEach((chunk) => {
+    const s = chunk.trim();
+    if (!s) return;
+    const idx = s.lastIndexOf(":");
+    if (idx === -1) return;
+    const name = s.slice(0, idx).trim();
+    if (!name) return;
+    upsertBond(out, name, parseBondValue(s.slice(idx + 1)));
+  });
+  return out;
+}
+
+function formatBondLedger(list) {
+  if (!Array.isArray(list) || !list.length) return "";
+  return list
+    .filter((b) => b && b.name)
+    .map((b) => `${safePipeText(b.name)}:${b.bond >= 101 ? "∞" : b.bond}`)
+    .join(";");
+}
+
+function mergeBondLedger(prevList, parsedList) {
+  const out = [];
+  (Array.isArray(prevList) ? prevList : []).forEach((b) => upsertBond(out, b.name, b.bond));
+  (Array.isArray(parsedList) ? parsedList : []).forEach((b) => upsertBond(out, b.name, b.bond));
+  return out;
+}
+
+// Live party/NPC bonds are authoritative — push them into the ledger
+function syncLiveBondsIntoLedger(state) {
+  if (!state) return;
+  if (!Array.isArray(state.bonds)) state.bonds = [];
+  const live = [
+    ...(Array.isArray(state.party) ? state.party : []),
+    ...(Array.isArray(state.npcs) ? state.npcs : []),
+  ];
+  live.forEach((u) => {
+    if (!u || !u.name) return;
+    if (u.bond === undefined || u.bond === null || u.bond === "") return;
+    upsertBond(state.bonds, u.name, parseBondValue(u.bond));
+  });
+}
+
+function bondLedgerToEditorText(list) {
+  if (!Array.isArray(list) || !list.length) return "";
+  return list
+    .filter((b) => b && b.name)
+    .map((b) => `${b.name} | ${b.bond >= 101 ? "∞" : b.bond}`)
+    .join("\n");
+}
+
+function parseBondLedgerFromText(text) {
+  const out = [];
+  String(text || "").split("\n").forEach((raw) => {
+    const line = raw.trim();
+    if (!line) return;
+    let parts = line.split("|").map((s) => s.trim());
+    if (parts.length < 2) parts = line.split(":").map((s) => s.trim());
+    if (parts.length < 2 || !parts[0]) return;
+    upsertBond(out, parts[0], parseBondValue(parts[1]));
+  });
+  return out;
+}
+
 function safeParseFloat(v, fallback = 0) {
   const n = parseFloat(v);
   return Number.isFinite(n) ? n : fallback;
@@ -1060,6 +1145,52 @@ function renderPartyTab() {
   return `${partyHtml}${divider}${npcHtml}`;
 }
 
+function renderBondsTab() {
+  const list = Array.isArray(rpgState.bonds) ? rpgState.bonds : [];
+  if (!list.length)
+    return `<div style="opacity:0.5; font-style:italic;">No bonds recorded</div>`;
+
+  const party = Array.isArray(rpgState.party) ? rpgState.party : [];
+  const npcs = Array.isArray(rpgState.npcs) ? rpgState.npcs : [];
+
+  const jumpIdxFor = (name) => {
+    const key = normBondName(name);
+    let i = party.findIndex((u) => normBondName(u?.name) === key);
+    if (i !== -1) return charIndexFor("party", i);
+    i = npcs.findIndex((u) => normBondName(u?.name) === key);
+    if (i !== -1) return charIndexFor("npc", i);
+    return null;
+  };
+
+  return [...list]
+    .sort((a, b) => parseBondValue(b.bond) - parseBondValue(a.bond))
+    .map((b) => {
+      const val = parseBondValue(b.bond);
+      const label = val >= 101 ? "∞" : String(val);
+      const pct = val >= 101 ? 100 : clamp(Math.abs(val), 0, 100);
+      const color = val < 0 ? "#ff5252" : "#f06292";
+      const idx = jumpIdxFor(b.name);
+      const dot = idx !== null
+        ? `<span title="In scene" style="color:#69f0ae;">●</span>`
+        : `<span title="Away" style="color:#666;">○</span>`;
+      const nameHtml = idx !== null
+        ? `<span class="rpg-jump" data-idx="${idx}" style="cursor:pointer; text-decoration:underline; text-decoration-color:#555;">${escHtml(b.name)}</span>`
+        : `<span>${escHtml(b.name)}</span>`;
+
+      return `
+        <div style="padding:4px 0; border-bottom:1px solid #333;">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+            <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${dot} ${nameHtml}</span>
+            <span style="color:${color}; flex:0 0 auto;">${escHtml(label)}/100</span>
+          </div>
+          <div style="width:100%; background:#333; height:4px; border-radius:2px; overflow:hidden; margin-top:3px;">
+            <div style="height:100%; background:${color}; width:${pct}%"></div>
+          </div>
+        </div>`;
+    })
+    .join("");
+}
+
 // --- METERS (generic bar stats) ---
 function meterColorByName(name) {
   const k = String(name || "").toLowerCase();
@@ -1146,6 +1277,8 @@ function writeStateBackToChatMessage(stateObj) {
 // --- 3. ACTIONS ---
 
 function buildPipeString(stateObj) {
+  syncLiveBondsIntoLedger(stateObj);
+	
   let lines = ["[Global]"];
   lines.push(`|Loc:${stateObj.location || "Unknown"}||Time:${stateObj.world_time?.month} ${stateObj.world_time?.day},${stateObj.world_time?.clock}||Weather:${stateObj.world_time?.weather || "Unknown"}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
   
@@ -1155,6 +1288,7 @@ function buildPipeString(stateObj) {
   const quests = safeJoin(stateObj.quests);
   const env = safeJoin(stateObj.env_effects);
   lines.push(`|Quests:${quests === "None" ? "" : quests}||Env:${env === "None" ? "" : env}|`);
+  lines.push(`|Bonds:${formatBondLedger(stateObj.bonds)}|`);
   lines.push("");
 
   const formatStats = (s) => {
@@ -1435,6 +1569,7 @@ function saveEditor() {
     rpgState.world_time.weather = getStr("edit-weather");
     rpgState.quests = getList("edit-quests");
     rpgState.env_effects = getList("edit-env");
+	rpgState.bonds = parseBondLedgerFromText(getStr("edit-bonds"));
   }
 
   renderRPG();
@@ -1792,6 +1927,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
       <div id="rpg-tab-strip" style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid #555; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
         <div id="tab-party" style="${tabStyle("party")}">Party</div>
+		<div id="tab-bonds" style="${tabStyle("bonds")}">Bonds</div>
         <div id="tab-inv" style="${tabStyle("inventory")}">Items</div>
         <div id="tab-skill" style="${tabStyle("skills")}">Skills</div>
         <div id="tab-pass" style="${tabStyle("passives")}">Passive</div>
@@ -1802,6 +1938,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
       <div style="height: 110px; overflow-y: auto; font-size: 0.8em; padding:5px; background:rgba(0,0,0,0.3); scrollbar-gutter:stable;">
         ${activeTab === "party" ? renderPartyTab() : ""}
+		${activeTab === "bonds" ? renderBondsTab() : ""}
         ${activeTab === "inventory" ? makeList(inv, "No Items") : ""}
         ${activeTab === "skills" ? makeList(skills, "No Skills Learned") : ""}
         ${activeTab === "passives" ? makeList(passives, "No Passives") : ""}
@@ -1965,6 +2102,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     }
 
     bind("tab-party", () => switchTab("party"));
+	bind("tab-bonds", () => switchTab("bonds"));
     bind("tab-inv", () => switchTab("inventory"));
     bind("tab-skill", () => switchTab("skills"));
     bind("tab-pass", () => switchTab("passives"));
@@ -2110,6 +2248,13 @@ const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(displ
       <div style="${labelStyle()}">Env Effects</div>
       <textarea id="edit-env" style="width:100%; height:40px; background:#222; border:1px solid #555; color:white;">${escTextarea(
         (rpgState.env_effects || []).join("\n")
+      )}</textarea>
+    </div>
+
+	<div style="border-top:1px solid #555; padding-top:5px; margin-top:5px;">
+      <div style="${labelStyle()}">Bond Ledger (Name | value)</div>
+      <textarea id="edit-bonds" style="width:100%; height:60px; background:#222; border:1px solid #555; color:white;">${escTextarea(
+        bondLedgerToEditorText(rpgState.bonds)
       )}</textarea>
     </div>
   </div>
@@ -2442,6 +2587,7 @@ function parsePipeFormat(text) {
     if (data.passives !== undefined) target.passives = parseList(data.passives);
     if (data.quests !== undefined) newState.quests = parseList(data.quests);
     if (data.env !== undefined) newState.env_effects = parseList(data.env);
+	if (data.bonds !== undefined) newState.bonds = parseBondLedger(data.bonds);
 
     // Failsafe: Catch Bond if the AI hides it inside Status
     if (data.status !== undefined) {
@@ -2472,6 +2618,9 @@ function parsePipeFormat(text) {
       }).filter(m => m.name);
     }
   }
+
+  newState.bonds = mergeBondLedger(rpgState?.bonds, newState.bonds);
+  syncLiveBondsIntoLedger(newState);
 
   return newState;
 }
