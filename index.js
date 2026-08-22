@@ -136,6 +136,7 @@ const defaultState = {
 let rpgState = JSON.parse(JSON.stringify(defaultState));
 let activeTab = "inventory";
 let bondsEditMode = false;
+let bondsSnapshot = [];
 let isMinimized = false;
 let scanTimer = null;
 let charIndex = 0;
@@ -1266,15 +1267,35 @@ function readBondInputs() {
 
 function commitBondsEdit() {
   readBondInputs();
+
   const cleaned = [];
   (rpgState.bonds || []).forEach((b) => {
     if (b && String(b.name || "").trim()) upsertBond(cleaned, b.name, b.bond);
   });
+
+  const nowKeys = new Set(cleaned.map((b) => normBondName(b.name)));
+  const removed = bondsSnapshot.filter((n) => !nowKeys.has(normBondName(n)));
+
   rpgState.bonds = cleaned;
   bondsEditMode = false;
+  bondsSnapshot = [];
   renderRPG();
+
   const ok = writeStateBackToChatMessage(rpgState);
   if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after bond edit");
+
+  if (removed.length) {
+    const label = removed.join(", ");
+    const yes = confirm(
+      `Scrub from |Bonds:| in ALL earlier messages?\n\n${label}\n\n` +
+      `If you skip this, the AI can still see them in older blocks and may add them back.\n\n` +
+      `This edits your chat history and cannot be undone.`
+    );
+    if (yes) {
+      const n = purgeBondsFromHistory(removed);
+      if (window.toastr) window.toastr.info(`Scrubbed ${removed.length} name(s) from ${n} message(s).`);
+    }
+  }
 }
 
 function flushBondsEdit() {
@@ -1290,6 +1311,7 @@ function bindBondsTab() {
         commitBondsEdit();
       } else {
         bondsEditMode = true;
+		bondsSnapshot = (rpgState.bonds || []).map((b) => b?.name).filter(Boolean);
         renderRPG();
       }
     };
@@ -1321,6 +1343,59 @@ function bindBondsTab() {
   document.querySelectorAll(".rpg-bond-name, .rpg-bond-val").forEach((el) => {
     el.onclick = (e) => e.stopPropagation();
   });
+}
+
+// Strips bond after deleting
+function stripBondsFromText(text, keys) {
+  return String(text).replace(
+    /(<rpg_state\b[^>]*>)([\s\S]*?)(<\/rpg_state>)/gi,
+    (full, open, body, close) => {
+      const newBody = body.replace(/\|Bonds:([^|]*)\|/gi, (m, val) => {
+        const kept = String(val)
+          .split(";")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .filter((chunk) => {
+            const i = chunk.lastIndexOf(":");
+            const nm = i === -1 ? chunk : chunk.slice(0, i);
+            return !keys.has(normBondName(nm));
+          });
+        return `|Bonds:${kept.join(";")}|`;
+      });
+      return open + newBody + close;
+    }
+  );
+}
+
+function purgeBondsFromHistory(names) {
+  const keys = new Set((names || []).map(normBondName).filter(Boolean));
+  if (!keys.size) return 0;
+
+  const chat = SillyTavern.getContext()?.chat;
+  if (!Array.isArray(chat)) return 0;
+
+  let changed = 0;
+  chat.forEach((msg) => {
+    if (!msg || typeof msg.mes !== "string") return;
+    if (!/<rpg_state\b/i.test(msg.mes)) return;
+
+    const next = stripBondsFromText(msg.mes, keys);
+    if (next !== msg.mes) {
+      msg.mes = next;
+      changed++;
+    }
+    // alternate swipes hold their own copy of the block
+    if (Array.isArray(msg.swipes)) {
+      msg.swipes = msg.swipes.map((s) =>
+        typeof s === "string" ? stripBondsFromText(s, keys) : s
+      );
+    }
+  });
+
+  if (changed) {
+    try { window.saveChat?.(); } catch (e) { console.warn("RPG HUD: saveChat failed", e); }
+  }
+  return changed;
 }
 
 // --- METERS (generic bar stats) ---
