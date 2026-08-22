@@ -1174,21 +1174,19 @@ function buildPipeString(stateObj) {
     return `|Meters:` + m.map(x => `${x.name}:${x.curr}/${x.max}`).join(";") + `|`;
   };
 
-  // Vehicles get the same lines a normal entity gets, each prefixed with ">"
-  const buildVehicleLines = (v) => {
+  // Vehicle: one line, same keys as an entity
+  const buildVehicleLine = (v) => {
     const vType   = String(v.type || "mecha").toLowerCase();
     const usesEn  = (vType === "ship" || vType === "car");
     const eKey    = usesEn ? "EN" : "MP";
     const eCurr   = usesEn ? (v.en_curr ?? v.mp_curr ?? 0) : (v.mp_curr ?? v.en_curr ?? 0);
     const eMax    = usesEn ? (v.en_max  ?? v.mp_max  ?? 0) : (v.mp_max  ?? v.en_max  ?? 0);
     const coinStr = (v.dankcoin !== undefined && v.dankcoin !== null) ? `||Coin:${v.dankcoin}` : "";
+    const meters  = Array.isArray(v.meters) && v.meters.length
+      ? v.meters.map(x => `${x.name}:${x.curr}/${x.max}`).join(";")
+      : "";
 
-    return [
-      `>Vehicle|Type:${vType}||Name:${v.name || "Vehicle"}||HP:${v.hp_curr ?? 0}/${v.hp_max ?? 0}||${eKey}:${eCurr}/${eMax}${coinStr}|`,
-      `>Vehicle|Stats:${formatStats(v.stats)}|`,
-      `>Vehicle${formatMeters(v.meters)}`,
-      `>Vehicle|INV:${safeJoin(v.inventory)}||Skills:${safeJoin(v.skills)}||Passives:${safeJoin(v.passives)}||Masteries:${safeJoin(v.masteries)}||Status:${safeJoin(v.status_effects)}|`,
-    ];
+    return `>Vehicle|Type:${vType}||Name:${v.name || "Vehicle"}||HP:${v.hp_curr ?? 0}/${v.hp_max ?? 0}||${eKey}:${eCurr}/${eMax}${coinStr}||Stats:${formatStats(v.stats)}||Meters:${meters}||INV:${safeJoin(v.inventory)}||Skills:${safeJoin(v.skills)}||Passives:${safeJoin(v.passives)}||Masteries:${safeJoin(v.masteries)}||Status:${safeJoin(v.status_effects)}|`;
   };
 
   const buildEntity = (ent, isPlayer = false, isPartyOrNPC = false) => {
