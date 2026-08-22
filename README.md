@@ -80,7 +80,6 @@ II. VISIBILITY & PERSISTENCE
 5. Always keep party members unless they decide to leave the party permanently.
 Coin is not shared. [Party] & [Enemies] share same keys as [Player]
 
-
 Bond: Always display the |Bond:| stat in the entity's pipe if active.
 
 Persistence: Once revealed, stats are locked/persistent. Remove NPCs from the <rpg_state> block if they are not present in the current scene.
