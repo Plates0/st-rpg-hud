@@ -20,7 +20,7 @@ Go into the regex folder → install it → go back to SillyTavern → Extension
 - I got too lazy to create a menu directly in the extensions tab, so you'll just have to enable/disable it via extensions → manage extension → uncheck/check RPG HUD.
 
 ## RPG Guideline
-- If you're using this with Dankholme RPG, simply make a copy of the current RPG Toggle, disable it, then replace the copy with this guideline (there are two here, the first one is shorter, but if you have trouble with that, try the second. There's more variations in the thread on Discord.):
+- If you're using this with Dankholme RPG, simply make a copy of the current RPG Toggle, disable it, then replace the copy with this guideline (There's sometimes more variations in the thread on Discord.):
 
 ---
 ```
@@ -32,16 +32,23 @@ CRITICAL: Do not use Markdown code blocks. Just the raw tag and text.
 UNKNOWN VALUES: Use "???" for unknown numbers or hidden stats.
 SCHEMA RULES:
 - Separate lists (like inventory, skills, masteries, quests, status, env) using semicolons (;).
-- Time must be formatted as Month Day,Clock (e.g. `Mar 7,12:00`).
+- Time must be formatted as Month Day,Clock
 - Stats can contain equations (e.g., `ATK:210 (160+50+0)`) or raw integers (e.g., `ATK:10`).
 - Meters (Dynamic Stats): Store shields, Sanity, Hunger, Arousal, etc., using the format `Name:Curr/Max` inside a `|Meters:...|` pipe (e.g., `|Meters:Shield:30/80;Sanity:90/100|`). (Max is not capped at 100; add/remove as narrative dictates).
+- Add [NPCs], [Party], [Enemies], as narrative dictates. ALWAYS add characters into [NPCs] if they appear, but aren't a party member or ally.
 
-When updating the Time, do NOT default to 1-minute increments. 
+When updating the Time, do NOT default to 1-minute increments unless it makes sense. 
 Advance the clock dynamically based on the narrative events of your response:
-- Conversation/Interaction: Advance 5–15 minutes.
 - Short Travel/Exploration: Advance 30–60 minutes.
 - Significant Events/Dungeons: Advance 1–3 hours.
 - Rest/Sleep: Advance 8 hours, or however long {{user}} states.
+
+Timers (Global): `|Timers:Name:Value:KIND|`, `;` separated. KIND: CD/BUFF/DEBUFF/DOOM.
+Value = `2/3` turns left/total (-1 per round), or `Jan 6,14:00` deadline (same format
+as |Time:|). Use deadlines for anything over ~5 turns, and grant or steal time by
+moving the deadline, never by recomputing a countdown. Prefix `Owner/` if not {{user}}'s.
+Drop resolved timers; keep a fired DOOM until narrated.
+Ex: |Timers:Heavy Strike:2/3:CD;Kira/Regen:3/5:BUFF;Plague:Jan 9,06:00:DOOM|
 
 Calendar Logic
 Month Rollover: If day exceeds the max for the current month, reset day to 1 and advance month to the next one.
@@ -49,12 +56,13 @@ Max Days:
 - 30 Days: Apr, Jun, Sep, Nov
 - 31 Days: Jan, Mar, May, Jul, Aug, Oct, Dec
 - 28 Days: Feb
-Year: If Dec 31 rolls over, reset to Jan 1.
+- Time must be formatted as Month Day Year,Clock — e.g. `Jan 5 1023,14:30`.
+Year: If Dec 31 rolls over, advance to Jan 1 of the NEXT year.
 
 TEMPLATE:
 <rpg_state>
 [Global]
-|Loc:Unknown||Time:{{random:Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec}} {{random:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28}},{{random:06:00,08:30,10:00,12:15,14:45,17:00,19:30,22:00,01:15}}||Weather:{{random:Clear,Sunny,Partly Cloudy,Cloudy,Rain,Heavy Rain,Thunderstorm,Fog,Snow,Blizzard,Windy}}||Combat:Off|
+|Loc:Unknown||Time:{{random:Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec}} {{random:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28}} 2055,{{random:06:00,08:30,10:00,12:15,14:45,17:00,19:30,22:00,01:15}}||Combat:Off|
 |Quests:||Env:|
 
 [Player]
@@ -70,7 +78,8 @@ II. VISIBILITY & PERSISTENCE
 3. Are narratively revealed.
 4. Join the [Party].
 5. Always keep party members unless they decide to leave the party permanently.
-Coin is not shared.
+Coin is not shared. [Party] & [Enemies] share same keys as [Player]
+
 
 Bond: Always display the |Bond:| stat in the entity's pipe if active.
 
@@ -91,7 +100,7 @@ Env: Track active environmental pressures (sanity, hunger, weather, oxygen).
 - Example: "Dungeon Corruption -4 Sanity/Hunger Per Turn" or "Sandstorm -10 HP Per Turn"
 
 Examples (Inventory/Skills):
-- "Heavy Strike (MP-20) ATK*1.5"
+- "Heavy Strike (MP-20) ATK*1.5, A Powerful Strike."
 - "Iron Sword +10 ATK [X]"
 - "Healing Whispers (MP-15) Heal target MATK*1, recovers 15 Sanity"
 
@@ -119,15 +128,16 @@ Pacing: Exactly ONE ROUND per response (one action per combatant).
 Engagement: If combat starts, change Global Combat to `Round [N]`.
 
 Vehicle (Ship/Mecha/Car/Transport):
-- Add a line starting with `>` under the entity (e.g., `>Vehicle|Type:Mecha||Name:Mech-01||HP:100/100|`).
+- Add ONE line starting with `>` directly beneath the entity's lines, using the same keys:
+  >Vehicle|Type:Mecha||Name:||HP:0/0||MP:0/0||Coin:0||Stats:ATK:0,MATK:0,DEF:0,SATK:0,SDEF:0||Meters:||INV:||Skills:||Passives:||Status:|
+- Use `EN:` instead of `MP:` for Ship and Car.
 - Focus: Disable (don't remove) pilot stats. Use Vehicle stats/skills only for calculations.
-- Set vehicle Name to the name of the vehicle.
 
 Map: Energy (EN) maps to MP.
 
 Damage Engine: ((ATK or MATK)*Skill Multiplier)*(Crit Multiplier) - DEF*(True DMG Modifier) = DMG*(Final DMG Multiplier) = DMG Dealt
 - True DMG: TrueDMGMod = 0.
-- Parry: Treat DEF as (DEF + ATK).
+- Parry: Treat DEF as (DEF + ATK). Can parry True DMG.
 - Bosses: M.HP = Base * PartySize. Immune to Blind/Bind/Stun.
 - Critical Hits: *2 Multi. Guaranteed when hitting a Weak Spot. Calculated before DEF.
 
@@ -147,10 +157,10 @@ Shared Skills: List skills granted to the wielder by the weapon inside the [Play
 Inventory: Add "Living Weapon ({{user}}) [X]" to the Wielder's inventory pipe.
 
 VII. UI COMPONENTS (HTML IN NARRATIVE)
-Output these HTML blocks in the main response text (NOT inside the <rpg_state> block) when relevant.
+Output these HTML blocks in the main response text (NOT inside the <rpg_state> block) when relevant. ALWAYS show math.
 
 Hit Div:
-<div style="border:1px solid #FFD700; padding:10px; border-radius:8px; margin:10px 0; text-align:center;">⚔️ <strong>DEEP CUT!</strong> [A] dealt [N] DMG to [B]! <em>([ATK] vs [DEF] → [N] dmg!)</em></div>
+<div style="border:1px solid #FFD700; padding:10px; border-radius:8px; margin:10px 0; text-align:center;">⚔️ <strong>DEEP CUT!</strong> [A] dealt [N] DMG to [B]! <em>([X ATK] vs [X DEF] → [N] dmg!)</em></div>
 
 Combat Header:
 <div style="border:3px solid #FF0000; padding:15px; background:#ffebee; border-radius:10px; text-align:center; margin-bottom:20px; box-shadow:0 0 15px rgba(255,0,0,0.5);"><strong style="color:#d50000; font-size:1.2em;">⚠️ COMBAT ENGAGED ⚠️</strong></div>
