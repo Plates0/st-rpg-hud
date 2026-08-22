@@ -1,3 +1,135 @@
+// =====================================================================
+// RPG HUD — FORMAT REFERENCE
+// Last schema change: 2026-08-22 (vehicles, bonds, timers, year)
+//
+// This describes what the PARSER ACCEPTS. The AI guideline describes the
+// narrower subset the model is told to WRITE. When they disagree, this wins.
+// ---------------------------------------------------------------------
+//
+// BLOCK DISCOVERY
+//   <rpg_state> ... </rpg_state>   case-insensitive, attributes allowed.
+//   Only non-user messages are scanned; the NEWEST match wins and its index
+//   is cached in lastRpgMsgIndex. Markdown code fences are stripped first.
+//   State lives ONLY in the block. localStorage holds UI prefs, nothing else.
+//
+// LINE TYPES
+//   [Header]  Section switch. FUZZY: contains "player"/"party"/"enem"/"npc";
+//             anything else falls back to Global.
+//   >...      Targets the CURRENT entity's .vehicle (auto-creates it and sets
+//             active=true). Text between ">" and the first "|" is decorative,
+//             so ">Vehicle|..." and ">|..." are identical. A vehicle may be
+//             written as ONE long line or split across several ">" lines —
+//             every ">" line retargets the same vehicle object.
+//   |...|     Data for the current entity.
+//   Blank lines are skipped. Every line first passes sanitizeBrokenPipeLine(),
+//   which rewrites stray in-text "|" to the lookalike "｜".
+//
+// PIPE GRAMMAR      /\|([^|:]+):\s*([^|]*?)(?=\||$)/g
+//   Fields are separated by "||"; the line opens and closes with "|".
+//   KEY   : no "|" and no ":". Trimmed + lowercased on read.
+//   VALUE : anything up to the next "|". MAY contain ":" "/" "," "(" ")".
+//   Key ABSENT  -> field left unchanged.
+//   Key PRESENT but empty ("|INV:|") -> field CLEARED.
+//   A literal "|" inside a value will corrupt the line. Use safePipeText().
+//
+// GLOBAL KEYS   (read into newState regardless of which line they appear on)
+//   Loc      free text
+//   Time     "Month Day[ Year],HH:MM"   year optional; if omitted it is
+//            CARRIED FORWARD from the previous parse rather than cleared.
+//   Weather  free text (drives getWeatherEmoji)
+//   Combat   contains "off" -> inactive; otherwise digits -> round number
+//   Quests   ";"-separated list
+//   Env      ";"-separated list
+//   Bonds    permanent ledger, see below
+//   Timers   cooldowns/durations/doom clocks, see below
+//
+// ENTITY KEYS
+//   Name      In [Party]/[Enemies]/[NPCs] a NON-">" line with Name: STARTS a
+//             new entity; later lines attach to it. In [Player] it renames the
+//             player. On a ">" line it names the vehicle.
+//   HP        "curr/max". Kept as STRINGS so "300 ((100+100)*1.5)" survives.
+//             "???" -> both sides "???". Numbers >= 999999999 render as ∞.
+//   MP / EN   Same shape. ship+car prefer en_*, everything else mp_*; the
+//             parser MIRRORS both onto vehicles so either key works.
+//             CAVEAT: target.type is read BEFORE data.type is applied, so on a
+//             single-line vehicle the type is still the default when energy is
+//             classified — harmless only because of the mirroring.
+//   Coin      integer -> .dankcoin
+//   Bond      integer; "∞" -> 101. Party/NPC only.
+//             FAILSAFE: a "Bond:n" entry hiding inside Status is extracted
+//             into .bond and removed from the status list.
+//   Stats     "ATK:1,MATK:2,DEF:3,SATK:4,SDEF:5" — comma-separated, arbitrary
+//             keys accepted, values may carry math: "210 (160+50+0)".
+//   Meters    "Name:curr/max;Name:curr/max" — arbitrary count, max uncapped.
+//   INV / Skills / Passives / Masteries / Status   ";"-separated lists.
+//   Type      vehicle only: mecha | ship | car | transport
+//
+// BONDS LEDGER      |Bonds:Name:Value;Name:Value|
+//   Append-only roster that outlives a character leaving the scene.
+//   Name/value split on the LAST ":" so names may contain colons.
+//   Keyed by BASE NAME: bondBaseName() strips "(...)", "[...]", and any
+//   " - suffix", so "Alice (Battle Form)" == "Alice". Stored under the base.
+//   Value "∞" -> 101. Negative values allowed.
+//   MERGE ORDER on every parse: previous memory -> block -> live party/NPC
+//   |Bond:| values (live wins). A name the model drops is RESTORED from memory.
+//   purgeBondsFromHistory() is the only code that edits old messages: it
+//   surgically rewrites just the |Bonds:| pipe in every message AND in
+//   msg.swipes[]. It never touches anything else.
+//
+// TIMERS            |Timers:[Owner/]Name:Value[:KIND];...|
+//   Name = before the FIRST ":". KIND = after the LAST ":" if it is one of
+//   CD/BUFF/DEBUFF/DOOM, else the whole remainder is the value and KIND
+//   defaults to CD. That split is what lets a clock time live in the value.
+//   VALUE is either:
+//     "2/3"              turns remaining/total (drives the progress bar)
+//     "47"               bare turn count, no bar
+//     "Jan 6[ 1023],14:00"  world-time deadline (year inherited if omitted)
+//     "14:00"            next occurrence of that clock time
+//   AUTO-REPAIR: if combat.round increased AND a turn value is byte-identical
+//   to last parse, the HUD decrements it and flags .repaired (shown as "*").
+//   If the model DID update it, the HUD leaves it alone — no double-ticking.
+//   Timers the model drops are NOT restored (dropping a finished CD is correct).
+//
+// PARSE PIPELINE (order matters)
+//   1. fresh deep clone of defaultState
+//   2. line-by-line pipe parse
+//   3. bonds  = mergeBondLedger(previous, block) then live bonds overwrite
+//   4. timers = mergeTimers(previous, block)  [auto-repair happens here]
+//   5. world_time.year carried forward if the block omitted it
+//   6. maybeReportListChanges() diffs INV/Skills/Passives/Masteries vs the
+//      previous parse and toasts only SHRINKAGE (a dropped description).
+//      Equip-tag-only changes are ignored; adds/removes go to console.
+//
+// WRITE-BACK
+//   buildPipeString() rebuilds the ENTIRE block from current state and regex-
+//   replaces it in chat[lastRpgMsgIndex], then saveChat().
+//   Callers: saveEditor · manual ↻ scan · remove/clear character · remind ·
+//            bond commit · timer commit · ⏭ advance turn.
+//   The automatic observer scan NEVER writes.
+//   *** NEVER run buildPipeString over an OLD message — it would stamp today's
+//       state onto that message's history. Edit old messages surgically only.
+//   LOSSY BY DESIGN: anything the parser doesn't read is dropped on rewrite,
+//   and a vehicle is only emitted while active — unchecking Active DELETES it.
+//   KNOWN GAP: resetRPG() does not write back, so a reset reverts on the next
+//   scan. Left as-is intentionally; most users start a new chat instead.
+//
+// OBSERVER
+//   MutationObserver on #chat, 1200ms debounce -> checkMessage(false).
+//   Skipped entirely while bondsEditMode || timersEditMode is true so inline
+//   inputs aren't wiped mid-typing.
+//
+// INDICATOR DOT
+//   green = latest block parses · yellow = pipe/colon error (tap for caret
+//   panel) · red = latest message is the user's · grey = no <rpg_state>.
+//
+// ADDING A NEW FIELD — touch all five:
+//   1. defaultState                      2. parsePipeFormat  (read the key)
+//   3. buildPipeString / buildEntity     (write the key)
+//   4. the editor (render + saveEditor)  5. the AI guideline
+//   Forget #3 and it silently vanishes on the next write-back. That was the
+//   original vehicle bug.
+// =====================================================================
+
 console.log("RPG HUD: index.js loaded ✅", new Date().toISOString());
 window.__rpgHudLoaded = true;
 
