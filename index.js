@@ -135,6 +135,7 @@ const defaultState = {
 
 let rpgState = JSON.parse(JSON.stringify(defaultState));
 let activeTab = "inventory";
+let bondsEditMode = false;
 let isMinimized = false;
 let scanTimer = null;
 let charIndex = 0;
@@ -653,20 +654,29 @@ function parseBondValue(v) {
 }
 
 // --- BOND LEDGER ---
+function bondBaseName(n) {
+  return String(n ?? "")
+    .replace(/[\(\[\{].*$/, " ")      // "Alice (Battle Form)" -> "Alice"
+    .replace(/\s*[-–—:]\s.*$/, " ")   // "Alice - Awakened"    -> "Alice"
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function normBondName(n) {
-  return String(n ?? "").trim().toLowerCase();
+  return bondBaseName(n).toLowerCase();
 }
 
 function upsertBond(list, name, value) {
   if (!Array.isArray(list)) return;
   const key = normBondName(name);
   if (!key) return;
+  const display = bondBaseName(name) || String(name).trim();
   const hit = list.find((b) => normBondName(b.name) === key);
   if (hit) {
-    hit.name = name;
+    hit.name = display;
     hit.bond = value;
   } else {
-    list.push({ name, bond: value });
+    list.push({ name: display, bond: value });
   }
 }
 
@@ -1145,10 +1155,10 @@ function renderPartyTab() {
   return `${partyHtml}${divider}${npcHtml}`;
 }
 
+// Bond Tracker
 function renderBondsTab() {
-  const list = Array.isArray(rpgState.bonds) ? rpgState.bonds : [];
-  if (!list.length)
-    return `<div style="opacity:0.5; font-style:italic;">No bonds recorded</div>`;
+  if (!Array.isArray(rpgState.bonds)) rpgState.bonds = [];
+  const list = rpgState.bonds;
 
   const party = Array.isArray(rpgState.party) ? rpgState.party : [];
   const npcs = Array.isArray(rpgState.npcs) ? rpgState.npcs : [];
@@ -1162,7 +1172,53 @@ function renderBondsTab() {
     return null;
   };
 
-  return [...list]
+  const btn = (id, text, color) =>
+    `<button id="${id}" style="background:#333; border:1px solid ${color}; color:${color};
+      cursor:pointer; font-size:0.9em; padding:1px 7px; font-weight:bold;">${text}</button>`;
+
+  const header = `
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:4px; margin-bottom:4px;">
+      <span style="color:#f06292; font-weight:bold;">❤️ Bonds</span>
+      <span style="display:flex; gap:4px;">
+        ${bondsEditMode ? btn("rpg-bond-add", "+", "#69f0ae") : ""}
+        ${bondsEditMode ? btn("rpg-bond-edit", "✓", "#69f0ae") : btn("rpg-bond-edit", "✎", "#4FC3F7")}
+      </span>
+    </div>`;
+
+  if (!list.length && !bondsEditMode) {
+    return header + `<div style="opacity:0.5; font-style:italic;">No bonds recorded</div>`;
+  }
+
+  if (bondsEditMode) {
+    const rows = list
+      .map((b, i) => {
+        const val = parseBondValue(b?.bond);
+        const label = val >= 101 ? "∞" : String(val);
+        return `
+        <div style="display:flex; gap:4px; align-items:center; padding:2px 0; border-bottom:1px solid #333;">
+          <input class="rpg-bond-name" data-i="${i}" type="text" value="${escAttr(b?.name ?? "")}"
+            style="flex:1 1 auto; min-width:0; background:#222; border:1px solid #555; color:#fff;
+                   font-family:inherit; font-size:1em;">
+          <input class="rpg-bond-val" data-i="${i}" type="text" value="${escAttr(label)}"
+            style="flex:0 0 46px; width:46px; background:#222; border:1px solid #555; color:#f06292;
+                   font-family:inherit; font-size:1em; text-align:center;">
+          <button class="rpg-bond-del" data-i="${i}" title="Delete"
+            style="flex:0 0 auto; background:#333; border:1px solid #ff5252; color:#ff5252;
+                   cursor:pointer; font-size:0.85em; padding:1px 5px; font-weight:bold;">✕</button>
+        </div>`;
+      })
+      .join("");
+
+    return (
+      header +
+      rows +
+      `<div style="font-size:0.7em; color:#666; margin-top:4px; line-height:1.3;">
+         Blank name deletes the row. ✓ writes to the message.
+       </div>`
+    );
+  }
+
+  const rows = [...list]
     .sort((a, b) => parseBondValue(b.bond) - parseBondValue(a.bond))
     .map((b) => {
       const val = parseBondValue(b.bond);
@@ -1189,6 +1245,82 @@ function renderBondsTab() {
         </div>`;
     })
     .join("");
+
+  return header + rows;
+}
+
+// Read the live inputs back into state WITHOUT re-rendering (keeps focus)
+function readBondInputs() {
+  if (!Array.isArray(rpgState.bonds)) return;
+  document.querySelectorAll(".rpg-bond-name").forEach((el) => {
+    const i = Number(el.dataset.i);
+    if (rpgState.bonds[i]) rpgState.bonds[i].name = el.value;
+  });
+  document.querySelectorAll(".rpg-bond-val").forEach((el) => {
+    const i = Number(el.dataset.i);
+    if (rpgState.bonds[i]) {
+      rpgState.bonds[i].bond = clamp(parseBondValue(el.value), Number.NEGATIVE_INFINITY, 101);
+    }
+  });
+}
+
+function commitBondsEdit() {
+  readBondInputs();
+  const cleaned = [];
+  (rpgState.bonds || []).forEach((b) => {
+    if (b && String(b.name || "").trim()) upsertBond(cleaned, b.name, b.bond);
+  });
+  rpgState.bonds = cleaned;
+  bondsEditMode = false;
+  renderRPG();
+  const ok = writeStateBackToChatMessage(rpgState);
+  if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after bond edit");
+}
+
+function flushBondsEdit() {
+  if (bondsEditMode) commitBondsEdit();
+}
+
+function bindBondsTab() {
+  const editBtn = document.getElementById("rpg-bond-edit");
+  if (editBtn) {
+    editBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (bondsEditMode) {
+        commitBondsEdit();
+      } else {
+        bondsEditMode = true;
+        renderRPG();
+      }
+    };
+  }
+
+  const addBtn = document.getElementById("rpg-bond-add");
+  if (addBtn) {
+    addBtn.onclick = (e) => {
+      e.stopPropagation();
+      readBondInputs();
+      if (!Array.isArray(rpgState.bonds)) rpgState.bonds = [];
+      rpgState.bonds.push({ name: "", bond: 0 });
+      renderRPG();
+      const inputs = document.querySelectorAll(".rpg-bond-name");
+      inputs[inputs.length - 1]?.focus();
+    };
+  }
+
+  document.querySelectorAll(".rpg-bond-del").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      readBondInputs();
+      const i = Number(el.dataset.i);
+      if (Number.isFinite(i)) rpgState.bonds.splice(i, 1);
+      renderRPG();
+    };
+  });
+
+  document.querySelectorAll(".rpg-bond-name, .rpg-bond-val").forEach((el) => {
+    el.onclick = (e) => e.stopPropagation();
+  });
 }
 
 // --- METERS (generic bar stats) ---
@@ -1403,11 +1535,13 @@ function resetRPG(e) {
 }
 function toggleMinimize(e) {
   if (e) e.stopPropagation();
+  flushBondsEdit();
   isMinimized = !isMinimized;
   isSettingsOpen = false;
   renderRPG();
 }
 function switchTab(tabName) {
+  flushBondsEdit();
   activeTab = tabName;
   renderRPG();
 }
@@ -2025,6 +2159,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 }
 
     bindJumpLinks();
+	bindBondsTab();
 
     const bind = (id, fn) => {
       const el = document.getElementById(id);
@@ -2626,6 +2761,7 @@ function parsePipeFormat(text) {
 }
 
 const checkMessage = async (manual = false) => {
+  if (bondsEditMode) return;
   if (manual) console.log("RPG HUD: Manual Scan...");
 
   const context = SillyTavern.getContext();
