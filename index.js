@@ -406,7 +406,29 @@ function diffLists(prev, next) {
       if (!b.has(k)) out.push({ type: "removed", label, name: text });
     });
   });
-  return out;
+  return reconcileTruncations(out);
+}
+
+// An entry whose stats live in the NAME ("Iron Sword +10 ATK") changes its key
+// when truncated, so it lands as removed+added instead of shortened. Pair those
+// back up: if a removed entry starts with an added one, it was truncated.
+function reconcileTruncations(out) {
+  const consumed = new Set();
+  out.filter((d) => d.type === "added").forEach((a) => {
+    const an = stripStatusTags(a.name).toLowerCase();
+    if (an.length < 3) return;
+    const hit = out.find((r) => {
+      if (r.type !== "removed" || consumed.has(r) || r.label !== a.label) return false;
+      const rn = stripStatusTags(r.name).toLowerCase();
+      return rn !== an && rn.startsWith(an);
+    });
+    if (hit) {
+      consumed.add(hit);
+      a.type = "lost";
+      a.before = hit.name;
+    }
+  });
+  return out.filter((d) => !consumed.has(d));
 }
 
 function currentChatKey(context) {
@@ -2958,7 +2980,13 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	  bind("rpg-settings-clear-party", (e) => clearArray("party", e));
 	  bind("rpg-settings-insert", insertLastStateIntoNarrative);
 	  bind("rpg-settings-remind", remindStateInLastMessage);
-	
+
+	  const caEl = document.getElementById("rpg-settings-changealerts");
+	  if (caEl) caEl.onchange = () => {
+	    uiSettings.changeAlerts = caEl.checked;
+	    saveUiSettings();
+	  };
+
 	  const overlay = document.getElementById("rpg-settings-overlay");
 	  if (overlay) overlay.onclick = (e) => e.stopPropagation();
 	
@@ -3477,7 +3505,7 @@ function parsePipeFormat(text) {
 }
 
 const checkMessage = async (manual = false) => {
-  if (bondsEditMode) return;
+  if (bondsEditMode || timersEditMode) return;
   if (manual) console.log("RPG HUD: Manual Scan...");
 
   const context = SillyTavern.getContext();
@@ -3602,6 +3630,18 @@ jQuery(() => {
       hudToastArmed = true; 
     });
   }, 300);
+
+  // Debug hook — console access to internals.
+  //   __rpgHud.state            live rpgState
+  //   __rpgHud.scan(true)       force a scan (true = also write back)
+  //   __rpgHud.diff()           run the change-alert diff right now
+  //   __rpgHud.build()          preview the block the next write-back would emit
+  window.__rpgHud = {
+    get state() { return rpgState; },
+    scan: (write = false) => checkMessage(write),
+    diff: () => maybeReportListChanges(),
+    build: () => buildPipeString(rpgState),
+  };
 
   console.log("RPG HUD: boot complete ✅");
 });
