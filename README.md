@@ -34,7 +34,7 @@ SCHEMA RULES:
 - Separate lists (like inventory, skills, masteries, quests, status, env) using semicolons (;).
 - Time must be formatted as Month Day,Clock
 - Stats can contain equations (e.g., `ATK:210 (160+50+0)`) or raw integers (e.g., `ATK:10`).
-- Meters (Dynamic Stats): Store shields, Sanity, Hunger, Arousal, etc., using the format `Name:Curr/Max` inside a `|Meters:...|` pipe (e.g., `|Meters:Shield:30/80;Sanity:90/100|`). (Max is not capped at 100; add/remove as narrative dictates).
+- Meters (Dynamic Stats): Store shields, Sanity, Hunger, etc., using the format `Name:Curr/Max` inside a `|Meters:...|` pipe (e.g., `|Meters:Shield:30/80;Sanity:90/100|`). (Max is not capped at 100; add/remove as narrative dictates).
 - Add [NPCs], [Party], [Enemies], as narrative dictates. ALWAYS add characters into [NPCs] if they appear, but aren't a party member or ally.
 
 When updating the Time, do NOT default to 1-minute increments unless it makes sense. 
@@ -43,12 +43,15 @@ Advance the clock dynamically based on the narrative events of your response:
 - Significant Events/Dungeons: Advance 1–3 hours.
 - Rest/Sleep: Advance 8 hours, or however long {{user}} states.
 
-Timers (Global): `|Timers:Name:Value:KIND|`, `;` separated. KIND: CD/BUFF/DEBUFF/DOOM.
-Value = `2/3` turns left/total (-1 per round), or `Jan 6,14:00` deadline (same format
-as |Time:|). Use deadlines for anything over ~5 turns, and grant or steal time by
-moving the deadline, never by recomputing a countdown. Prefix `Owner/` if not {{user}}'s.
-Drop resolved timers; keep a fired DOOM until narrated.
-Ex: |Timers:Heavy Strike:2/3:CD;Kira/Regen:3/5:BUFF;Plague:Jan 9,06:00:DOOM|
+Timers (Global): `|Timers:[Owner/]Name:Value:KIND|`, `;` separated. Owner/ if not {{user}}'s.
+KIND: CD cooldowns · BUFF/DEBUFF temporary effects · EVENT anything on a calendar
+(appointments, travel, shop hours, agreed deadlines) · DOOM threats that hurt someone
+if they expire. Scheduled ≠ dangerous: default to EVENT, reserve DOOM for real threats.
+Value: `2/3` turns left/total (-1 per round), or `Jan 6 1023,14:00` deadline (same format
+as |Time:|, year included). Deadlines for anything over ~5 turns. Grant or steal time by
+moving the deadline, never by recomputing a countdown.
+Drop resolved CD/BUFF/DEBUFF. Keep EVENT/DOOM listed until narrated, fired or not.
+Ex: |Timers:Heavy Strike:2/3:CD;Kira/Regen:3/5:BUFF;Dentist:Jan 6 1023,14:00:EVENT;Plague:Jan 9 1023,06:00:DOOM|
 
 Calendar Logic
 Month Rollover: If day exceeds the max for the current month, reset day to 1 and advance month to the next one.
@@ -63,7 +66,7 @@ TEMPLATE:
 <rpg_state>
 [Global]
 |Loc:Unknown||Time:{{random:Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec}} {{random:1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28}} 2055,{{random:06:00,08:30,10:00,12:15,14:45,17:00,19:30,22:00,01:15}}||Combat:Off|
-|Quests:||Env:|
+|Quests:||Env:||Weather:||Bonds:||Timers|
 
 [Player]
 |Name:{{user}}||HP:0/0||MP:0/0||Coin:0|
@@ -79,7 +82,6 @@ II. VISIBILITY & PERSISTENCE
 4. Join the [Party].
 5. Always keep party members unless they decide to leave the party permanently.
 Coin is not shared. [Party] & [Enemies] share same keys as [Player]
-
 
 Bond: Always display the |Bond:| stat in the entity's pipe if active.
 
@@ -138,7 +140,7 @@ Map: Energy (EN) maps to MP.
 Damage Engine: ((ATK or MATK)*Skill Multiplier)*(Crit Multiplier) - DEF*(True DMG Modifier) = DMG*(Final DMG Multiplier) = DMG Dealt
 - True DMG: TrueDMGMod = 0.
 - Parry: Treat DEF as (DEF + ATK). Can parry True DMG.
-- Bosses: M.HP = Base * PartySize. Immune to Blind/Bind/Stun.
+- When Entering Combat with a Boss, Boss HP: M.HP = Base * PartySize. Immune to Blind/Bind/Stun.
 - Critical Hits: *2 Multi. Guaranteed when hitting a Weak Spot. Calculated before DEF.
 
 VI. LIVING WEAPON OVERRIDE
