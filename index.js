@@ -72,13 +72,16 @@
 //   Value "∞" -> 101. Negative values allowed.
 //   MERGE ORDER on every parse: previous memory -> block -> live party/NPC
 //   |Bond:| values (live wins). A name the model drops is RESTORED from memory.
+//   DELTAS: bondBaseline snapshots the ledger as of the PREVIOUS message and
+//   is frozen per lastRpgMsgIndex, so the observer's repeat scans of the same
+//   message don't erase the ▲/▼. .prev is display-only and never written back.
 //   purgeBondsFromHistory() is the only code that edits old messages: it
 //   surgically rewrites just the |Bonds:| pipe in every message AND in
 //   msg.swipes[]. It never touches anything else.
 //
 // TIMERS            |Timers:[Owner/]Name:Value[:KIND];...|
 //   Name = before the FIRST ":". KIND = after the LAST ":" if it is one of
-//   CD/BUFF/DEBUFF/DOOM, else the whole remainder is the value and KIND
+//   CD/BUFF/DEBUFF/EVENT/DOOM, else the whole remainder is the value and KIND
 //   defaults to CD. That split is what lets a clock time live in the value.
 //   VALUE is either:
 //     "2/3"              turns remaining/total (drives the progress bar)
@@ -88,7 +91,13 @@
 //   AUTO-REPAIR: if combat.round increased AND a turn value is byte-identical
 //   to last parse, the HUD decrements it and flags .repaired (shown as "*").
 //   If the model DID update it, the HUD leaves it alone — no double-ticking.
-//   Timers the model drops are NOT restored (dropping a finished CD is correct).
+//   KINDS: CD (cooldown) · BUFF · DEBUFF · EVENT (appointment/scheduled thing,
+//   neutral, 📅) · DOOM (threat, ☠️). EVENT exists so a dentist appointment
+//   doesn't get filed as a doom clock.
+//   Timers the model drops are NOT restored — EXCEPT unfired EVENT/DOOM, which
+//   are carried forward and marked "°", because a date three days out will go
+//   unmentioned for many turns. Fired ones are released. Editor delete still
+//   works (it removes from rpgState before the next merge sees it).
 //
 // PARSE PIPELINE (order matters)
 //   1. fresh deep clone of defaultState
@@ -271,6 +280,10 @@ let activeTab = "inventory";
 let bondsEditMode = false;
 let timersEditMode = false;
 let bondsSnapshot = [];
+// Bond deltas: the ledger as it stood BEFORE the current message's block.
+// Frozen per message index so repeated rescans don't erase the arrow.
+let bondBaseline = new Map();
+let bondBaselineIdx = -1;
 let isMinimized = false;
 let scanTimer = null;
 let charIndex = 0;
@@ -1002,8 +1015,10 @@ function parseBondLedgerFromText(text) {
 }
 
 // --- TIMERS ---
-const TIMER_KINDS = ["CD", "BUFF", "DEBUFF", "DOOM"];
-const KIND_RANK = { DOOM: 0, DEBUFF: 1, BUFF: 2, CD: 3 };
+const TIMER_KINDS = ["CD", "BUFF", "DEBUFF", "EVENT", "DOOM"];
+const KIND_RANK = { DOOM: 0, EVENT: 1, DEBUFF: 2, BUFF: 3, CD: 4 };
+// Kinds that are appointments, not combat state: they survive being dropped.
+const TIMER_PERSISTENT_KINDS = ["EVENT", "DOOM"];
 const TIMER_MONTHS = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
 const TIMER_MONTH_DAYS = [31,28,31,30,31,30,31,31,30,31,30,31];
 const YEAR_MINUTES = 365 * 1440;
@@ -1069,6 +1084,7 @@ function formatMinutes(mins) {
 function timerKindStyle(kind) {
   switch (String(kind || "CD").toUpperCase()) {
     case "DOOM":   return { color: "#ff5252", icon: "☠️", zero: "TRIGGERED" };
+    case "EVENT":  return { color: "#ce93d8", icon: "📅", zero: "NOW" };
     case "DEBUFF": return { color: "#ff9800", icon: "⚠️", zero: "ENDED" };
     case "BUFF":   return { color: "#69f0ae", icon: "✨", zero: "ENDED" };
     default:       return { color: "#90caf9", icon: "⏳", zero: "READY" };
@@ -1190,7 +1206,7 @@ function mergeTimers(prevState, nextState) {
   const nextRound = nextState?.combat?.active ? toNumberOr(nextState?.combat?.round, 0) : 0;
   const roundAdvanced = nextRound > prevRound;
 
-  return (Array.isArray(nextState.timers) ? nextState.timers : []).map((t) => {
+  const merged = (Array.isArray(nextState.timers) ? nextState.timers : []).map((t) => {
     const old = prevMap.get(timerKey(t));
     const out = { ...t, prev: old ? old.value : null };
 
@@ -1203,6 +1219,28 @@ function mergeTimers(prevState, nextState) {
     }
     return out;
   });
+
+  // EVENT/DOOM are long-lived appointments — a doctor's visit three days out
+  // will go unmentioned for many turns. If the model dropped one and it hasn't
+  // fired yet, carry it forward instead of losing it. Fired ones are released,
+  // and deleting one in the editor still works (it leaves rpgState first).
+  const seen = new Set(merged.map(timerKey));
+  prevList.forEach((old) => {
+    if (!old || !old.name) return;
+    if (!TIMER_PERSISTENT_KINDS.includes(String(old.kind || "").toUpperCase())) return;
+    if (seen.has(timerKey(old))) return;
+    if (timerInfo(old).done) return;
+    merged.push({
+      owner: old.owner || "",
+      name: old.name,
+      value: old.value,
+      kind: String(old.kind).toUpperCase(),
+      prev: null,
+      kept: true,
+    });
+  });
+
+  return merged;
 }
 
 function advanceTimerTurn() {
@@ -1711,14 +1749,34 @@ function renderBondsTab() {
         ? `<span class="rpg-jump" data-idx="${idx}" style="cursor:pointer; text-decoration:underline; text-decoration-color:#555;">${escHtml(b.name)}</span>`
         : `<span>${escHtml(b.name)}</span>`;
 
+      // Change since the previous message's block. null prev = brand new name.
+      const hasBaseline = Object.prototype.hasOwnProperty.call(b, "prev");
+      const prevVal = !hasBaseline || b.prev === null ? null : parseBondValue(b.prev);
+      const diff = prevVal === null ? 0 : val - prevVal;
+      const deltaHtml = !hasBaseline
+        ? ""
+        : prevVal === null
+        ? `<span title="New to the ledger" style="font-size:0.75em; color:#69f0ae;"> NEW</span>`
+        : diff
+          ? `<span title="Was ${escAttr(prevVal >= 101 ? "∞" : String(prevVal))}"
+                   style="font-size:0.75em; color:${diff > 0 ? "#69f0ae" : "#ff5252"};"> ${diff > 0 ? "▲" : "▼"}${Math.abs(diff)}</span>`
+          : "";
+
+      // Ghost segment on the bar showing where it moved from.
+      const prevPct = prevVal === null ? null : (prevVal >= 101 ? 100 : clamp(Math.abs(prevVal), 0, 100));
+      const ghost = prevPct === null || prevPct === pct ? "" : `
+            <div style="position:absolute; top:0; height:100%; opacity:0.45;
+                        left:${Math.min(pct, prevPct)}%; width:${Math.abs(pct - prevPct)}%;
+                        background:${diff > 0 ? "#69f0ae" : "#ff5252"};"></div>`;
+
       return `
         <div style="padding:4px 0; border-bottom:1px solid #333;">
           <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
             <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${dot} ${nameHtml}</span>
-            <span style="color:${color}; flex:0 0 auto;">${escHtml(label)}/100</span>
+            <span style="color:${color}; flex:0 0 auto;">${escHtml(label)}/100${deltaHtml}</span>
           </div>
-          <div style="width:100%; background:#333; height:4px; border-radius:2px; overflow:hidden; margin-top:3px;">
-            <div style="height:100%; background:${color}; width:${pct}%"></div>
+          <div style="position:relative; width:100%; background:#333; height:4px; border-radius:2px; overflow:hidden; margin-top:3px;">
+            <div style="height:100%; background:${color}; width:${Math.min(pct, prevPct === null ? pct : prevPct)}%"></div>${ghost}
           </div>
         </div>`;
     })
@@ -1862,6 +1920,7 @@ function renderTimersTab() {
     return header + rows + `
       <div style="font-size:0.7em; color:#666; margin-top:4px; line-height:1.35;">
         Value: <span style="color:#888;">2/3</span> (turns) or <span style="color:#888;">Jan 6,14:00</span> (deadline).<br>
+        <span style="color:#ce93d8;">EVENT</span> = appointment · <span style="color:#ff5252;">DOOM</span> = threat. Both survive being dropped.<br>
         Name may be <span style="color:#888;">Owner/Skill</span>. Blank name deletes.
       </div>`;
   }
@@ -1875,12 +1934,13 @@ function renderTimersTab() {
     })
     .map(({ t, info }) => {
       const st = timerKindStyle(info.kind);
-      const dim = info.done && info.kind !== "DOOM" ? "opacity:0.55;" : "";
+      const dim = info.done && !TIMER_PERSISTENT_KINDS.includes(info.kind) ? "opacity:0.55;" : "";
       const delta = timerDelta(t);
       const ownerTag = t.owner
         ? `<span style="font-size:0.75em; color:#888;">${escHtml(t.owner)}·</span>`
         : "";
       const mark = t.repaired ? `<span title="Auto-ticked by the HUD" style="color:#C0A040;">*</span>` : "";
+      const keptMark = t.kept ? `<span title="Carried over — the model stopped listing it" style="color:#888;">°</span>` : "";
       const bar = info.pct === null ? "" : `
         <div style="width:100%; background:#333; height:3px; border-radius:2px; overflow:hidden; margin-top:3px;">
           <div style="height:100%; background:${st.color}; width:${info.pct}%"></div>
@@ -1890,7 +1950,7 @@ function renderTimersTab() {
         <div style="padding:4px 0; border-bottom:1px solid #333; ${dim}">
           <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
             <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-              ${st.icon} ${ownerTag}${escHtml(t.name)}${mark}
+              ${st.icon} ${ownerTag}${escHtml(t.name)}${mark}${keptMark}
             </span>
             <span style="flex:0 0 auto; color:${st.color};">
               ${escHtml(info.label)}
@@ -3496,6 +3556,25 @@ function parsePipeFormat(text) {
 
   newState.bonds = mergeBondLedger(rpgState?.bonds, newState.bonds);
   syncLiveBondsIntoLedger(newState);
+
+  // Rebase only when we've moved to a NEW message, so the observer's repeat
+  // scans of the same message keep showing the same delta.
+  if (lastRpgMsgIndex !== bondBaselineIdx) {
+    bondBaseline = new Map(
+      (Array.isArray(rpgState?.bonds) ? rpgState.bonds : [])
+        .map((b) => [normBondName(b?.name), parseBondValue(b?.bond)])
+    );
+    bondBaselineIdx = lastRpgMsgIndex;
+  }
+  // No baseline (fresh page load / new chat) means nothing to compare against,
+  // so leave .prev absent rather than flagging every bond as NEW.
+  if (bondBaseline.size) {
+    newState.bonds.forEach((b) => {
+      const key = normBondName(b?.name);
+      b.prev = bondBaseline.has(key) ? bondBaseline.get(key) : null;
+    });
+  }
+
   newState.timers = mergeTimers(rpgState, newState);
   if (!newState.world_time.year && rpgState?.world_time?.year) {
     newState.world_time.year = rpgState.world_time.year;
@@ -3515,6 +3594,8 @@ const checkMessage = async (manual = false) => {
   if (chatKey !== lastChatKey) {
     lastChatKey = chatKey;
     lastListSnapshot = null;
+    bondBaseline = new Map();
+    bondBaselineIdx = -1;
   }
   renderRPG();
 
