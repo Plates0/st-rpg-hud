@@ -75,7 +75,8 @@
 //   DELTAS: bondBaseline snapshots the ledger as of the PREVIOUS message and
 //   is frozen per lastRpgMsgIndex, so the observer's repeat scans of the same
 //   message don't erase the ▲/▼. .prev is display-only and never written back.
-//   purgeBondsFromHistory() is the only code that edits old messages: it
+//   purgeBondsFromHistory() and purgeTimersFromHistory() are the only code that
+//   edits old messages: they
 //   surgically rewrites just the |Bonds:| pipe in every message AND in
 //   msg.swipes[]. It never touches anything else.
 //
@@ -97,7 +98,11 @@
 //   Timers the model drops are NOT restored — EXCEPT unfired EVENT/DOOM, which
 //   are carried forward and marked "°", because a date three days out will go
 //   unmentioned for many turns. Fired ones are released. Editor delete still
-//   works (it removes from rpgState before the next merge sees it).
+//   works (it removes from rpgState before the next merge sees it), and offers
+//   to scrub the timer from |Timers:| in every earlier message + swipes, the
+//   same way bond deletion does. The carry-over source is timerMemory (the
+//   newest block BEFORE this message), NOT the last parse, so a swipe you
+//   abandon can't leak its EVENTs into the branch you keep.
 //
 // PARSE PIPELINE (order matters)
 //   1. fresh deep clone of defaultState
@@ -280,10 +285,13 @@ let activeTab = "inventory";
 let bondsEditMode = false;
 let timersEditMode = false;
 let bondsSnapshot = [];
-// Bond deltas: the ledger as it stood BEFORE the current message's block.
-// Frozen per message index so repeated rescans don't erase the arrow.
-let bondBaseline = new Map();
-let bondBaselineIdx = -1;
+let timersSnapshot = [];
+// The ledger as it stood in the messages BEFORE the one being parsed. Read from
+// chat history, not from the last parse, so an abandoned swipe leaves no trace.
+// Doubles as the baseline for the ▲/▼ deltas.
+let bondMemory = [];
+let timerMemory = [];
+let historyMemoryKey = null;
 let isMinimized = false;
 let scanTimer = null;
 let charIndex = 0;
@@ -971,6 +979,93 @@ function formatBondLedger(list) {
     .join(";");
 }
 
+// Rebuild the bond ledger from messages BEFORE `beforeIdx`. This is the memory
+// that restores a character who has left the scene. Sourcing it from history
+// rather than from the previous parse is what makes swipes clean: a character
+// you met in a swipe you then abandoned never entered history, so they vanish.
+function bondMemoryFromHistory(chat, beforeIdx) {
+  const out = [];
+  if (!Array.isArray(chat)) return out;
+
+  const limit = Math.max(0, Math.min(beforeIdx, chat.length));
+  const blockRe = /<rpg_state\b[^>]*>([\s\S]*?)<\/rpg_state>/gi;
+
+  for (let i = 0; i < limit; i++) {
+    const msg = chat[i];
+    if (!msg || msg.is_user || typeof msg.mes !== "string") continue;
+    if (!/<rpg_state\b/i.test(msg.mes)) continue;
+
+    // newest block in this message wins, same rule as the live parser
+    let body = null, m;
+    blockRe.lastIndex = 0;
+    while ((m = blockRe.exec(msg.mes)) !== null) body = m[1];
+    if (body === null) continue;
+
+    // 1. the |Bonds:| ledger pipe
+    const led = body.match(/\|Bonds:([^|]*)\|/i);
+    if (led) parseBondLedger(led[1]).forEach((b) => upsertBond(out, b.name, b.bond));
+
+    // 2. live |Bond:| values on party/NPC entries overwrite it, as in the
+    //    real pipeline. Walk statefully: Name and Bond may sit on separate lines.
+    let curName = "";
+    let inPlayer = false;
+    body.split("\n").forEach((raw) => {
+      const line = raw.trim();
+      if (!line) return;
+      if (line.startsWith("[")) {
+        inPlayer = /player/i.test(line);
+        curName = "";
+        return;
+      }
+      if (line.startsWith(">")) return;           // vehicles carry no bond
+      const nm = line.match(/\|Name:\s*([^|]*)/i);
+      if (nm) curName = nm[1].trim();
+      if (inPlayer || !curName) return;
+      const bd = line.match(/\|Bond:\s*([^|]*)/i);
+      if (bd && bd[1].trim()) upsertBond(out, curName, parseBondValue(bd[1]));
+    });
+  }
+  return out;
+}
+
+// Timers are current state, not a ledger, so "memory" is simply the newest
+// block BEFORE this message — no accumulation. Only the persistent kinds
+// matter; a CD from two messages ago is meaningless now.
+function timerMemoryFromHistory(chat, beforeIdx) {
+  if (!Array.isArray(chat)) return [];
+  const blockRe = /<rpg_state\b[^>]*>([\s\S]*?)<\/rpg_state>/gi;
+
+  for (let i = Math.min(beforeIdx, chat.length) - 1; i >= 0; i--) {
+    const msg = chat[i];
+    if (!msg || msg.is_user || typeof msg.mes !== "string") continue;
+    if (!/<rpg_state\b/i.test(msg.mes)) continue;
+
+    let body = null, m;
+    blockRe.lastIndex = 0;
+    while ((m = blockRe.exec(msg.mes)) !== null) body = m[1];
+    if (body === null) continue;
+
+    const tm = body.match(/\|Timers:([^|]*)\|/i);
+    if (!tm) continue;
+    return parseTimers(tm[1]).filter((t) =>
+      TIMER_PERSISTENT_KINDS.includes(String(t.kind || "").toUpperCase())
+    );
+  }
+  return [];
+}
+
+function refreshHistoryMemory(chat, chatKey) {
+  const key = `${chatKey}|${lastRpgMsgIndex}|${Array.isArray(chat) ? chat.length : 0}`;
+  if (key === historyMemoryKey) return;
+  bondMemory = bondMemoryFromHistory(chat, lastRpgMsgIndex);
+  timerMemory = timerMemoryFromHistory(chat, lastRpgMsgIndex);
+  historyMemoryKey = key;
+}
+
+function invalidateHistoryMemory() {
+  historyMemoryKey = null;
+}
+
 function mergeBondLedger(prevList, parsedList) {
   const out = [];
   (Array.isArray(prevList) ? prevList : []).forEach((b) => upsertBond(out, b.name, b.bond));
@@ -1221,11 +1316,13 @@ function mergeTimers(prevState, nextState) {
   });
 
   // EVENT/DOOM are long-lived appointments — a doctor's visit three days out
-  // will go unmentioned for many turns. If the model dropped one and it hasn't
-  // fired yet, carry it forward instead of losing it. Fired ones are released,
-  // and deleting one in the editor still works (it leaves rpgState first).
+  // will go unmentioned for many turns. If one was dropped and hasn't fired,
+  // carry it forward instead of losing it. Sourced from HISTORY, not the last
+  // parse, so an EVENT invented in a swipe you abandoned doesn't follow you
+  // into the new branch. Fired ones are released, and editor deletes still
+  // work (the block is rewritten before the next merge reads it).
   const seen = new Set(merged.map(timerKey));
-  prevList.forEach((old) => {
+  (Array.isArray(timerMemory) ? timerMemory : []).forEach((old) => {
     if (!old || !old.name) return;
     if (!TIMER_PERSISTENT_KINDS.includes(String(old.kind || "").toUpperCase())) return;
     if (seen.has(timerKey(old))) return;
@@ -1988,11 +2085,31 @@ function readTimerInputs() {
 
 function commitTimersEdit() {
   readTimerInputs();
-  rpgState.timers = (rpgState.timers || []).filter((t) => t && String(t.name || "").trim());
+
+  const cleaned = (rpgState.timers || []).filter((t) => t && String(t.name || "").trim());
+  const nowKeys = new Set(cleaned.map(timerKey));
+  const removed = timersSnapshot.filter((t) => !nowKeys.has(timerKey(t)));
+
+  rpgState.timers = cleaned;
   timersEditMode = false;
+  timersSnapshot = [];
   renderRPG();
+
   const ok = writeStateBackToChatMessage(rpgState);
   if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after timer edit");
+
+  if (removed.length) {
+    const label = removed.map((t) => (t.owner ? `${t.owner}/${t.name}` : t.name)).join(", ");
+    const yes = confirm(
+      `Scrub from |Timers:| in ALL earlier messages?\n\n${label}\n\n` +
+      `If you skip this, the AI can still see them in older blocks and may add them back.\n\n` +
+      `This edits your chat history and cannot be undone.`
+    );
+    if (yes) {
+      const n = purgeTimersFromHistory(removed);
+      if (window.toastr) window.toastr.info(`Scrubbed ${removed.length} timer(s) from ${n} message(s).`);
+    }
+  }
 }
 
 function bindTimersTab() {
@@ -2001,7 +2118,13 @@ function bindTimersTab() {
     editBtn.onclick = (e) => {
       e.stopPropagation();
       if (timersEditMode) commitTimersEdit();
-      else { timersEditMode = true; renderRPG(); }
+      else {
+        timersSnapshot = (rpgState.timers || [])
+          .filter((t) => t && String(t.name || "").trim())
+          .map((t) => ({ owner: t.owner || "", name: t.name, kind: t.kind }));
+        timersEditMode = true;
+        renderRPG();
+      }
     };
   }
 
@@ -2089,6 +2212,54 @@ function purgeBondsFromHistory(names) {
   });
 
   if (changed) {
+    invalidateHistoryMemory();
+    try { window.saveChat?.(); } catch (e) { console.warn("RPG HUD: saveChat failed", e); }
+  }
+  return changed;
+}
+
+// --- TIMER HISTORY SCRUB (mirrors the bond version) ---
+// keys are "owner|name", lowercased — same shape as timerKey()
+function stripTimersFromText(text, keys) {
+  return String(text).replace(
+    /(<rpg_state\b[^>]*>)([\s\S]*?)(<\/rpg_state>)/gi,
+    (full, open, body, close) => {
+      const newBody = body.replace(/\|Timers:([^|]*)\|/gi, (m, val) => {
+        const kept = parseTimers(val).filter((t) => !keys.has(timerKey(t)));
+        return `|Timers:${formatTimers(kept)}|`;
+      });
+      return open + newBody + close;
+    }
+  );
+}
+
+function purgeTimersFromHistory(list) {
+  const keys = new Set((list || []).map(timerKey).filter((k) => k && k !== "|"));
+  if (!keys.size) return 0;
+
+  const chat = SillyTavern.getContext()?.chat;
+  if (!Array.isArray(chat)) return 0;
+
+  let changed = 0;
+  chat.forEach((msg) => {
+    if (!msg || typeof msg.mes !== "string") return;
+    if (!/<rpg_state\b/i.test(msg.mes)) return;
+
+    const next = stripTimersFromText(msg.mes, keys);
+    if (next !== msg.mes) {
+      msg.mes = next;
+      changed++;
+    }
+    // alternate swipes hold their own copy of the block
+    if (Array.isArray(msg.swipes)) {
+      msg.swipes = msg.swipes.map((s) =>
+        typeof s === "string" ? stripTimersFromText(s, keys) : s
+      );
+    }
+  });
+
+  if (changed) {
+    invalidateHistoryMemory();
     try { window.saveChat?.(); } catch (e) { console.warn("RPG HUD: saveChat failed", e); }
   }
   return changed;
@@ -3554,24 +3725,19 @@ function parsePipeFormat(text) {
     }
   }
 
-  newState.bonds = mergeBondLedger(rpgState?.bonds, newState.bonds);
+  newState.bonds = mergeBondLedger(bondMemory, newState.bonds);
   syncLiveBondsIntoLedger(newState);
 
-  // Rebase only when we've moved to a NEW message, so the observer's repeat
-  // scans of the same message keep showing the same delta.
-  if (lastRpgMsgIndex !== bondBaselineIdx) {
-    bondBaseline = new Map(
-      (Array.isArray(rpgState?.bonds) ? rpgState.bonds : [])
-        .map((b) => [normBondName(b?.name), parseBondValue(b?.bond)])
-    );
-    bondBaselineIdx = lastRpgMsgIndex;
-  }
-  // No baseline (fresh page load / new chat) means nothing to compare against,
-  // so leave .prev absent rather than flagging every bond as NEW.
-  if (bondBaseline.size) {
+  // Deltas measure against the same memory, so they're swipe-stable too and the
+  // observer's repeat scans of one message can't erase the arrow.
+  const baseline = new Map(
+    (Array.isArray(bondMemory) ? bondMemory : [])
+      .map((b) => [normBondName(b?.name), parseBondValue(b?.bond)])
+  );
+  if (baseline.size) {
     newState.bonds.forEach((b) => {
       const key = normBondName(b?.name);
-      b.prev = bondBaseline.has(key) ? bondBaseline.get(key) : null;
+      b.prev = baseline.has(key) ? baseline.get(key) : null;
     });
   }
 
@@ -3594,8 +3760,9 @@ const checkMessage = async (manual = false) => {
   if (chatKey !== lastChatKey) {
     lastChatKey = chatKey;
     lastListSnapshot = null;
-    bondBaseline = new Map();
-    bondBaselineIdx = -1;
+    bondMemory = [];
+    timerMemory = [];
+    historyMemoryKey = null;
   }
   renderRPG();
 
@@ -3607,6 +3774,9 @@ const checkMessage = async (manual = false) => {
 
   try {
     let cleanText = rawBlock.replace(/```[a-z]*\n?/g, "").replace(/```/g, "").trim();
+
+    // must run AFTER findLatestRpgBlock set lastRpgMsgIndex, BEFORE the parse
+    refreshHistoryMemory(chat, chatKey);
 
     const parsedState = parsePipeFormat(cleanText);
 
@@ -3681,6 +3851,10 @@ $(document).on('change', '#rpg-settings-autoinject', function() {
   const evt = event_types?.[name];
   if (!evt) return;
   eventSource.on(evt, () => {
+    // an edit or deletion can change history underneath the cached ledger
+    if (name === "MESSAGE_UPDATED" || name === "MESSAGE_EDITED" || name === "MESSAGE_DELETED") {
+      invalidateHistoryMemory();
+    }
     // small delay: some events fire before chat[] is updated
     setTimeout(() => checkMessage(), 150);
   });
