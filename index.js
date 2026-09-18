@@ -351,6 +351,7 @@ const defaultUiSettings = {
   skin: "classic",
   autoAddBonds: true,     // add party/NPC |Bond:| values to the ledger automatically
   saoPanelLight: 92,      // panel lightness %, lower = dimmer but still solid
+  saoCardAlpha: 11,       // % wash behind the player's HP/MP bars; higher = lighter
   saoTextShadow: false,   // shadow behind the text that sits straight on the chat
   saoTextBacking: false,  // translucent card behind that text instead        // "classic" | "sao"
   barsOnMin: true,        // sao skin: keep the bars visible when minimised
@@ -3366,7 +3367,8 @@ function renderRPG() {
 let saoPanel = null;        // null | "status" | "bonds" | "quests" | "place" | "gear"
 let saoMin = true;   // the overlay opens collapsed to its dot
 let saoTimersOpen = false;
-let saoCollapsed = { meters: false, party: false, foes: false };
+let saoHelpOpen = false;
+let saoCollapsed = { meters: false, party: false, npcs: false, foes: false };
 let saoSub = "stats";
 let saoSvgUid = 0;
 
@@ -3492,6 +3494,7 @@ function saoMeterColor(name) {
 }
 
 function saoDivider(label, key, color) {
+  if (!color && key === "npcs") color = "#bcd4e8";
   const open = !saoCollapsed[key];
   return `<div class="rpg-sao-div" ${color ? `style="color:${color}"` : ""}>${escHtml(label)}
     <button class="rpg-sao-caret" data-k="${key}" aria-expanded="${open}">${open ? "&#9662;" : "&#9656;"}</button>
@@ -3677,6 +3680,42 @@ function saoErrorPanel() {
   };
 }
 
+// Only the settings this skin adds. The shared ones (auto-inject, change
+// alerts) behave exactly as they do in the classic panel.
+function saoHelpPanel() {
+  const item = (name, text) =>
+    `<div class="rpg-sao-help-item"><dt>${name}</dt><dd>${text}</dd></div>`;
+
+  return {
+    title: "What these do",
+    body: `<dl class="rpg-sao-help">`
+      + item("Keep bars when minimised",
+          "Collapsing the HUD leaves your HP and MP bars on screen. Turn it off to hide everything but the dot.")
+      + item("Text shadow",
+          "Adds a shadow to the text that sits straight on the chat \u2014 your name, bar labels, the clock. Helps on a pale background.")
+      + item("Text backing",
+          "The other way to solve the same problem: a faint card behind that text instead of a shadow. Use one or the other, or neither.")
+      + item("Panel brightness",
+          "Dims the paper colour of the panels while they stay solid. Lower is darker, not more see-through.")
+      + item("Bar backdrop",
+          "The wash behind your HP and MP bars. It's a pale tint, so raising it makes the card lighter; at 0 the bars float free.")
+      + item("Auto-add bonds",
+          "On, a character's Bond value joins the ledger by itself. Off, only bonds the model writes into |Bonds:| are kept.")
+      + item("Unblock bonds",
+          "Deleting a bond stops it coming back. This clears that list for this chat, so deleted names may reappear.")
+      + `</dl>
+      <div class="rpg-sao-help-sec">Getting around</div>
+      <dl class="rpg-sao-help">`
+      + item("Tap a name",
+          "Any party, NPC or enemy name on the left opens that character's full sheet.")
+      + item("The clock",
+          "Tap it to open your timers. Editing them lives in there too.")
+      + item("The dot",
+          "Green: the latest block parsed. Yellow: it failed \u2014 a <b>!</b> orb appears to show why. Red: your message is last. Grey: no block found.")
+      + `</dl>`,
+  };
+}
+
 function saoSettingsHtml() {
   const row = (id, icon, label) =>
     `<button class="rpg-sao-mrow" id="${id}"><span class="pip">${icon}</span>${label}</button>`;
@@ -3691,6 +3730,7 @@ function saoSettingsHtml() {
     + row("rpg-sao-clear-party", "&#9634;", "Clear party")
     + row("rpg-sao-rescan", "&#8635;", "Rescan now")
     + row("rpg-sao-diagnose", "!", "Parse diagnostics")
+    + row("rpg-sao-help", "?", saoHelpOpen ? "Hide help" : "What these do")
     + row("rpg-sao-insert", "&#8595;", "Insert state")
     + row("rpg-sao-remind", "&#9993;", "Remind state")
     + toggle("rpg-sao-sw-alerts", "Change alerts", !!uiSettings.changeAlerts)
@@ -3704,6 +3744,9 @@ function saoSettingsHtml() {
     + `<div class="rpg-sao-mrow toggle"><span>Panel brightness</span>
         <input type="range" id="rpg-sao-panel-a" min="58" max="98"
                value="${Math.round(uiSettings.saoPanelLight ?? 92)}"></div>`
+    + `<div class="rpg-sao-mrow toggle"><span>Bar backdrop</span>
+        <input type="range" id="rpg-sao-card-a" min="0" max="70"
+               value="${Math.round(uiSettings.saoCardAlpha ?? 11)}"></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Skin</span>
         <select id="rpg-sao-skin">
           <option value="classic">Classic</option>
@@ -3751,7 +3794,8 @@ function renderSaoSkin() {
 
   container.style.cssText = `position:fixed; top:0; left:0; right:0; bottom:auto;
     height:100vh; height:100svh; z-index:9999; pointer-events:none;
-    --rpg-sao-panel-l:${clamp(uiSettings.saoPanelLight ?? 92, 58, 98)}%;`;
+    --rpg-sao-panel-l:${clamp(uiSettings.saoPanelLight ?? 92, 58, 98)}%;
+    --rpg-sao-card-a:${clamp(uiSettings.saoCardAlpha ?? 11, 0, 70)}%;`;
   container.className =
     (uiSettings.saoTextShadow ? "rpg-sao-sh " : "") +
     (uiSettings.saoTextBacking ? "rpg-sao-bk" : "");
@@ -3802,16 +3846,19 @@ function renderSaoSkin() {
           pMeters.map((m) => saoSlimRow(m.name, m.curr, m.max, saoMeterColor(m.name), null)).join("") +
           `</div></div>`;
       }
-      const allies = [...party.map((u, i) => ({ u, idx: charIndexFor("party", i) })),
-                      ...npcs.map((u, i) => ({ u, idx: charIndexFor("npc", i) }))];
-      if (allies.length) {
-        vitals += `<div class="rpg-sao-group">` + saoDivider("PARTY", "party") +
-          `<div class="rpg-sao-slim${saoCollapsed.party ? " hide" : ""}">` +
-          allies.map(({ u, idx }) => {
+      // party and NPCs get their own sections, each independently collapsible
+      const unitGroup = (label, key, list, type) => {
+        if (!list.length) return "";
+        return `<div class="rpg-sao-group">` + saoDivider(label, key) +
+          `<div class="rpg-sao-slim${saoCollapsed[key] ? " hide" : ""}">` +
+          list.map((u, i) => {
             const v = saoUnitView(u);
-            return saoSlimRow(v.name, v.hp_curr, v.hp_max, saoUnitStops(v, false), idx);
+            return saoSlimRow(v.name, v.hp_curr, v.hp_max, saoUnitStops(v, false),
+                              charIndexFor(type, i));
           }).join("") + `</div></div>`;
-      }
+      };
+      vitals += unitGroup("PARTY", "party", party, "party");
+      vitals += unitGroup("NPCS", "npcs", npcs, "npc");
     }
 
     // --- enemies ---
@@ -3839,7 +3886,11 @@ function renderSaoSkin() {
 
     // --- panel ---
     let panelHtml = "";
-    if (!saoMin && saoPanel && saoPanel !== "gear") {
+    if (!saoMin && saoPanel === "gear" && saoHelpOpen) {
+      const help = saoHelpPanel();
+      panelHtml = `<div class="rpg-sao-panel"><h2>${escHtml(help.title)}</h2>
+        <div class="rpg-sao-body">${help.body}</div></div>`;
+    } else if (!saoMin && saoPanel && saoPanel !== "gear") {
       const built = saoPanel === "status" ? saoStatusPanel()
                   : saoPanel === "bonds" ? saoBondsPanel()
                   : saoPanel === "quests" ? saoQuestsPanel()
@@ -3892,6 +3943,7 @@ function saoBind() {
     flushInlineEdits();
     const tab = el.dataset.tab;
     saoPanel = saoPanel === tab ? null : tab;
+    if (saoPanel !== "gear") saoHelpOpen = false;
     renderRPG();
   });
 
@@ -3955,6 +4007,7 @@ function saoBind() {
     renderRPG();
   });
   bind("rpg-sao-diagnose", () => { saoMin = false; saoPanel = "error"; renderRPG(); });
+  bind("rpg-sao-help", () => { saoHelpOpen = !saoHelpOpen; renderRPG(); });
   bind("rpg-sao-edit", openEditorFromSettings);
   bind("rpg-sao-remove", removeActiveCharacter);
   bind("rpg-sao-clear-npcs", (e) => clearArray("npc", e));
@@ -3993,6 +4046,17 @@ function saoBind() {
     pa.onclick = (e) => e.stopPropagation();
   }
 
+  const ca = document.getElementById("rpg-sao-card-a");
+  if (ca) {
+    ca.oninput = () => {
+      const v = clamp(parseFloat(ca.value), 0, 70);
+      uiSettings.saoCardAlpha = v;
+      document.getElementById("rpg-hud-container")?.style.setProperty("--rpg-sao-card-a", v + "%");
+    };
+    ca.onchange = () => saveUiSettings();
+    ca.onclick = (e) => e.stopPropagation();
+  }
+
   const skinSel = document.getElementById("rpg-sao-skin");
   if (skinSel) {
     skinSel.onchange = () => setSkin(skinSel.value);
@@ -4020,7 +4084,10 @@ const SAO_CSS = `<style id="rpg-sao-style">
 
 .rpg-sao-vitals{position:absolute; left:8px; width:322px;
   top:calc(env(safe-area-inset-top, 0px) + 12px)}
-.rpg-sao-card{padding:5px 6px 6px; background:rgba(226,233,244,.11);
+/* --rpg-sao-card-a: the wash behind the player's bars. It's a LIGHT tint, so
+   raising it lifts the card away from the chat rather than darkening it. */
+.rpg-sao-card{padding:5px 6px 6px;
+  background:rgb(226 233 244 / var(--rpg-sao-card-a, 11%));
   border:1px solid rgba(255,255,255,.2); border-radius:3px;
   backdrop-filter:blur(2px); box-shadow:0 2px 5px rgba(0,0,0,.35), 0 8px 22px rgba(0,0,0,.3)}
 .rpg-sao-block{display:flex; align-items:center; gap:5px}
@@ -4063,6 +4130,7 @@ button.rpg-sao-tag:hover{color:#fff}
 
 .rpg-sao-foes{margin-top:2px}
 .rpg-sao-foes .rpg-sao-div{color:#f0b6ab}
+.rpg-sao-npcdiv{color:#bcd4e8}
 
 .rpg-sao-col{position:absolute; right:22px; top:0; bottom:0;
   padding:calc(env(safe-area-inset-top, 0px) + 12px) 0
@@ -4133,6 +4201,15 @@ button.rpg-sao-tag:hover{color:#fff}
 .rpg-sao-entries{list-style:none; margin:0; padding:0; font-size:13px}
 .rpg-sao-entries li{padding:5px 0; border-bottom:1px solid var(--rpg-sao-rule); line-height:1.35}
 .rpg-sao-entries li:last-child{border-bottom:0}
+
+.rpg-sao-help{margin:0}
+.rpg-sao-help-item{padding:6px 0; border-bottom:1px solid var(--rpg-sao-rule)}
+.rpg-sao-help-item:last-child{border-bottom:0}
+.rpg-sao-help dt{font-size:12.5px; font-weight:700}
+.rpg-sao-help dd{margin:2px 0 0; font-size:12px; line-height:1.35; color:#5f5c55}
+.rpg-sao-help-sec{margin:12px 0 2px; font-size:10px; font-weight:700;
+  letter-spacing:1.6px; color:#87837a; border-bottom:1px solid var(--rpg-sao-rule);
+  padding-bottom:3px}
 
 .rpg-sao-panelhead{display:flex; justify-content:flex-end; margin-bottom:6px}
 .rpg-sao-mini{background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:#3c3a35;
