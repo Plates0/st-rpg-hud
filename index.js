@@ -3585,6 +3585,14 @@ function saoTimersHtml() {
   return head + rows;
 }
 
+// the classic caret/error overlay, dropped into a SAO panel
+function saoErrorPanel() {
+  return {
+    title: "Parse error",
+    body: `<div class="rpg-sao-classic rpg-sao-errbed">${buildPipeErrorPanelHtml()}</div>`,
+  };
+}
+
 function saoSettingsHtml() {
   const row = (id, icon, label) =>
     `<button class="rpg-sao-mrow" id="${id}"><span class="pip">${icon}</span>${label}</button>`;
@@ -3598,6 +3606,7 @@ function saoSettingsHtml() {
     + row("rpg-sao-clear-enemies", "&#9634;", "Clear enemies")
     + row("rpg-sao-clear-party", "&#9634;", "Clear party")
     + row("rpg-sao-rescan", "&#8635;", "Rescan now")
+    + row("rpg-sao-diagnose", "!", "Parse diagnostics")
     + row("rpg-sao-insert", "&#8595;", "Insert state")
     + row("rpg-sao-remind", "&#9993;", "Remind state")
     + toggle("rpg-sao-sw-alerts", "Change alerts", !!uiSettings.changeAlerts)
@@ -3718,6 +3727,8 @@ function renderSaoSkin() {
       (saoMin ? "" : SAO_TABS.map((t) =>
         `<button class="rpg-sao-orb${saoPanel === t.id ? " on" : ""}" data-tab="${t.id}" title="${escAttr(t.label)}">${t.icon}</button>`
       ).join("") + `<div class="rpg-sao-rule"></div>`) +
+      (latest.status === "invalid"
+        ? `<button class="rpg-sao-orb diag" id="rpg-sao-diag" title="Show the parse error">!</button>` : "") +
       `<button class="rpg-sao-orb min" id="rpg-sao-min" title="${escAttr(latest.label || "Toggle HUD")}">
         <span class="rpg-sao-dot ${saoIndicatorClass(latest.status)}"></span></button></div>`;
 
@@ -3727,6 +3738,7 @@ function renderSaoSkin() {
       const built = saoPanel === "status" ? saoStatusPanel()
                   : saoPanel === "bonds" ? saoBondsPanel()
                   : saoPanel === "quests" ? saoQuestsPanel()
+                  : saoPanel === "error" ? saoErrorPanel()
                   : saoPlacePanel();
       panelHtml = `<div class="rpg-sao-panel">
         <h2>${escHtml(built.title)}</h2>
@@ -3740,14 +3752,14 @@ function renderSaoSkin() {
     // --- clock ---
     const t = rpgState.world_time || {};
     const clockHtml = saoMin ? "" : `<div class="rpg-sao-clockwrap">
+      ${saoTimersOpen ? `<div class="rpg-sao-timers">${saoTimersHtml()}</div>` : ""}
       <button class="rpg-sao-clock" id="rpg-sao-clock">
         <span class="rpg-sao-dot ${saoIndicatorClass(latest.status)}"></span>
         <span class="rpg-sao-glyph">${getWeatherEmoji(t.weather)}</span>
         <span class="rpg-sao-cstack">
           <span class="hhmm">${escHtml(t.clock || "??:??")}</span>
           <span class="date">${escHtml(t.month || "?")} ${escHtml(t.day ?? "?")} ${escHtml(t.year || "")}</span>
-        </span></button>
-      ${saoTimersOpen ? `<div class="rpg-sao-timers">${saoTimersHtml()}</div>` : ""}</div>`;
+        </span></button></div>`;
 
     if (vitals) vitals += foesHtml + `</div>`;
     container.innerHTML = SAO_CSS + vitals + orbs + panelHtml + menuHtml + clockHtml;
@@ -3832,6 +3844,12 @@ function saoBind() {
 
   // settings
   const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(e); }; };
+  bind("rpg-sao-diag", () => {
+    saoMin = false;
+    saoPanel = saoPanel === "error" ? null : "error";
+    renderRPG();
+  });
+  bind("rpg-sao-diagnose", () => { saoMin = false; saoPanel = "error"; renderRPG(); });
   bind("rpg-sao-edit", openEditorFromSettings);
   bind("rpg-sao-remove", removeActiveCharacter);
   bind("rpg-sao-clear-npcs", (e) => clearArray("npc", e));
@@ -3880,12 +3898,12 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-block.over{flex-direction:column; align-items:stretch; gap:3px}
 .rpg-sao-stack{flex:1 1 auto; min-width:0}
 .rpg-sao-name{flex:0 0 40px; width:40px; font-size:11px; font-weight:600; line-height:1.12;
-  color:#f4f1e8; text-shadow:0 1px 2px rgba(0,0,0,.85); overflow-wrap:anywhere}
+  color:#f4f1e8; text-shadow:0 1px 1px rgba(0,0,0,.55); overflow-wrap:anywhere}
 .rpg-sao-block.over .rpg-sao-name{flex:none; width:auto; padding-left:2px; font-size:11.5px}
 .rpg-sao-vrow{display:flex; align-items:center; gap:8px}
 .rpg-sao-vrow + .rpg-sao-vrow{margin-top:4px}
 .rpg-sao-vnum{flex:0 0 auto; font-size:11px; font-weight:600; color:#d3cfc4;
-  min-width:56px; text-align:right; text-shadow:0 1px 2px rgba(0,0,0,.85)}
+  min-width:56px; text-align:right; text-shadow:0 1px 1px rgba(0,0,0,.55)}
 
 .rpg-sao-bar{position:relative; flex:1 1 auto; min-width:0; height:15px}
 .rpg-sao-bar.mid{height:11px}
@@ -3898,16 +3916,16 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-slim.hide{display:none}
 .rpg-sao-row{display:flex; align-items:center; gap:7px; margin-bottom:3px}
 .rpg-sao-tag{flex:0 0 50px; font-size:10.5px; font-weight:600; color:#ddd9ce;
-  text-shadow:0 1px 2px rgba(0,0,0,.85); overflow:hidden; text-overflow:ellipsis;
+  text-shadow:0 1px 1px rgba(0,0,0,.55); overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; background:none; border:0; padding:0; text-align:left}
 button.rpg-sao-tag{cursor:pointer; text-decoration:underline;
   text-decoration-color:rgba(255,255,255,.28); text-underline-offset:2px}
 button.rpg-sao-tag:hover{color:#fff}
 .rpg-sao-num{flex:0 0 auto; font-size:9.5px; color:#c2beb4; min-width:46px;
-  text-align:right; text-shadow:0 1px 2px rgba(0,0,0,.85)}
+  text-align:right; text-shadow:0 1px 1px rgba(0,0,0,.55)}
 
 .rpg-sao-div{margin:9px 0 5px; font-size:10px; font-weight:700; letter-spacing:2px;
-  color:#cdc8bb; text-shadow:0 1px 2px rgba(0,0,0,.85); display:flex; align-items:center; gap:7px}
+  color:#cdc8bb; text-shadow:0 1px 1px rgba(0,0,0,.55); display:flex; align-items:center; gap:7px}
 .rpg-sao-div::after{content:""; flex:1; height:1px;
   background:linear-gradient(90deg,rgba(220,215,200,.4),transparent)}
 .rpg-sao-caret{background:none; border:0; color:inherit; cursor:pointer; padding:0 2px;
@@ -3918,25 +3936,29 @@ button.rpg-sao-tag:hover{color:#fff}
 
 .rpg-sao-col{position:absolute; right:22px; top:0; bottom:0;
   padding:calc(env(safe-area-inset-top, 0px) + 78px) 0 calc(env(safe-area-inset-bottom, 0px) + 12px);
-  display:flex; flex-direction:column; justify-content:center; align-items:center; gap:14px;
-  pointer-events:none; overflow:visible}
+  display:flex; flex-direction:column; justify-content:center; align-items:center;
+  gap:clamp(5px, 1.5vh, 14px); pointer-events:none; overflow:visible}
 .rpg-sao-col > *{pointer-events:auto; flex:0 0 auto}
-.rpg-sao-orb{width:54px; height:54px; border-radius:50%;
+.rpg-sao-orb{width:clamp(34px, 6.8vh, 54px); height:clamp(34px, 6.8vh, 54px); border-radius:50%;
   background:radial-gradient(circle at 34% 28%, rgba(255,255,255,.26), rgba(255,255,255,.10));
   border:2px solid rgba(255,255,255,.62);
   box-shadow:0 2px 8px rgba(0,0,0,.35), inset 0 0 14px rgba(255,255,255,.14);
   backdrop-filter:blur(2px); display:grid; place-items:center; cursor:pointer;
   color:rgba(255,255,255,.92); transition:transform .16s, box-shadow .2s, border-color .2s}
-.rpg-sao-orb svg{width:26px; height:26px; fill:currentColor;
-  filter:drop-shadow(0 1px 2px rgba(0,0,0,.75))}
+.rpg-sao-orb svg{width:48%; height:48%; fill:currentColor;
+  filter:drop-shadow(0 1px 1px rgba(0,0,0,.5))}
 .rpg-sao-orb:hover{transform:scale(1.07)}
 .rpg-sao-orb.on{border-color:#f2c141;
   background:radial-gradient(circle at 34% 28%, #fff6dc, #eeb52b);
   box-shadow:0 0 18px rgba(242,193,65,.9), 0 0 40px rgba(242,193,65,.35),
     0 2px 8px rgba(0,0,0,.45), inset 0 0 12px rgba(255,255,255,.5); color:#4a3714}
 .rpg-sao-orb.on svg{filter:none}
-.rpg-sao-orb.min{width:42px; height:42px; margin-top:4px}
+.rpg-sao-orb.min{width:clamp(28px, 5.4vh, 42px); height:clamp(28px, 5.4vh, 42px); margin-top:2px}
 .rpg-sao-rule{width:26px; height:1px; background:rgba(255,255,255,.4)}
+.rpg-sao-orb.diag{width:clamp(28px, 5.4vh, 42px); height:clamp(28px, 5.4vh, 42px);
+  border-color:#f2c141; color:#2a2209; font-weight:700; font-size:18px;
+  background:radial-gradient(circle at 34% 28%, #fff6dc, #eeb52b);
+  box-shadow:0 0 14px rgba(242,193,65,.8), 0 2px 8px rgba(0,0,0,.45)}
 
 .rpg-sao-dot{width:12px; height:12px; border-radius:50%; background:currentColor;
   box-shadow:0 0 6px currentColor, 0 1px 3px rgba(0,0,0,.8); flex:0 0 auto}
@@ -4031,8 +4053,9 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 .rpg-sao-switch.on{background:#4e9c3f}
 .rpg-sao-switch.on::after{transform:translateX(16px)}
 
+/* --rpg-sao-clock-lift: how far above the chat box the clock sits. One number. */
 .rpg-sao-clockwrap{position:absolute; right:22px;
-  top:calc(env(safe-area-inset-top, 0px) + 12px);
+  bottom:calc(env(safe-area-inset-bottom, 0px) + var(--rpg-sao-clock-lift, 84px));
   display:flex; flex-direction:column; align-items:flex-end; gap:8px}
 .rpg-sao-timers{width:252px; background:rgba(249,248,244,.94);
   border:1px solid rgba(255,255,255,.8); box-shadow:0 8px 26px rgba(0,0,0,.45);
@@ -4053,41 +4076,28 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 
 .rpg-sao-clock{display:flex; align-items:center; gap:9px; background:none; border:0;
   padding:2px 0; cursor:pointer; color:#f2f0e8}
-.rpg-sao-glyph{font-size:17px; filter:drop-shadow(0 1px 2px rgba(0,0,0,.85))}
+.rpg-sao-glyph{font-size:17px; filter:drop-shadow(0 1px 1px rgba(0,0,0,.55))}
 .rpg-sao-cstack{text-align:right; line-height:1}
 .rpg-sao-cstack .hhmm{display:block; font-size:30px; font-weight:600; letter-spacing:3px;
-  text-shadow:0 1px 2px rgba(0,0,0,.9)}
+  text-shadow:0 1px 1px rgba(0,0,0,.6)}
 .rpg-sao-cstack .date{display:block; font-size:11px; letter-spacing:1.6px; color:#d5d1c6;
-  margin-top:2px; text-shadow:0 1px 2px rgba(0,0,0,.85)}
+  margin-top:2px; text-shadow:0 1px 1px rgba(0,0,0,.55)}
 
 /* the classic bond/timer editors get dropped in as-is, so give them a dark bed */
 .rpg-sao-classic{background:rgba(12,12,16,.94); margin:-11px -16px -15px; padding:10px 12px;
   color:#e0e0e0; font-family:'Courier New',monospace; font-size:12px}
+/* the error overlay is absolutely positioned in the classic skin; un-pin it here */
+.rpg-sao-errbed{position:relative; min-height:220px}
+.rpg-sao-errbed #rpg-error-overlay{position:relative !important; inset:auto !important;
+  background:none !important; border:0 !important; padding:0 !important}
 .rpg-sao-timers .rpg-sao-classic{margin:-8px -12px -10px}
 
-/* phones and short windows: shrink the orbs so the column always fits */
-@media (max-height:760px){
-  .rpg-sao-col{gap:9px}
-  .rpg-sao-orb{width:44px; height:44px}
-  .rpg-sao-orb svg{width:21px; height:21px}
-  .rpg-sao-orb.min{width:36px; height:36px}
-}
-@media (max-height:600px){
-  .rpg-sao-col{gap:6px}
-  .rpg-sao-orb{width:36px; height:36px}
-  .rpg-sao-orb svg{width:18px; height:18px}
-  .rpg-sao-orb.min{width:30px; height:30px}
-  .rpg-sao-dot{width:10px; height:10px}
-}
 @media (max-width:720px){
-  .rpg-sao-vitals{width:min(56vw,240px)}
-  .rpg-sao-slim{margin-right:34px}
+  .rpg-sao-vitals{width:min(72vw,268px)}
+  .rpg-sao-slim{margin-right:44px}
   .rpg-sao-panel{right:auto; left:12px; width:calc(100vw - 100px); max-width:330px; max-height:62vh}
   .rpg-sao-menu{left:12px; right:auto}
-  .rpg-sao-col{right:12px; gap:10px}
-  .rpg-sao-orb{width:46px; height:46px}
-  .rpg-sao-orb svg{width:22px; height:22px}
-  .rpg-sao-orb.min{width:38px; height:38px}
+  .rpg-sao-col{right:12px}
   .rpg-sao-clockwrap{right:12px}
   .rpg-sao-timers{width:min(74vw,246px)}
   .rpg-sao-cstack .hhmm{font-size:20px; letter-spacing:2px}
