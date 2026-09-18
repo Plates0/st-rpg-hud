@@ -352,6 +352,7 @@ const defaultUiSettings = {
   autoAddBonds: true,     // add party/NPC |Bond:| values to the ledger automatically
   saoPanelLight: 92,      // panel lightness %, lower = dimmer but still solid
   saoCardAlpha: 11,       // % wash behind the player's HP/MP bars; higher = lighter
+  saoFont: "preset",      // "preset" follows the font setting, "sans" uses the skin's own
   saoTextShadow: false,   // shadow behind the text that sits straight on the chat
   saoTextBacking: false,  // translucent card behind that text instead        // "classic" | "sao"
   barsOnMin: true,        // sao skin: keep the bars visible when minimised
@@ -3375,7 +3376,15 @@ let saoSvgUid = 0;
 const SAO_SHAPE = { step: 0.60, slope: 2, drop: 0.50, tip: 4, tipy: 0.20 };
 const SAO_RIM = { grey: "#53565e", greyW: 4, metalW: 2, hi: "#eceadf", lo: "#94918a" };
 const SAO_WELL = "rgba(36,39,46,0.82)";
-const SAO_NAME_OVER_AT = 12;
+// How many characters fit beside the bar depends on the font, the font scale
+// and the device, so it is measured after layout rather than guessed.
+function saoFitName() {
+  const block = document.querySelector(".rpg-sao-block");
+  const el = block && block.querySelector(".rpg-sao-name");
+  if (!block || !el) return;
+  block.classList.remove("over");           // measure in the narrow column
+  if (el.scrollWidth > el.clientWidth + 1) block.classList.add("over");
+}
 
 // one hue sweep: green at full, yellow at half, red at empty
 function saoHpStops(p) {
@@ -3742,6 +3751,8 @@ function saoHelpPanel() {
           "The other way to solve the same problem: a faint card behind that text instead of a shadow. Use one or the other, or neither.")
       + item("Panel brightness",
           "Dims the paper colour of the panels while they stay solid. Lower is darker, not more see-through.")
+      + item("Font",
+          "The skin follows your font preset by default. The preset is a monospace, whose bold can look heavy in the panels \u2014 Sans is lighter.")
       + item("Bar backdrop",
           "The wash behind your HP and MP bars. It's a pale tint, so raising it makes the card lighter; at 0 the bars float free.")
       + item("Auto-add bonds",
@@ -3792,6 +3803,11 @@ function saoSettingsHtml() {
     + `<div class="rpg-sao-mrow toggle"><span>Bar backdrop</span>
         <input type="range" id="rpg-sao-card-a" min="0" max="70"
                value="${Math.round(uiSettings.saoCardAlpha ?? 11)}"></div>`
+    + `<div class="rpg-sao-mrow toggle"><span>Font</span>
+        <select id="rpg-sao-font">
+          <option value="preset"${uiSettings.saoFont !== "sans" ? " selected" : ""}>Follow preset</option>
+          <option value="sans"${uiSettings.saoFont === "sans" ? " selected" : ""}>Sans</option>
+        </select></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Skin</span>
         <select id="rpg-sao-skin">
           <option value="classic">Classic</option>
@@ -3845,7 +3861,9 @@ function renderSaoSkin() {
     (uiSettings.saoTextShadow ? "rpg-sao-sh " : "") +
     (uiSettings.saoTextBacking ? "rpg-sao-bk" : "");
   container.style.cssText += `
-    font-family:${uiSettings.fontFamily || "'Rajdhani','Segoe UI',sans-serif"};
+    font-family:${uiSettings.saoFont === "sans"
+      ? "'Rajdhani','Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif"
+      : (uiSettings.fontFamily || "'Segoe UI',system-ui,sans-serif")};
     font-size:${0.9 * (uiSettings.fontScale || 1)}em;`;
   container.onclick = null;
 
@@ -3871,10 +3889,9 @@ function renderSaoSkin() {
     // --- vitals ---
     let vitals = "";
     if (showBars) {
-      const over = pName.length > SAO_NAME_OVER_AT;
       vitals = `<div class="rpg-sao-vitals">
         <div class="rpg-sao-card">
-          <div class="rpg-sao-block${over ? " over" : ""}">
+          <div class="rpg-sao-block">
             <div class="rpg-sao-name">${escHtml(pName)}</div>
             <div class="rpg-sao-stack">
               <div class="rpg-sao-vrow">${saoBarHtml("", hpPct, hpStops[0], hpStops[1])}
@@ -3967,8 +3984,9 @@ function renderSaoSkin() {
     if (vitals) vitals += foesHtml + `</div>`;
     container.innerHTML = SAO_CSS + vitals + orbs + panelHtml + menuHtml + clockHtml;
 
+    saoFitName();          // may change the bar width, so run it first
     saoPaintBars();
-    requestAnimationFrame(saoPaintBars);
+    requestAnimationFrame(() => { saoFitName(); saoPaintBars(); });
     saoBind();
   } catch (e) {
     container.innerHTML = `<div style="pointer-events:auto; position:fixed; top:60px; right:20px;
@@ -4112,6 +4130,12 @@ function saoBind() {
     ca.onclick = (e) => e.stopPropagation();
   }
 
+  const fontSel = document.getElementById("rpg-sao-font");
+  if (fontSel) {
+    fontSel.onchange = () => { uiSettings.saoFont = fontSel.value; saveUiSettings(); renderRPG(); };
+    fontSel.onclick = (e) => e.stopPropagation();
+  }
+
   const skinSel = document.getElementById("rpg-sao-skin");
   if (skinSel) {
     skinSel.onchange = () => setSkin(skinSel.value);
@@ -4125,7 +4149,7 @@ if (!window.__rpgSaoResizeBound) {
   window.addEventListener("resize", () => {
     if ((uiSettings.skin || "classic") !== "sao") return;
     clearTimeout(rt);
-    rt = setTimeout(saoPaintBars, 120);
+    rt = setTimeout(() => { saoFitName(); saoPaintBars(); }, 120);
   });
 }
 
@@ -4158,8 +4182,9 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-block.over{flex-direction:column; align-items:stretch; gap:3px}
 .rpg-sao-stack{flex:1 1 auto; min-width:0}
 .rpg-sao-name{flex:0 0 40px; width:40px; font-size:11px; font-weight:600; line-height:1.12;
-  color:#f4f1e8; overflow-wrap:anywhere}
-.rpg-sao-block.over .rpg-sao-name{flex:none; width:auto; padding-left:2px; font-size:11.5px}
+  color:#f4f1e8; white-space:nowrap; overflow:hidden}
+.rpg-sao-block.over .rpg-sao-name{flex:none; width:auto; padding-left:2px; font-size:11.5px;
+  white-space:normal; overflow:visible}
 /* The step leaves the bar's lower-right corner empty. The readout sits in
    that gap, tucked under the tail, instead of hanging off the right edge. */
 .rpg-sao-vrow{position:relative; padding-bottom:5px}
