@@ -376,6 +376,31 @@ let uiSettings = (() => {
   }
 })();
 
+// Puts every HUD setting back to its default. The skin choice is kept, since
+// being thrown into the other skin is rarely what "reset" is meant to do, and
+// chat data (bond blocklist, state) is untouched.
+function resetUiSettings(e) {
+  if (e) e.stopPropagation();
+  const ok = confirm(
+    "Reset all HUD settings to their defaults?\n\n" +
+    "Fonts, sizes, colours and toggles all go back to how they started.\n" +
+    "Your current skin and your chat data are kept."
+  );
+  if (!ok) return;
+
+  const skin = uiSettings.skin;
+  uiSettings = { ...defaultUiSettings, skin };
+  saveUiSettings();
+
+  isSettingsOpen = false;
+  saoHelpOpen = false;
+  const c = document.getElementById("rpg-hud-container");
+  if (c) { c.style.cssText = ""; c.className = ""; }
+
+  renderRPG();
+  if (window.toastr) window.toastr.info("HUD settings reset to defaults.");
+}
+
 function saveUiSettings() {
   try {
     localStorage.setItem(UI_SETTINGS_KEY, JSON.stringify(uiSettings));
@@ -2957,6 +2982,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         ${bondBlocklist.size ? `<button id="rpg-settings-unblock" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px; cursor:pointer;">Unblock ${bondBlocklist.size} bond(s)</button>` : ""}
 
         <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Appearance</div>
+        <button id="rpg-settings-reset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px; cursor:pointer;">↺ Reset settings to defaults</button>
 
         <div style="background:rgba(255,255,255,0.06); border:1px solid #333; border-radius:4px; padding:8px; margin-bottom:10px;">
         <div style="font-size:0.75em; color:#bbb; margin-bottom:6px;">Skin</div>
@@ -3283,6 +3309,9 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    if (window.toastr) window.toastr.info("Bond blocklist cleared for this chat.");
 	    renderRPG();
 	  };
+
+	  const resetEl = document.getElementById("rpg-settings-reset");
+	  if (resetEl) resetEl.onclick = resetUiSettings;
 
 	  const skinEl = document.getElementById("rpg-skin-select");
 	  if (skinEl) {
@@ -3791,6 +3820,8 @@ function saoHelpPanel() {
           "The other way to solve the same problem: a faint card behind that text instead of a shadow. Use one or the other, or neither.")
       + item("Panel brightness",
           "Dims the panels while they stay solid. Take it below halfway and they go dark, with the text inverting to light \u2014 small light-on-dark text renders crisper than dark-on-light.")
+      + item("Reset settings",
+          "Puts every slider and toggle back to its default. Your skin choice and chat data stay as they are.")
       + item("Font",
           "The skin follows your font preset by default. The preset is a monospace, whose bold can look heavy in the panels \u2014 Sans is lighter.")
       + item("Bar size",
@@ -3829,6 +3860,7 @@ function saoSettingsHtml() {
     + row("rpg-sao-rescan", "&#8635;", "Rescan now")
     + row("rpg-sao-diagnose", "!", "Parse diagnostics")
     + row("rpg-sao-help", "?", saoHelpOpen ? "Hide help" : "What these do")
+    + row("rpg-sao-reset", "\u21BA", "Reset settings")
     + row("rpg-sao-insert", "&#8595;", "Insert state")
     + row("rpg-sao-remind", "&#9993;", "Remind state")
     + toggle("rpg-sao-sw-alerts", "Change alerts", !!uiSettings.changeAlerts)
@@ -4130,6 +4162,7 @@ function saoBind() {
   });
   bind("rpg-sao-diagnose", () => { saoMin = false; saoPanel = "error"; renderRPG(); });
   bind("rpg-sao-help", () => { saoHelpOpen = !saoHelpOpen; renderRPG(); });
+  bind("rpg-sao-reset", resetUiSettings);
   // the embedded error panel closes itself via isErrorOpen, which this skin
   // doesn't use — its visibility is saoPanel, so close that instead
   bind("rpg-error-close", () => { isErrorOpen = false; saoPanel = null; renderRPG(); });
