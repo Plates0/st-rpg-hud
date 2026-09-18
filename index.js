@@ -3657,7 +3657,8 @@ function renderSaoSkin() {
   let latest = { status: "nochat", label: "", detail: "" };
   try { latest = updateLatestStatusAndToast(SillyTavern.getContext()?.chat); } catch {}
 
-  container.style.cssText = `position:fixed; inset:0; z-index:9999; pointer-events:none;
+  container.style.cssText = `position:fixed; top:0; left:0; right:0; bottom:auto;
+    height:100vh; height:100svh; z-index:9999; pointer-events:none;
     font-family:${uiSettings.fontFamily || "'Rajdhani','Segoe UI',sans-serif"};
     font-size:${0.9 * (uiSettings.fontScale || 1)}em;`;
   container.onclick = null;
@@ -3935,11 +3936,12 @@ button.rpg-sao-tag:hover{color:#fff}
 .rpg-sao-foes .rpg-sao-div{color:#f0b6ab}
 
 .rpg-sao-col{position:absolute; right:22px; top:0; bottom:0;
-  padding:calc(env(safe-area-inset-top, 0px) + 78px) 0 calc(env(safe-area-inset-bottom, 0px) + 12px);
+  padding:calc(env(safe-area-inset-top, 0px) + 12px) 0
+          calc(env(safe-area-inset-bottom, 0px) + var(--rpg-sao-clock-lift, 84px) + 58px);
   display:flex; flex-direction:column; justify-content:center; align-items:center;
-  gap:clamp(5px, 1.5vh, 14px); pointer-events:none; overflow:visible}
+  gap:clamp(4px, 1.4svh, 14px); pointer-events:none; overflow:visible}
 .rpg-sao-col > *{pointer-events:auto; flex:0 0 auto}
-.rpg-sao-orb{width:clamp(34px, 6.8vh, 54px); height:clamp(34px, 6.8vh, 54px); border-radius:50%;
+.rpg-sao-orb{width:clamp(30px, 6.2svh, 54px); height:clamp(30px, 6.2svh, 54px); border-radius:50%;
   background:radial-gradient(circle at 34% 28%, rgba(255,255,255,.26), rgba(255,255,255,.10));
   border:2px solid rgba(255,255,255,.62);
   box-shadow:0 2px 8px rgba(0,0,0,.35), inset 0 0 14px rgba(255,255,255,.14);
@@ -3953,9 +3955,9 @@ button.rpg-sao-tag:hover{color:#fff}
   box-shadow:0 0 18px rgba(242,193,65,.9), 0 0 40px rgba(242,193,65,.35),
     0 2px 8px rgba(0,0,0,.45), inset 0 0 12px rgba(255,255,255,.5); color:#4a3714}
 .rpg-sao-orb.on svg{filter:none}
-.rpg-sao-orb.min{width:clamp(28px, 5.4vh, 42px); height:clamp(28px, 5.4vh, 42px); margin-top:2px}
+.rpg-sao-orb.min{width:clamp(26px, 5svh, 42px); height:clamp(26px, 5svh, 42px); margin-top:2px}
 .rpg-sao-rule{width:26px; height:1px; background:rgba(255,255,255,.4)}
-.rpg-sao-orb.diag{width:clamp(28px, 5.4vh, 42px); height:clamp(28px, 5.4vh, 42px);
+.rpg-sao-orb.diag{width:clamp(26px, 5svh, 42px); height:clamp(26px, 5svh, 42px);
   border-color:#f2c141; color:#2a2209; font-weight:700; font-size:18px;
   background:radial-gradient(circle at 34% 28%, #fff6dc, #eeb52b);
   box-shadow:0 0 14px rgba(242,193,65,.8), 0 2px 8px rgba(0,0,0,.45)}
@@ -4053,7 +4055,9 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 .rpg-sao-switch.on{background:#4e9c3f}
 .rpg-sao-switch.on::after{transform:translateX(16px)}
 
-/* --rpg-sao-clock-lift: how far above the chat box the clock sits. One number. */
+/* --rpg-sao-clock-lift: how far above the chat box the clock sits. One number;
+   the orb column reserves this much space too, so the two can't overlap. */
+#rpg-hud-container{--rpg-sao-clock-lift:84px}
 .rpg-sao-clockwrap{position:absolute; right:22px;
   bottom:calc(env(safe-area-inset-bottom, 0px) + var(--rpg-sao-clock-lift, 84px));
   display:flex; flex-direction:column; align-items:flex-end; gap:8px}
