@@ -3597,7 +3597,6 @@ function saoPaintBars() {
 
 const SAO_PALETTE = {
   mp: ["#7fd4ff", "#2e8fd6"],
-  foe: ["#ff8a7a", "#d63b28"],
   meter: ["#d9b6f5", "#8d4fd1"],
   vehicle: ["#e0a6f0", "#9b3fbf"],
 };
@@ -3606,11 +3605,12 @@ function saoBarHtml(cls, pctVal, c1, c2) {
   return `<div class="rpg-sao-bar ${cls}" data-p="${pctVal}" data-c1="${c1}" data-c2="${c2}"></div>`;
 }
 
-function saoSlimRow(name, curr, max, stops, jumpIdx) {
+function saoSlimRow(name, curr, max, stops, jumpIdx, foe) {
   const p = saoPct(curr, max);
+  const cls = `rpg-sao-tag${foe ? " foe" : ""}`;
   const tag = jumpIdx === null || jumpIdx === undefined
-    ? `<span class="rpg-sao-tag">${escHtml(name)}</span>`
-    : `<button class="rpg-sao-tag rpg-sao-jump" data-idx="${jumpIdx}" title="Open ${escAttr(name)}">${escHtml(name)}</button>`;
+    ? `<span class="${cls}">${escHtml(name)}</span>`
+    : `<button class="${cls} rpg-sao-jump" data-idx="${jumpIdx}" title="Open ${escAttr(name)}">${escHtml(name)}</button>`;
   return `<div class="rpg-sao-row">${tag}${saoBarHtml("slim", p, stops[0], stops[1])}
     <span class="rpg-sao-num">${escHtml(curr)}/${escHtml(max)}</span></div>`;
 }
@@ -3629,9 +3629,11 @@ function saoUnitView(unit) {
            meters: Array.isArray(unit?.meters) ? unit.meters : [] };
 }
 
-function saoUnitStops(view, foe) {
+// Everyone's HP runs the same green-to-red sweep, enemies included: the bar
+// reports how hurt they are, and hostility is already carried by the ROUND
+// header, the red chips and the fact that they're in the combat group.
+function saoUnitStops(view) {
   if (view.isVeh) return SAO_PALETTE.vehicle;
-  if (foe) return SAO_PALETTE.foe;
   return saoHpStops(saoPct(view.hp_curr, view.hp_max));
 }
 
@@ -4035,7 +4037,7 @@ function renderSaoSkin() {
     const en = pView.en;
 
     const hpPct = saoPct(pView.hp_curr, pView.hp_max);
-    const hpStops = saoUnitStops(pView, false);
+    const hpStops = saoUnitStops(pView);
     const mpPct = saoPct(en.curr, en.max);
 
     const party = Array.isArray(rpgState.party) ? rpgState.party : [];
@@ -4075,7 +4077,7 @@ function renderSaoSkin() {
           `<div class="rpg-sao-slim${saoCollapsed[key] ? " hide" : ""}">` +
           list.map((u, i) => {
             const v = saoUnitView(u);
-            return saoSlimRow(v.name, v.hp_curr, v.hp_max, saoUnitStops(v, false),
+            return saoSlimRow(v.name, v.hp_curr, v.hp_max, saoUnitStops(v),
                               charIndexFor(type, i)) + saoMeterRows(v);
           }).join("") + `</div></div>`;
       };
@@ -4092,7 +4094,7 @@ function renderSaoSkin() {
         enemies.map((u, i) => {
           const v = saoUnitView(u);
           return saoSlimRow(v.isVeh ? v.name : (u?.name || `Enemy ${i + 1}`),
-            v.hp_curr, v.hp_max, saoUnitStops(v, true), charIndexFor("enemy", i))
+            v.hp_curr, v.hp_max, saoUnitStops(v), charIndexFor("enemy", i), true)
             + saoMeterRows(v);
         }).join("") + `</div></div></div>`;
     }
@@ -4406,6 +4408,9 @@ const SAO_CSS = `<style id="rpg-sao-style">
 button.rpg-sao-tag{cursor:pointer; text-decoration:underline;
   text-decoration-color:rgba(255,255,255,.28); text-underline-offset:2px}
 button.rpg-sao-tag:hover{color:#fff}
+.rpg-sao-tag.foe{color:#f2a99d}
+button.rpg-sao-tag.foe{text-decoration-color:rgba(242,169,157,.4)}
+button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-sao-num{flex:0 0 auto; font-size:calc(9.5px * var(--rpg-sao-ui, 1)); color:#c2beb4; min-width:calc(46px * var(--rpg-sao-ui, 1));
   text-align:right}
 
