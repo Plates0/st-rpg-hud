@@ -3519,9 +3519,20 @@ function saoPlacePanels() {
 function saoFitName() {
   const block = document.querySelector(".rpg-sao-block");
   const el = block && block.querySelector(".rpg-sao-name");
-  if (!block || !el) return;
-  block.classList.remove("over");           // measure in the narrow column
-  if (el.scrollWidth > el.clientWidth + 1) block.classList.add("over");
+  if (block && el) {
+    block.classList.remove("over");          // measure in the narrow column
+    if (el.scrollWidth > el.clientWidth + 1) block.classList.add("over");
+  }
+
+  // Same idea for party, NPC and enemy rows, but only the rows that need it.
+  // Stacking every row would double the column's height; leaving them all
+  // ellipsised makes two similarly named enemies indistinguishable.
+  document.querySelectorAll(".rpg-sao-row").forEach((row) => {
+    const tag = row.querySelector(".rpg-sao-tag");
+    if (!tag) return;
+    row.classList.remove("stacked");
+    if (tag.scrollWidth > tag.clientWidth + 1) row.classList.add("stacked");
+  });
 }
 
 // one hue sweep: green at full, yellow at half, red at empty
@@ -4399,6 +4410,9 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-slim{opacity:.78; margin-right:calc(56px * var(--rpg-sao-ui, 1))}
 .rpg-sao-slim.hide{display:none}
 .rpg-sao-row{display:flex; align-items:center; gap:7px; margin-bottom:3px}
+.rpg-sao-row.stacked{flex-wrap:wrap; margin-bottom:5px}
+.rpg-sao-row.stacked .rpg-sao-tag{flex:0 0 100%; width:100%;
+  white-space:normal; overflow:visible; margin-bottom:1px}
 .rpg-sao-row.sub{margin-left:13px; opacity:.85}
 .rpg-sao-row.sub .rpg-sao-tag{flex:0 0 calc(40px * var(--rpg-sao-ui, 1)); font-size:calc(9.5px * var(--rpg-sao-ui, 1)); text-decoration:none}
 .rpg-sao-row.sub .rpg-sao-bar.slim{height:calc(6px * var(--rpg-sao-ui, 1))}
