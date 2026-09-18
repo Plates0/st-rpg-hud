@@ -4384,7 +4384,7 @@ button.rpg-sao-tag:hover{color:#fff}
   display:flex; flex-direction:column; justify-content:center; align-items:center;
   gap:clamp(4px, 1.4svh, 14px); pointer-events:none; overflow:visible}
 .rpg-sao-col > *{pointer-events:auto; flex:0 0 auto}
-.rpg-sao-orb{width:clamp(30px, 6.2svh, 54px); height:clamp(30px, 6.2svh, 54px); border-radius:50%;
+.rpg-sao-orb{width:var(--rpg-sao-orb); height:var(--rpg-sao-orb); border-radius:50%;
   background:radial-gradient(circle at 34% 28%, rgba(255,255,255,.26), rgba(255,255,255,.10));
   border:2px solid rgba(255,255,255,.62);
   box-shadow:0 2px 8px rgba(0,0,0,.35), inset 0 0 14px rgba(255,255,255,.14);
@@ -4425,10 +4425,10 @@ button.rpg-sao-tag:hover{color:#fff}
 
 .rpg-sao-panel{position:relative;
   width:336px; max-height:76svh; overflow:hidden; background:var(--rpg-sao-panel);
-  border:0;
-  box-shadow:inset 0 3px 0 rgba(0,0,0,.24),
-             inset -3px 0 0 rgba(0,0,0,.18),
-             0 2px 6px rgba(0,0,0,.5), 0 14px 40px rgba(0,0,0,.6);
+  box-sizing:border-box; border:0;
+  border-top:3px solid rgba(0,0,0,.22);
+  border-right:3px solid rgba(0,0,0,.14);
+  box-shadow:0 2px 6px rgba(0,0,0,.5), 0 14px 40px rgba(0,0,0,.6);
   color:var(--rpg-sao-ink); display:flex; flex-direction:column}
 .rpg-sao-panelwrap{position:absolute}
 /* built from a clipped box rather than borders, so it can carry the same
@@ -4529,13 +4529,13 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 .rpg-sao-menu{position:relative; width:206px; max-height:76svh; overflow-y:auto}
 .rpg-sao-mrow{display:flex; align-items:center; gap:9px; padding:7px 11px; margin-bottom:2px;
   width:100%; text-align:left; background:var(--rpg-sao-panel);
-  border:0;
-  /* a soft dark band just inside the top and right edges reads as a sloped
-     face, so each row looks like a plate with thickness */
-  box-shadow:inset 0 3px 0 rgba(0,0,0,.26),
-             inset -3px 0 0 rgba(0,0,0,.20),
-             inset 0 -1px 0 rgba(0,0,0,.16),
-             0 2px 5px rgba(0,0,0,.5), 0 8px 22px rgba(0,0,0,.45);
+  /* Real borders mitre at the corner, so the two faces meet on a diagonal.
+     Stacked inset shadows instead overlapped there and went muddy. */
+  box-sizing:border-box; border:0;
+  border-top:3px solid rgba(0,0,0,.24);
+  border-right:3px solid rgba(0,0,0,.15);
+  border-bottom:1px solid rgba(0,0,0,.14);
+  box-shadow:0 2px 5px rgba(0,0,0,.5), 0 8px 22px rgba(0,0,0,.45);
   color:var(--rpg-sao-ink); font-size:12.5px; font-weight:600; cursor:pointer}
 .rpg-sao-mrow .pip{flex:0 0 22px; height:22px; border-radius:50%; background:#6b6355;
   color:#fff; display:grid; place-items:center; font-size:11px}
@@ -4553,7 +4553,7 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 
 /* --rpg-sao-clock-lift: how far above the chat box the clock sits. One number;
    the orb column reserves this much space too, so the two can't overlap. */
-#rpg-hud-container{--rpg-sao-clock-lift:84px}
+#rpg-hud-container{--rpg-sao-clock-lift:84px; --rpg-sao-orb:clamp(30px, 6.2svh, 54px)}
 /* Panel brightness walks the paper's LIGHTNESS down while it stays solid, so
    it dims instead of going see-through. Rules and chips follow it. */
 #rpg-hud-container{
@@ -4625,7 +4625,8 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   .rpg-sao-slim{margin-right:calc(44px * var(--rpg-sao-ui, 1))}
   .rpg-sao-panelwrap{right:auto; left:12px}
   .rpg-sao-panel{width:calc(100vw - 100px); max-width:330px; max-height:62svh}
-  .rpg-sao-menuwrap{right:12px; left:auto}
+  .rpg-sao-menuwrap{right:calc(12px + var(--rpg-sao-orb) + 12px); left:auto}
+  .rpg-sao-menu{width:min(206px, calc(100vw - var(--rpg-sao-orb) - 46px))}
   .rpg-sao-menuwrap.hashelp{display:none}
   .rpg-sao-panelwrap.helpshift{right:auto; left:12px}
   .rpg-sao-col{right:12px}
