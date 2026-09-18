@@ -3401,7 +3401,8 @@ let saoPanel = null;        // null | "status" | "bonds" | "quests" | "place" | 
 let saoMin = true;   // the overlay opens collapsed to its dot
 let saoTimersOpen = false;
 let saoHelpOpen = false;
-let saoAnimOnce = "";        // "" | "restore" | "panel"
+let saoAnimKind = "";        // "" | "restore" | "collapse" | "panel"
+let saoAnimUntil = 0;        // animations apply to any render before this time
 let saoLastPct = new Map();  // bar key -> last painted %, so values can tween
 let saoTweens = new Map();   // bar key -> running animation token
 let saoCollapsed = { meters: false, party: false, npcs: false, foes: false };
@@ -3455,6 +3456,11 @@ function saoPanelVars() {
     chip: `hsl(44 ${s}% ${dark ? Math.min(l + 9, 92) : l - 7}%)`,
     dark,
   };
+}
+
+function saoAnim(kind, ms) {
+  saoAnimKind = kind;
+  saoAnimUntil = performance.now() + (ms || 260);
 }
 
 function saoApplyPanelVars() {
@@ -4070,9 +4076,9 @@ function renderSaoSkin() {
     --rpg-sao-ink:${v.ink}; --rpg-sao-ink-dim:${v.inkDim};
     --rpg-sao-rule:${v.rule}; --rpg-sao-chip:${v.chip};`; })()}
     --rpg-sao-card-a:${clamp(uiSettings.saoCardAlpha ?? 11, 0, 70)}%;`;
-  const animKind = uiSettings.saoAnimate !== false ? saoAnimOnce : "";
+  const live = uiSettings.saoAnimate !== false && performance.now() < saoAnimUntil;
+  const animKind = live ? saoAnimKind : "";
   const anim = animKind ? ` anim-${animKind}` : "";
-  saoAnimOnce = "";   // consumed: the next scan must not replay it
   container.className =
     (uiSettings.saoTextShadow ? "rpg-sao-sh " : "") +
     (uiSettings.saoTextBacking ? "rpg-sao-bk" : "") + anim;
@@ -4229,7 +4235,7 @@ function saoBind() {
     const was = saoPanel;
     saoPanel = saoPanel === tab ? null : tab;
     if (saoPanel !== "gear") saoHelpOpen = false;
-    if (saoPanel && saoPanel !== was) saoAnimOnce = "panel";
+    if (saoPanel && saoPanel !== was) saoAnim("panel", 220);
     renderRPG();
   });
 
@@ -4238,7 +4244,7 @@ function saoBind() {
     e.stopPropagation();
     flushInlineEdits();
     saoMin = !saoMin;
-    if (saoMin) saoPanel = null; else saoAnimOnce = "restore";
+    if (saoMin) { saoPanel = null; saoAnim("collapse", 340); } else saoAnim("restore", 560);
     renderRPG();
   };
 
@@ -4760,6 +4766,12 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   to{opacity:1; transform:none}
 }
 @keyframes rpgSaoFadeIn{ from{opacity:0} to{opacity:1} }
+@keyframes rpgSaoRise{ from{opacity:0; transform:translateY(8px)} to{opacity:1; transform:none} }
+@keyframes rpgSaoDotIn{
+  0%{transform:scale(.45); opacity:0}
+  62%{transform:scale(1.18); opacity:1}
+  100%{transform:scale(1); opacity:1}
+}
 @keyframes rpgSaoPanelIn{
   from{opacity:0; transform:translateX(10px)}
   to{opacity:1; transform:none}
@@ -4769,7 +4781,10 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   animation:rpgSaoOrbIn .26s cubic-bezier(.2,.8,.3,1) backwards;
 }
 #rpg-hud-container.anim-restore .rpg-sao-clockwrap{animation:rpgSaoFadeIn .34s ease-out .12s backwards}
-#rpg-hud-container.anim-restore .rpg-sao-vitals.fadein{animation:rpgSaoFadeIn .34s ease-out backwards}
+#rpg-hud-container.anim-restore .rpg-sao-vitals.fadein{animation:rpgSaoRise .42s cubic-bezier(.2,.8,.3,1) backwards}
+#rpg-hud-container.anim-restore #rpg-sao-min{animation:rpgSaoOrbIn .26s cubic-bezier(.2,.8,.3,1) .27s backwards}
+#rpg-hud-container.anim-collapse #rpg-sao-min{animation:rpgSaoDotIn .34s cubic-bezier(.3,1.4,.4,1) backwards}
+#rpg-hud-container.anim-collapse .rpg-sao-dot{animation:rpgSaoFadeIn .3s ease-out .06s backwards}
 #rpg-hud-container.anim-panel .rpg-sao-panelwrap,
 #rpg-hud-container.anim-panel .rpg-sao-menuwrap{
   animation:rpgSaoPanelIn .2s cubic-bezier(.2,.8,.3,1) backwards;
