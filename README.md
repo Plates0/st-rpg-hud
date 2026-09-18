@@ -62,6 +62,8 @@ Max Days:
 - Time must be formatted as Month Day Year,Clock — e.g. `Jan 5 1023,14:30`.
 Year: If Dec 31 rolls over, advance to Jan 1 of the NEXT year.
 
+|Bonds:| Format: |Bonds:Name:X/100;|
+
 TEMPLATE:
 <rpg_state>
 [Global]
