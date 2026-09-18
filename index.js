@@ -3378,6 +3378,17 @@ const SAO_RIM = { grey: "#53565e", greyW: 4, metalW: 2, hi: "#eceadf", lo: "#949
 const SAO_WELL = "rgba(36,39,46,0.82)";
 // How many characters fit beside the bar depends on the font, the font scale
 // and the device, so it is measured after layout rather than guessed.
+// Centring can leave an element on a fractional pixel, which blurs all the
+// text inside it. Nudge it back onto a whole pixel.
+function saoSnapPixels() {
+  document.querySelectorAll(".rpg-sao-panel, .rpg-sao-menu, .rpg-sao-timers").forEach((el) => {
+    el.style.top = "0px";
+    const r = el.getBoundingClientRect();
+    const frac = r.top - Math.round(r.top);
+    if (frac) el.style.top = `${-frac}px`;
+  });
+}
+
 function saoFitName() {
   const block = document.querySelector(".rpg-sao-block");
   const el = block && block.querySelector(".rpg-sao-name");
@@ -3986,7 +3997,8 @@ function renderSaoSkin() {
 
     saoFitName();          // may change the bar width, so run it first
     saoPaintBars();
-    requestAnimationFrame(() => { saoFitName(); saoPaintBars(); });
+    saoSnapPixels();
+    requestAnimationFrame(() => { saoFitName(); saoPaintBars(); saoSnapPixels(); });
     saoBind();
   } catch (e) {
     container.innerHTML = `<div style="pointer-events:auto; position:fixed; top:60px; right:20px;
@@ -4149,7 +4161,7 @@ if (!window.__rpgSaoResizeBound) {
   window.addEventListener("resize", () => {
     if ((uiSettings.skin || "classic") !== "sao") return;
     clearTimeout(rt);
-    rt = setTimeout(() => { saoFitName(); saoPaintBars(); }, 120);
+    rt = setTimeout(() => { saoFitName(); saoPaintBars(); saoSnapPixels(); }, 120);
   });
 }
 
@@ -4381,14 +4393,14 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 #rpg-hud-container{
   --rpg-sao-panel-l:92%;
   --rpg-sao-panel-s:10%;   /* raise for warmer paper, 0% for neutral grey */
-  --rpg-sao-panel:hsl(44 var(--rpg-sao-panel-s) var(--rpg-sao-panel-l) / .96);
+  --rpg-sao-panel:hsl(44 var(--rpg-sao-panel-s) var(--rpg-sao-panel-l));
   --rpg-sao-rule:hsl(44 calc(var(--rpg-sao-panel-s) * 0.7) calc(var(--rpg-sao-panel-l) - 17%));
   --rpg-sao-chip:hsl(44 var(--rpg-sao-panel-s) calc(var(--rpg-sao-panel-l) - 7%));
 }
 .rpg-sao-clockwrap{position:absolute; right:22px;
   bottom:calc(env(safe-area-inset-bottom, 0px) + var(--rpg-sao-clock-lift, 84px));
   display:flex; flex-direction:column; align-items:flex-end; gap:8px}
-.rpg-sao-timers{width:252px; background:var(--rpg-sao-panel);
+.rpg-sao-timers{position:relative; width:252px; background:var(--rpg-sao-panel);
   border:1px solid rgba(255,255,255,.8); box-shadow:0 2px 6px rgba(0,0,0,.5), 0 12px 34px rgba(0,0,0,.58);
   color:#3c3a35; padding:8px 12px 10px; max-height:52svh; overflow-y:auto}
 .rpg-sao-timerhead{display:flex; justify-content:space-between; align-items:center;
