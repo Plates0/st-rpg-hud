@@ -3397,6 +3397,17 @@ function saoPanelVars() {
   };
 }
 
+function saoApplyPanelVars() {
+  const c = document.getElementById("rpg-hud-container");
+  if (!c) return;
+  const v = saoPanelVars();
+  c.style.setProperty("--rpg-sao-panel-l", v.l + "%");
+  c.style.setProperty("--rpg-sao-ink", v.ink);
+  c.style.setProperty("--rpg-sao-ink-dim", v.inkDim);
+  c.style.setProperty("--rpg-sao-rule", v.rule);
+  c.style.setProperty("--rpg-sao-chip", v.chip);
+}
+
 function saoSnapPixels() {
   document.querySelectorAll(".rpg-sao-panel, .rpg-sao-menu, .rpg-sao-timers").forEach((el) => {
     el.style.top = "0px";
@@ -3883,11 +3894,9 @@ function renderSaoSkin() {
 
   container.style.cssText = `position:fixed; top:0; left:0; right:0; bottom:auto;
     height:100vh; height:100svh; z-index:9999; pointer-events:none;
-    --rpg-sao-panel-l:${saoPanelVars().l}%;
-    --rpg-sao-ink:${saoPanelVars().ink};
-    --rpg-sao-ink-dim:${saoPanelVars().inkDim};
-    --rpg-sao-rule:${saoPanelVars().rule};
-    --rpg-sao-chip:${saoPanelVars().chip};
+    ${(() => { const v = saoPanelVars(); return `--rpg-sao-panel-l:${v.l}%;
+    --rpg-sao-ink:${v.ink}; --rpg-sao-ink-dim:${v.inkDim};
+    --rpg-sao-rule:${v.rule}; --rpg-sao-chip:${v.chip};`; })()}
     --rpg-sao-card-a:${clamp(uiSettings.saoCardAlpha ?? 11, 0, 70)}%;`;
   container.className =
     (uiSettings.saoTextShadow ? "rpg-sao-sh " : "") +
@@ -4144,8 +4153,9 @@ function saoBind() {
   const pa = document.getElementById("rpg-sao-panel-a");
   if (pa) {
     pa.oninput = () => {
+      // never re-render here: replacing the input would drop the drag
       uiSettings.saoPanelLight = clamp(parseFloat(pa.value), 18, 98);
-      renderRPG();   // ink, rules and chips all flip with it
+      saoApplyPanelVars();
     };
     pa.onchange = () => saveUiSettings();
     pa.onclick = (e) => e.stopPropagation();
