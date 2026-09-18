@@ -3474,10 +3474,12 @@ function saoUnitView(unit) {
   const v = unit?.vehicle;
   if (v && v.active) {
     return { name: `\u{1F916} ${v.name || "Vehicle"}`, hp_curr: v.hp_curr, hp_max: v.hp_max,
-             isVeh: true, en: getEnergy(v, true) };
+             isVeh: true, en: getEnergy(v, true),
+             meters: Array.isArray(v.meters) ? v.meters : [] };
   }
   return { name: unit?.name || "?", hp_curr: unit?.hp_curr, hp_max: unit?.hp_max,
-           isVeh: false, en: getEnergy(unit, false) };
+           isVeh: false, en: getEnergy(unit, false),
+           meters: Array.isArray(unit?.meters) ? unit.meters : [] };
 }
 
 function saoUnitStops(view, foe) {
@@ -3491,6 +3493,18 @@ function saoMeterColor(name) {
     const c = typeof meterColorByName === "function" ? meterColorByName(name) : null;
     return c ? [c, c] : SAO_PALETTE.meter;
   } catch { return SAO_PALETTE.meter; }
+}
+
+// Shields, sanity and the like, tucked under whoever owns them.
+function saoMeterRows(view) {
+  const ms = Array.isArray(view?.meters) ? view.meters : [];
+  if (!ms.length) return "";
+  return ms.map((m) => {
+    const c = saoMeterColor(m.name);
+    return `<div class="rpg-sao-row sub"><span class="rpg-sao-tag">${escHtml(m.name)}</span>`
+      + saoBarHtml("slim", saoPct(m.curr, m.max), c[0], c[1])
+      + `<span class="rpg-sao-num">${escHtml(m.curr)}/${escHtml(m.max)}</span></div>`;
+  }).join("");
 }
 
 function saoDivider(label, key, color) {
@@ -3885,7 +3899,7 @@ function renderSaoSkin() {
           list.map((u, i) => {
             const v = saoUnitView(u);
             return saoSlimRow(v.name, v.hp_curr, v.hp_max, saoUnitStops(v, false),
-                              charIndexFor(type, i));
+                              charIndexFor(type, i)) + saoMeterRows(v);
           }).join("") + `</div></div>`;
       };
       vitals += unitGroup("PARTY", "party", party, "party");
@@ -3901,7 +3915,8 @@ function renderSaoSkin() {
         enemies.map((u, i) => {
           const v = saoUnitView(u);
           return saoSlimRow(v.isVeh ? v.name : (u?.name || `Enemy ${i + 1}`),
-            v.hp_curr, v.hp_max, saoUnitStops(v, true), charIndexFor("enemy", i));
+            v.hp_curr, v.hp_max, saoUnitStops(v, true), charIndexFor("enemy", i))
+            + saoMeterRows(v);
         }).join("") + `</div></div></div>`;
     }
 
@@ -4121,8 +4136,17 @@ const SAO_CSS = `<style id="rpg-sao-style">
 #rpg-hud-container .rpg-sao-col > *{pointer-events:auto}
 #rpg-hud-container button{font-family:inherit}
 
+/* The whole left stack scrolls rather than running off the bottom of the
+   screen. The reserved strip matches the clock's, so it clears the chat box. */
 .rpg-sao-vitals{position:absolute; left:8px; width:322px;
-  top:calc(env(safe-area-inset-top, 0px) + 12px)}
+  top:calc(env(safe-area-inset-top, 0px) + 12px);
+  max-height:calc(100svh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)
+                  - var(--rpg-sao-clock-lift, 84px) - 24px);
+  overflow-y:auto; overflow-x:hidden; padding-right:4px;
+  scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.28) transparent}
+.rpg-sao-vitals::-webkit-scrollbar{width:5px}
+.rpg-sao-vitals::-webkit-scrollbar-thumb{background:rgba(255,255,255,.28); border-radius:3px}
+.rpg-sao-vitals::-webkit-scrollbar-track{background:transparent}
 /* --rpg-sao-card-a: the wash behind the player's bars. It's a LIGHT tint, so
    raising it lifts the card away from the chat rather than darkening it. */
 .rpg-sao-card{padding:5px 6px 6px;
@@ -4152,6 +4176,10 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-slim{opacity:.78; margin-right:56px}
 .rpg-sao-slim.hide{display:none}
 .rpg-sao-row{display:flex; align-items:center; gap:7px; margin-bottom:3px}
+.rpg-sao-row.sub{margin-left:13px; opacity:.85}
+.rpg-sao-row.sub .rpg-sao-tag{flex:0 0 40px; font-size:9.5px; text-decoration:none}
+.rpg-sao-row.sub .rpg-sao-bar.slim{height:6px}
+.rpg-sao-row.sub .rpg-sao-num{font-size:9px; min-width:42px}
 .rpg-sao-tag{flex:0 0 50px; font-size:10.5px; font-weight:600; color:#ddd9ce; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; background:none; border:0; padding:0; text-align:left}
 button.rpg-sao-tag{cursor:pointer; text-decoration:underline;
