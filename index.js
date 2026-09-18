@@ -4123,6 +4123,9 @@ function saoBind() {
   });
   bind("rpg-sao-diagnose", () => { saoMin = false; saoPanel = "error"; renderRPG(); });
   bind("rpg-sao-help", () => { saoHelpOpen = !saoHelpOpen; renderRPG(); });
+  // the embedded error panel closes itself via isErrorOpen, which this skin
+  // doesn't use — its visibility is saoPanel, so close that instead
+  bind("rpg-error-close", () => { isErrorOpen = false; saoPanel = null; renderRPG(); });
   bind("rpg-sao-edit", openEditorFromSettings);
   bind("rpg-sao-remove", removeActiveCharacter);
   bind("rpg-sao-clear-npcs", (e) => clearArray("npc", e));
