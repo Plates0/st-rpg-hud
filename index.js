@@ -4418,16 +4418,18 @@ button.rpg-sao-tag:hover{color:#fff}
 #rpg-hud-container .rpg-sao-menuwrap{pointer-events:none}
 #rpg-hud-container .rpg-sao-panelwrap > *,
 #rpg-hud-container .rpg-sao-menuwrap > *{pointer-events:auto}
-.rpg-sao-panelwrap{right:96px}
-.rpg-sao-menuwrap{right:96px}
+.rpg-sao-panelwrap{right:104px}
+.rpg-sao-menuwrap{right:104px}
 /* with the help sheet open, it sits beyond the menu so both read left-to-right */
-.rpg-sao-panelwrap.helpshift{right:318px}
+.rpg-sao-panelwrap.helpshift{right:326px}
 
 .rpg-sao-panel{position:relative;
   width:336px; max-height:76svh; overflow:hidden; background:var(--rpg-sao-panel);
-  box-sizing:border-box; border:0;
-  border-top:3px solid rgba(0,0,0,.22);
-  border-right:3px solid rgba(0,0,0,.14);
+  box-sizing:border-box; border:3px solid transparent;
+  border-top-color:rgba(0,0,0,.22);
+  border-right-color:rgba(0,0,0,.14);
+  border-bottom-color:rgba(255,255,255,.16);
+  border-left-color:rgba(255,255,255,.24);
   box-shadow:0 2px 6px rgba(0,0,0,.5), 0 14px 40px rgba(0,0,0,.6);
   color:var(--rpg-sao-ink); display:flex; flex-direction:column}
 .rpg-sao-panelwrap{position:absolute}
@@ -4531,10 +4533,11 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   width:100%; text-align:left; background:var(--rpg-sao-panel);
   /* Real borders mitre at the corner, so the two faces meet on a diagonal.
      Stacked inset shadows instead overlapped there and went muddy. */
-  box-sizing:border-box; border:0;
-  border-top:3px solid rgba(0,0,0,.24);
-  border-right:3px solid rgba(0,0,0,.15);
-  border-bottom:1px solid rgba(0,0,0,.14);
+  box-sizing:border-box; border:3px solid transparent;
+  border-top-color:rgba(0,0,0,.24);
+  border-right-color:rgba(0,0,0,.15);
+  border-bottom-color:rgba(255,255,255,.17);
+  border-left-color:rgba(255,255,255,.26);
   box-shadow:0 2px 5px rgba(0,0,0,.5), 0 8px 22px rgba(0,0,0,.45);
   color:var(--rpg-sao-ink); font-size:12.5px; font-weight:600; cursor:pointer}
 .rpg-sao-mrow .pip{flex:0 0 22px; height:22px; border-radius:50%; background:#6b6355;
@@ -4567,7 +4570,9 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   bottom:calc(env(safe-area-inset-bottom, 0px) + var(--rpg-sao-clock-lift, 84px));
   display:flex; flex-direction:column; align-items:flex-end; gap:8px}
 .rpg-sao-timers{position:relative; width:252px; background:var(--rpg-sao-panel);
-  border:1px solid rgba(255,255,255,.8); box-shadow:0 2px 6px rgba(0,0,0,.5), 0 12px 34px rgba(0,0,0,.58);
+  box-sizing:border-box; border:3px solid transparent;
+  border-top-color:rgba(0,0,0,.22); border-right-color:rgba(0,0,0,.14);
+  border-bottom-color:rgba(255,255,255,.16); border-left-color:rgba(255,255,255,.24); box-shadow:0 2px 6px rgba(0,0,0,.5), 0 12px 34px rgba(0,0,0,.58);
   color:var(--rpg-sao-ink); padding:8px 12px 10px; max-height:52svh; overflow-y:auto}
 .rpg-sao-timerhead{display:flex; justify-content:space-between; align-items:center;
   border-bottom:1px solid var(--rpg-sao-rule); padding-bottom:4px; margin-bottom:6px}
@@ -4624,9 +4629,9 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   .rpg-sao-vitals{width:min(72vw, calc(268px * var(--rpg-sao-ui, 1)), calc(100vw - 96px))}
   .rpg-sao-slim{margin-right:calc(44px * var(--rpg-sao-ui, 1))}
   .rpg-sao-panelwrap{right:auto; left:12px}
-  .rpg-sao-panel{width:calc(100vw - 100px); max-width:330px; max-height:62svh}
-  .rpg-sao-menuwrap{right:calc(12px + var(--rpg-sao-orb) + 12px); left:auto}
-  .rpg-sao-menu{width:min(206px, calc(100vw - var(--rpg-sao-orb) - 46px))}
+  .rpg-sao-panel{width:calc(100vw - 108px); max-width:330px; max-height:62svh}
+  .rpg-sao-menuwrap{right:calc(12px + var(--rpg-sao-orb) + 26px); left:auto}
+  .rpg-sao-menu{width:min(206px, calc(100vw - var(--rpg-sao-orb) - 62px))}
   .rpg-sao-menuwrap.hashelp{display:none}
   .rpg-sao-panelwrap.helpshift{right:auto; left:12px}
   .rpg-sao-col{right:12px}
