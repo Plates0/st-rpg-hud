@@ -3304,7 +3304,7 @@ function renderRPG() {
 
 // ---------------------------------------------------------------- SAO SKIN
 let saoPanel = null;        // null | "status" | "bonds" | "quests" | "place" | "gear"
-let saoMin = false;
+let saoMin = true;   // the overlay opens collapsed to its dot
 let saoTimersOpen = false;
 let saoCollapsed = { meters: false, party: false, foes: false };
 let saoSub = "stats";
@@ -3701,7 +3701,6 @@ function renderSaoSkin() {
           allies.map(({ u, idx }) => saoSlimRow(u?.name || "?", u?.hp_curr, u?.hp_max,
             saoHpStops(saoPct(u?.hp_curr, u?.hp_max)), idx)).join("") + `</div>`;
       }
-      vitals += `</div>`;
     }
 
     // --- enemies ---
@@ -3741,16 +3740,17 @@ function renderSaoSkin() {
     // --- clock ---
     const t = rpgState.world_time || {};
     const clockHtml = saoMin ? "" : `<div class="rpg-sao-clockwrap">
-      ${saoTimersOpen ? `<div class="rpg-sao-timers">${saoTimersHtml()}</div>` : ""}
       <button class="rpg-sao-clock" id="rpg-sao-clock">
         <span class="rpg-sao-dot ${saoIndicatorClass(latest.status)}"></span>
         <span class="rpg-sao-glyph">${getWeatherEmoji(t.weather)}</span>
         <span class="rpg-sao-cstack">
           <span class="hhmm">${escHtml(t.clock || "??:??")}</span>
           <span class="date">${escHtml(t.month || "?")} ${escHtml(t.day ?? "?")} ${escHtml(t.year || "")}</span>
-        </span></button></div>`;
+        </span></button>
+      ${saoTimersOpen ? `<div class="rpg-sao-timers">${saoTimersHtml()}</div>` : ""}</div>`;
 
-    container.innerHTML = SAO_CSS + vitals + foesHtml + orbs + panelHtml + menuHtml + clockHtml;
+    if (vitals) vitals += foesHtml + `</div>`;
+    container.innerHTML = SAO_CSS + vitals + orbs + panelHtml + menuHtml + clockHtml;
 
     saoPaintBars();
     requestAnimationFrame(saoPaintBars);
@@ -3871,7 +3871,8 @@ const SAO_CSS = `<style id="rpg-sao-style">
 #rpg-hud-container > *{pointer-events:auto}
 #rpg-hud-container button{font-family:inherit}
 
-.rpg-sao-vitals{position:absolute; top:14px; left:8px; width:322px}
+.rpg-sao-vitals{position:absolute; left:8px; width:322px;
+  top:calc(env(safe-area-inset-top, 0px) + 12px)}
 .rpg-sao-card{padding:5px 6px 6px; background:rgba(226,233,244,.11);
   border:1px solid rgba(255,255,255,.2); border-radius:3px;
   backdrop-filter:blur(2px); box-shadow:0 4px 16px rgba(0,0,0,.25)}
@@ -3879,44 +3880,47 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-block.over{flex-direction:column; align-items:stretch; gap:3px}
 .rpg-sao-stack{flex:1 1 auto; min-width:0}
 .rpg-sao-name{flex:0 0 40px; width:40px; font-size:11px; font-weight:600; line-height:1.12;
-  color:#f4f1e8; text-shadow:0 1px 3px rgba(0,0,0,.95); overflow-wrap:anywhere}
+  color:#f4f1e8; text-shadow:0 1px 2px rgba(0,0,0,.85); overflow-wrap:anywhere}
 .rpg-sao-block.over .rpg-sao-name{flex:none; width:auto; padding-left:2px; font-size:11.5px}
 .rpg-sao-vrow{display:flex; align-items:center; gap:8px}
 .rpg-sao-vrow + .rpg-sao-vrow{margin-top:4px}
 .rpg-sao-vnum{flex:0 0 auto; font-size:11px; font-weight:600; color:#d3cfc4;
-  min-width:56px; text-align:right; text-shadow:0 1px 3px rgba(0,0,0,.95)}
+  min-width:56px; text-align:right; text-shadow:0 1px 2px rgba(0,0,0,.85)}
 
 .rpg-sao-bar{position:relative; flex:1 1 auto; min-width:0; height:15px}
 .rpg-sao-bar.mid{height:11px}
 .rpg-sao-bar.slim{height:9px}
 .rpg-sao-bar svg{position:absolute; inset:0; width:100%; height:100%; display:block;
-  filter:drop-shadow(0 2px 4px rgba(0,0,0,.45))}
+  filter:drop-shadow(0 1px 3px rgba(0,0,0,.4))}
 .rpg-sao-slim .rpg-sao-bar svg{filter:none}
 
 .rpg-sao-slim{opacity:.78; margin-right:56px}
 .rpg-sao-slim.hide{display:none}
 .rpg-sao-row{display:flex; align-items:center; gap:7px; margin-bottom:3px}
 .rpg-sao-tag{flex:0 0 50px; font-size:10.5px; font-weight:600; color:#ddd9ce;
-  text-shadow:0 1px 3px rgba(0,0,0,.95); overflow:hidden; text-overflow:ellipsis;
+  text-shadow:0 1px 2px rgba(0,0,0,.85); overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; background:none; border:0; padding:0; text-align:left}
 button.rpg-sao-tag{cursor:pointer; text-decoration:underline;
   text-decoration-color:rgba(255,255,255,.28); text-underline-offset:2px}
 button.rpg-sao-tag:hover{color:#fff}
 .rpg-sao-num{flex:0 0 auto; font-size:9.5px; color:#c2beb4; min-width:46px;
-  text-align:right; text-shadow:0 1px 3px rgba(0,0,0,.95)}
+  text-align:right; text-shadow:0 1px 2px rgba(0,0,0,.85)}
 
 .rpg-sao-div{margin:9px 0 5px; font-size:10px; font-weight:700; letter-spacing:2px;
-  color:#cdc8bb; text-shadow:0 1px 3px rgba(0,0,0,.95); display:flex; align-items:center; gap:7px}
+  color:#cdc8bb; text-shadow:0 1px 2px rgba(0,0,0,.85); display:flex; align-items:center; gap:7px}
 .rpg-sao-div::after{content:""; flex:1; height:1px;
   background:linear-gradient(90deg,rgba(220,215,200,.4),transparent)}
 .rpg-sao-caret{background:none; border:0; color:inherit; cursor:pointer; padding:0 2px;
   font-size:10px; order:3}
 
-.rpg-sao-foes{position:absolute; left:8px; bottom:18px; width:288px}
+.rpg-sao-foes{margin-top:2px}
 .rpg-sao-foes .rpg-sao-div{color:#f0b6ab}
 
-.rpg-sao-col{position:absolute; right:22px; top:50%; transform:translateY(-50%);
-  display:flex; flex-direction:column; gap:14px; align-items:center}
+.rpg-sao-col{position:absolute; right:22px; top:0; bottom:0;
+  padding:calc(env(safe-area-inset-top, 0px) + 78px) 0 calc(env(safe-area-inset-bottom, 0px) + 12px);
+  display:flex; flex-direction:column; justify-content:center; align-items:center; gap:14px;
+  pointer-events:none; overflow:visible}
+.rpg-sao-col > *{pointer-events:auto; flex:0 0 auto}
 .rpg-sao-orb{width:54px; height:54px; border-radius:50%;
   background:radial-gradient(circle at 34% 28%, rgba(255,255,255,.26), rgba(255,255,255,.10));
   border:2px solid rgba(255,255,255,.62);
@@ -4027,7 +4031,8 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 .rpg-sao-switch.on{background:#4e9c3f}
 .rpg-sao-switch.on::after{transform:translateX(16px)}
 
-.rpg-sao-clockwrap{position:absolute; right:22px; bottom:18px;
+.rpg-sao-clockwrap{position:absolute; right:22px;
+  top:calc(env(safe-area-inset-top, 0px) + 12px);
   display:flex; flex-direction:column; align-items:flex-end; gap:8px}
 .rpg-sao-timers{width:252px; background:rgba(249,248,244,.94);
   border:1px solid rgba(255,255,255,.8); box-shadow:0 8px 26px rgba(0,0,0,.45);
@@ -4048,30 +4053,46 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 
 .rpg-sao-clock{display:flex; align-items:center; gap:9px; background:none; border:0;
   padding:2px 0; cursor:pointer; color:#f2f0e8}
-.rpg-sao-glyph{font-size:17px; filter:drop-shadow(0 1px 3px rgba(0,0,0,.95))}
+.rpg-sao-glyph{font-size:17px; filter:drop-shadow(0 1px 2px rgba(0,0,0,.85))}
 .rpg-sao-cstack{text-align:right; line-height:1}
 .rpg-sao-cstack .hhmm{display:block; font-size:30px; font-weight:600; letter-spacing:3px;
-  text-shadow:0 1px 4px rgba(0,0,0,.95), 0 0 14px rgba(0,0,0,.6)}
+  text-shadow:0 1px 2px rgba(0,0,0,.9)}
 .rpg-sao-cstack .date{display:block; font-size:11px; letter-spacing:1.6px; color:#d5d1c6;
-  margin-top:2px; text-shadow:0 1px 4px rgba(0,0,0,.95)}
+  margin-top:2px; text-shadow:0 1px 2px rgba(0,0,0,.85)}
 
 /* the classic bond/timer editors get dropped in as-is, so give them a dark bed */
 .rpg-sao-classic{background:rgba(12,12,16,.94); margin:-11px -16px -15px; padding:10px 12px;
   color:#e0e0e0; font-family:'Courier New',monospace; font-size:12px}
 .rpg-sao-timers .rpg-sao-classic{margin:-8px -12px -10px}
 
+/* phones and short windows: shrink the orbs so the column always fits */
+@media (max-height:760px){
+  .rpg-sao-col{gap:9px}
+  .rpg-sao-orb{width:44px; height:44px}
+  .rpg-sao-orb svg{width:21px; height:21px}
+  .rpg-sao-orb.min{width:36px; height:36px}
+}
+@media (max-height:600px){
+  .rpg-sao-col{gap:6px}
+  .rpg-sao-orb{width:36px; height:36px}
+  .rpg-sao-orb svg{width:18px; height:18px}
+  .rpg-sao-orb.min{width:30px; height:30px}
+  .rpg-sao-dot{width:10px; height:10px}
+}
 @media (max-width:720px){
-  .rpg-sao-vitals{width:min(72vw,270px)}
+  .rpg-sao-vitals{width:min(56vw,240px)}
+  .rpg-sao-slim{margin-right:34px}
   .rpg-sao-panel{right:auto; left:12px; width:calc(100vw - 100px); max-width:330px; max-height:62vh}
   .rpg-sao-menu{left:12px; right:auto}
-  .rpg-sao-foes{width:min(58vw,232px); bottom:12px}
   .rpg-sao-col{right:12px; gap:10px}
   .rpg-sao-orb{width:46px; height:46px}
   .rpg-sao-orb svg{width:22px; height:22px}
   .rpg-sao-orb.min{width:38px; height:38px}
-  .rpg-sao-clockwrap{right:12px; bottom:12px}
+  .rpg-sao-clockwrap{right:12px}
   .rpg-sao-timers{width:min(74vw,246px)}
-  .rpg-sao-cstack .hhmm{font-size:24px}
+  .rpg-sao-cstack .hhmm{font-size:20px; letter-spacing:2px}
+  .rpg-sao-cstack .date{font-size:10px}
+  .rpg-sao-glyph{font-size:14px}
 }
 @media (prefers-reduced-motion:reduce){ #rpg-hud-container *{transition:none !important} }
 </style>`;
