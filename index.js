@@ -3549,19 +3549,50 @@ function saoStatusPanel() {
   return { title: name, body: h };
 }
 
-function saoWhoStrip() {
+// charIndexFor lays them out player, party, enemies, npcs. This reads that back.
+function saoRosterOf(idx) {
+  const p = Array.isArray(rpgState.party) ? rpgState.party.length : 0;
+  const e = Array.isArray(rpgState.enemies) ? rpgState.enemies.length : 0;
+  if (idx <= 0) return "player";
+  if (idx < 1 + p) return "party";
+  if (idx < 1 + p + e) return "enemy";
+  return "npc";
+}
+
+function saoRosterGroups() {
   const party = Array.isArray(rpgState.party) ? rpgState.party : [];
-  const enemies = Array.isArray(rpgState.enemies) ? rpgState.enemies : [];
   const npcs = Array.isArray(rpgState.npcs) ? rpgState.npcs : [];
+  const enemies = Array.isArray(rpgState.enemies) ? rpgState.enemies : [];
+  return [
+    { key: "player", label: "You", type: "player", list: [rpgState] },
+    { key: "party", label: "Party", type: "party", list: party },
+    { key: "npc", label: "NPCs", type: "npc", list: npcs },
+    { key: "enemy", label: "Enemies", type: "enemy", list: enemies },
+  ].filter((g) => g.list.length);
+}
 
-  const chips = [{ name: saoUnitView(rpgState).name || "Player", idx: 0, foe: false }];
-  party.forEach((u, i) => chips.push({ name: saoUnitView(u).name, idx: charIndexFor("party", i), foe: false }));
-  npcs.forEach((u, i) => chips.push({ name: saoUnitView(u).name, idx: charIndexFor("npc", i), foe: false }));
-  enemies.forEach((u, i) => chips.push({ name: saoUnitView(u).name, idx: charIndexFor("enemy", i), foe: true }));
+// Two rows instead of one long scroll: pick the group, then the character.
+// The second row is dropped when the group holds only one of them.
+function saoWhoStrip() {
+  const groups = saoRosterGroups();
+  if (!groups.length) return "";
+  const cur = saoRosterOf(charIndex);
+  const active = groups.filter((g) => g.key === cur)[0] || groups[0];
 
-  return `<div class="rpg-sao-who">` + chips.map((c) =>
-    `<button class="rpg-sao-chip${c.idx === charIndex ? " on" : ""}${c.foe ? " foe" : ""}" data-idx="${c.idx}">${escHtml(c.name)}</button>`
+  const cats = `<div class="rpg-sao-cats">` + groups.map((g) =>
+    `<button class="rpg-sao-cat${g.key === active.key ? " on" : ""}${g.key === "enemy" ? " foe" : ""}"
+      data-cat="${g.key}">${g.label}${g.list.length > 1 ? ` <i>${g.list.length}</i>` : ""}</button>`
   ).join("") + `</div>`;
+
+  if (active.list.length < 2) return cats;
+
+  const chips = `<div class="rpg-sao-who">` + active.list.map((u, i) => {
+    const idx = charIndexFor(active.type, i);
+    return `<button class="rpg-sao-chip${idx === charIndex ? " on" : ""}${active.key === "enemy" ? " foe" : ""}"
+      data-idx="${idx}">${escHtml(saoUnitView(u).name)}</button>`;
+  }).join("") + `</div>`;
+
+  return cats + chips;
 }
 
 function saoBondsPanel() {
@@ -3971,6 +4002,14 @@ function saoBind() {
     renderRPG();
   });
 
+  on(".rpg-sao-cat", (el) => {
+    const g = saoRosterGroups().filter((x) => x.key === el.dataset.cat)[0];
+    if (!g) return;
+    charIndex = charIndexFor(g.type, 0);
+    saoPanel = "status";
+    renderRPG();
+  });
+
   on(".rpg-sao-subtab", (el) => { saoSub = el.dataset.sub; renderRPG(); });
 
   const clock = document.getElementById("rpg-sao-clock");
@@ -4176,7 +4215,16 @@ button.rpg-sao-tag:hover{color:#fff}
   letter-spacing:1.2px; text-align:center; border-bottom:1px solid var(--rpg-sao-rule)}
 .rpg-sao-body{padding:11px 16px 15px; overflow-y:auto; min-height:0; flex:1 1 auto}
 
-.rpg-sao-who{display:flex; gap:5px; overflow-x:auto; flex:0 0 auto; padding:7px 10px;
+.rpg-sao-cats{display:flex; flex:0 0 auto; padding:0 10px; gap:2px;
+  border-bottom:1px solid var(--rpg-sao-rule)}
+.rpg-sao-cat{flex:1 1 auto; padding:6px 2px 5px; font-size:11px; font-weight:700;
+  letter-spacing:.4px; color:#87837a; cursor:pointer; background:none; border:0;
+  border-bottom:2px solid transparent; white-space:nowrap}
+.rpg-sao-cat i{font-style:normal; font-size:9.5px; opacity:.7}
+.rpg-sao-cat.on{color:#3c3a35; border-bottom-color:#b3903f}
+.rpg-sao-cat.foe.on{color:#b34a38; border-bottom-color:#b34a38}
+
+.rpg-sao-who{display:flex; gap:5px; overflow-x:auto; flex:0 0 auto; padding:6px 10px;
   border-bottom:1px solid var(--rpg-sao-rule)}
 .rpg-sao-chip{flex:0 0 auto; padding:3px 10px; font-size:11.5px; font-weight:600;
   cursor:pointer; white-space:nowrap; background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:#87837a}
