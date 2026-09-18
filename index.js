@@ -3606,8 +3606,8 @@ function saoStatusPanel() {
 
   if (saoSub === "stats") {
     const en = getEnergy(display, isVehicle);
-    h += `<div class="rpg-sao-vline"><span>HP</span><b>${escHtml(display.hp_curr)} / ${escHtml(display.hp_max)}</b></div>`;
-    h += `<div class="rpg-sao-vline"><span>${escHtml(en.label || "MP")}</span><b>${escHtml(en.curr)} / ${escHtml(en.max)}</b></div>`;
+    h += `<div class="rpg-sao-vline"><span>HP</span><b>${renderInlineValue(display.hp_curr)} / ${renderInlineValue(display.hp_max)}</b></div>`;
+    h += `<div class="rpg-sao-vline"><span>${escHtml(en.label || "MP")}</span><b>${renderInlineValue(en.curr)} / ${renderInlineValue(en.max)}</b></div>`;
     if ((type === "party" || type === "npc") && !isVehicle && root?.bond !== undefined) {
       const b = parseBondValue(root.bond);
       h += `<div class="rpg-sao-vline"><span>Bond</span><b>${b >= 101 ? "&#8734;" : b} / 100</b></div>`;
@@ -3616,7 +3616,7 @@ function saoStatusPanel() {
     const keys = Object.keys(stats);
     if (keys.length) {
       h += `<div class="rpg-sao-grid">` + keys.map((k) =>
-        `<div><span>${escHtml(k.toUpperCase())}</span><span title="${escAttr(stats[k])}">${escHtml(String(stats[k]).replace(/\s*\(.*\)\s*$/, ""))}</span></div>`
+        `<div><span>${escHtml(k.toUpperCase())}</span><span>${renderInlineValue(stats[k])}</span></div>`
       ).join("") + `</div>`;
     }
     const coin = toNumberOr(display.dankcoin ?? root?.dankcoin ?? 0, 0);
@@ -3824,6 +3824,8 @@ function saoHelpPanel() {
           "Puts every slider and toggle back to its default. Your skin choice and chat data stay as they are.")
       + item("Font",
           "The skin follows your font preset by default. The preset is a monospace, whose bold can look heavy in the panels \u2014 Sans is lighter.")
+      + item("Editor width",
+          "How wide Edit state opens. The classic skin sets this by dragging its edge; this is the same number, so you don't have to switch skins to change it.")
       + item("Bar size",
           "Scales the whole left-hand cluster \u2014 bars, names and readouts. A phone is fine at 100%; a desktop usually wants 130\u2013150%.")
       + item("Bar backdrop",
@@ -3874,6 +3876,9 @@ function saoSettingsHtml() {
     + `<div class="rpg-sao-mrow toggle"><span>Panel brightness</span>
         <input type="range" id="rpg-sao-panel-a" min="18" max="98"
                value="${Math.round(uiSettings.saoPanelLight ?? 92)}"></div>`
+    + `<div class="rpg-sao-mrow toggle"><span>Editor width</span>
+        <input type="range" id="rpg-sao-edit-w" min="240" max="560" step="10"
+               value="${clamp(uiSettings.hudWidth || 280, 240, 560)}"></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Bar size</span>
         <input type="range" id="rpg-sao-ui-scale" min="70" max="300"
                value="${Math.round(uiSettings.saoUiScale ?? 100)}"></div>`
@@ -4204,6 +4209,13 @@ function saoBind() {
     pa.onclick = (e) => e.stopPropagation();
   }
 
+  const ew = document.getElementById("rpg-sao-edit-w");
+  if (ew) {
+    ew.oninput = () => { uiSettings.hudWidth = clamp(parseFloat(ew.value), 240, 560); };
+    ew.onchange = () => saveUiSettings();
+    ew.onclick = (e) => e.stopPropagation();
+  }
+
   const us = document.getElementById("rpg-sao-ui-scale");
   if (us) {
     us.oninput = () => {
@@ -4370,9 +4382,11 @@ button.rpg-sao-tag:hover{color:#fff}
   width:336px; max-height:76svh; overflow:hidden; background:var(--rpg-sao-panel);
   border:1px solid rgba(255,255,255,.85); box-shadow:0 2px 6px rgba(0,0,0,.5), 0 14px 40px rgba(0,0,0,.6);
   color:var(--rpg-sao-ink); display:flex; flex-direction:column}
-.rpg-sao-panel::after{content:""; position:absolute; right:-13px; top:50%; margin-top:-11px;
-  border-left:13px solid var(--rpg-sao-panel);
-  border-top:11px solid transparent; border-bottom:11px solid transparent}
+.rpg-sao-panelwrap{position:absolute}
+.rpg-sao-panelwrap::after{content:""; position:absolute; right:-12px; top:50%; margin-top:-11px;
+  border-left:12px solid var(--rpg-sao-panel);
+  border-top:11px solid transparent; border-bottom:11px solid transparent;
+  filter:drop-shadow(2px 0 2px rgba(0,0,0,.35))}
 .rpg-sao-panel h2{margin:0; flex:0 0 auto; padding:11px 16px 8px; font-size:15px; font-weight:600;
   letter-spacing:1.2px; text-align:center; border-bottom:1px solid var(--rpg-sao-rule)}
 .rpg-sao-body{padding:11px 16px 15px; overflow-y:auto; min-height:0; flex:1 1 auto}
@@ -4406,6 +4420,15 @@ button.rpg-sao-tag:hover{color:#fff}
 .rpg-sao-grid div{display:flex; justify-content:space-between;
   border-bottom:1px dotted var(--rpg-sao-rule); padding-bottom:2px; gap:6px}
 .rpg-sao-grid span:last-child{font-weight:700; text-align:right}
+.rpg-sao-grid details, .rpg-sao-vline details{display:inline-block}
+.rpg-sao-grid details > span, .rpg-sao-vline details > span{
+  position:static !important; display:block !important;
+  min-width:0 !important; max-width:none !important;
+  margin-top:4px; text-align:left; font-weight:400;
+  background:rgba(20,20,24,.9) !important; color:#dcd8d0 !important;
+  border-color:rgba(255,255,255,.18) !important;
+}
+.rpg-sao-grid div, .rpg-sao-vline{align-items:flex-start}
 .rpg-sao-status{margin-top:9px; font-size:12.5px}
 .rpg-sao-status b{color:#b4472f}
 .rpg-sao-empty{font-size:12.5px; color:var(--rpg-sao-ink-dim); font-style:italic}
