@@ -72,13 +72,17 @@
 //   Value "∞" -> 101. Negative values allowed.
 //   MERGE ORDER on every parse: previous memory -> block -> live party/NPC
 //   |Bond:| values (live wins). A name the model drops is RESTORED from memory.
-//   purgeBondsFromHistory() is the only code that edits old messages: it
+//   DELTAS: bondBaseline snapshots the ledger as of the PREVIOUS message and
+//   is frozen per lastRpgMsgIndex, so the observer's repeat scans of the same
+//   message don't erase the ▲/▼. .prev is display-only and never written back.
+//   purgeBondsFromHistory() and purgeTimersFromHistory() are the only code that
+//   edits old messages: they
 //   surgically rewrites just the |Bonds:| pipe in every message AND in
 //   msg.swipes[]. It never touches anything else.
 //
 // TIMERS            |Timers:[Owner/]Name:Value[:KIND];...|
 //   Name = before the FIRST ":". KIND = after the LAST ":" if it is one of
-//   CD/BUFF/DEBUFF/DOOM, else the whole remainder is the value and KIND
+//   CD/BUFF/DEBUFF/EVENT/DOOM, else the whole remainder is the value and KIND
 //   defaults to CD. That split is what lets a clock time live in the value.
 //   VALUE is either:
 //     "2/3"              turns remaining/total (drives the progress bar)
@@ -88,7 +92,17 @@
 //   AUTO-REPAIR: if combat.round increased AND a turn value is byte-identical
 //   to last parse, the HUD decrements it and flags .repaired (shown as "*").
 //   If the model DID update it, the HUD leaves it alone — no double-ticking.
-//   Timers the model drops are NOT restored (dropping a finished CD is correct).
+//   KINDS: CD (cooldown) · BUFF · DEBUFF · EVENT (appointment/scheduled thing,
+//   neutral, 📅) · DOOM (threat, ☠️). EVENT exists so a dentist appointment
+//   doesn't get filed as a doom clock.
+//   Timers the model drops are NOT restored — EXCEPT unfired EVENT/DOOM, which
+//   are carried forward and marked "°", because a date three days out will go
+//   unmentioned for many turns. Fired ones are released. Editor delete still
+//   works (it removes from rpgState before the next merge sees it), and offers
+//   to scrub the timer from |Timers:| in every earlier message + swipes, the
+//   same way bond deletion does. The carry-over source is timerMemory (the
+//   newest block BEFORE this message), NOT the last parse, so a swipe you
+//   abandon can't leak its EVENTs into the branch you keep.
 //
 // PARSE PIPELINE (order matters)
 //   1. fresh deep clone of defaultState
@@ -271,6 +285,13 @@ let activeTab = "inventory";
 let bondsEditMode = false;
 let timersEditMode = false;
 let bondsSnapshot = [];
+let timersSnapshot = [];
+// The ledger as it stood in the messages BEFORE the one being parsed. Read from
+// chat history, not from the last parse, so an abandoned swipe leaves no trace.
+// Doubles as the baseline for the ▲/▼ deltas.
+let bondMemory = [];
+let timerMemory = [];
+let historyMemoryKey = null;
 let isMinimized = false;
 let scanTimer = null;
 let charIndex = 0;
@@ -293,6 +314,8 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 
 const defaultUiSettings = {
+  skin: "classic",        // "classic" | "sao"
+  barsOnMin: true,        // sao skin: keep the bars visible when minimised
   fontPreset: "retro_mono",
   fontFamily: "'Courier New', Courier, monospace",
   fontScale: 1.0,
@@ -958,6 +981,93 @@ function formatBondLedger(list) {
     .join(";");
 }
 
+// Rebuild the bond ledger from messages BEFORE `beforeIdx`. This is the memory
+// that restores a character who has left the scene. Sourcing it from history
+// rather than from the previous parse is what makes swipes clean: a character
+// you met in a swipe you then abandoned never entered history, so they vanish.
+function bondMemoryFromHistory(chat, beforeIdx) {
+  const out = [];
+  if (!Array.isArray(chat)) return out;
+
+  const limit = Math.max(0, Math.min(beforeIdx, chat.length));
+  const blockRe = /<rpg_state\b[^>]*>([\s\S]*?)<\/rpg_state>/gi;
+
+  for (let i = 0; i < limit; i++) {
+    const msg = chat[i];
+    if (!msg || msg.is_user || typeof msg.mes !== "string") continue;
+    if (!/<rpg_state\b/i.test(msg.mes)) continue;
+
+    // newest block in this message wins, same rule as the live parser
+    let body = null, m;
+    blockRe.lastIndex = 0;
+    while ((m = blockRe.exec(msg.mes)) !== null) body = m[1];
+    if (body === null) continue;
+
+    // 1. the |Bonds:| ledger pipe
+    const led = body.match(/\|Bonds:([^|]*)\|/i);
+    if (led) parseBondLedger(led[1]).forEach((b) => upsertBond(out, b.name, b.bond));
+
+    // 2. live |Bond:| values on party/NPC entries overwrite it, as in the
+    //    real pipeline. Walk statefully: Name and Bond may sit on separate lines.
+    let curName = "";
+    let inPlayer = false;
+    body.split("\n").forEach((raw) => {
+      const line = raw.trim();
+      if (!line) return;
+      if (line.startsWith("[")) {
+        inPlayer = /player/i.test(line);
+        curName = "";
+        return;
+      }
+      if (line.startsWith(">")) return;           // vehicles carry no bond
+      const nm = line.match(/\|Name:\s*([^|]*)/i);
+      if (nm) curName = nm[1].trim();
+      if (inPlayer || !curName) return;
+      const bd = line.match(/\|Bond:\s*([^|]*)/i);
+      if (bd && bd[1].trim()) upsertBond(out, curName, parseBondValue(bd[1]));
+    });
+  }
+  return out;
+}
+
+// Timers are current state, not a ledger, so "memory" is simply the newest
+// block BEFORE this message — no accumulation. Only the persistent kinds
+// matter; a CD from two messages ago is meaningless now.
+function timerMemoryFromHistory(chat, beforeIdx) {
+  if (!Array.isArray(chat)) return [];
+  const blockRe = /<rpg_state\b[^>]*>([\s\S]*?)<\/rpg_state>/gi;
+
+  for (let i = Math.min(beforeIdx, chat.length) - 1; i >= 0; i--) {
+    const msg = chat[i];
+    if (!msg || msg.is_user || typeof msg.mes !== "string") continue;
+    if (!/<rpg_state\b/i.test(msg.mes)) continue;
+
+    let body = null, m;
+    blockRe.lastIndex = 0;
+    while ((m = blockRe.exec(msg.mes)) !== null) body = m[1];
+    if (body === null) continue;
+
+    const tm = body.match(/\|Timers:([^|]*)\|/i);
+    if (!tm) continue;
+    return parseTimers(tm[1]).filter((t) =>
+      TIMER_PERSISTENT_KINDS.includes(String(t.kind || "").toUpperCase())
+    );
+  }
+  return [];
+}
+
+function refreshHistoryMemory(chat, chatKey) {
+  const key = `${chatKey}|${lastRpgMsgIndex}|${Array.isArray(chat) ? chat.length : 0}`;
+  if (key === historyMemoryKey) return;
+  bondMemory = bondMemoryFromHistory(chat, lastRpgMsgIndex);
+  timerMemory = timerMemoryFromHistory(chat, lastRpgMsgIndex);
+  historyMemoryKey = key;
+}
+
+function invalidateHistoryMemory() {
+  historyMemoryKey = null;
+}
+
 function mergeBondLedger(prevList, parsedList) {
   const out = [];
   (Array.isArray(prevList) ? prevList : []).forEach((b) => upsertBond(out, b.name, b.bond));
@@ -1002,8 +1112,10 @@ function parseBondLedgerFromText(text) {
 }
 
 // --- TIMERS ---
-const TIMER_KINDS = ["CD", "BUFF", "DEBUFF", "DOOM"];
-const KIND_RANK = { DOOM: 0, DEBUFF: 1, BUFF: 2, CD: 3 };
+const TIMER_KINDS = ["CD", "BUFF", "DEBUFF", "EVENT", "DOOM"];
+const KIND_RANK = { DOOM: 0, EVENT: 1, DEBUFF: 2, BUFF: 3, CD: 4 };
+// Kinds that are appointments, not combat state: they survive being dropped.
+const TIMER_PERSISTENT_KINDS = ["EVENT", "DOOM"];
 const TIMER_MONTHS = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
 const TIMER_MONTH_DAYS = [31,28,31,30,31,30,31,31,30,31,30,31];
 const YEAR_MINUTES = 365 * 1440;
@@ -1069,6 +1181,7 @@ function formatMinutes(mins) {
 function timerKindStyle(kind) {
   switch (String(kind || "CD").toUpperCase()) {
     case "DOOM":   return { color: "#ff5252", icon: "☠️", zero: "TRIGGERED" };
+    case "EVENT":  return { color: "#ce93d8", icon: "📅", zero: "NOW" };
     case "DEBUFF": return { color: "#ff9800", icon: "⚠️", zero: "ENDED" };
     case "BUFF":   return { color: "#69f0ae", icon: "✨", zero: "ENDED" };
     default:       return { color: "#90caf9", icon: "⏳", zero: "READY" };
@@ -1190,7 +1303,7 @@ function mergeTimers(prevState, nextState) {
   const nextRound = nextState?.combat?.active ? toNumberOr(nextState?.combat?.round, 0) : 0;
   const roundAdvanced = nextRound > prevRound;
 
-  return (Array.isArray(nextState.timers) ? nextState.timers : []).map((t) => {
+  const merged = (Array.isArray(nextState.timers) ? nextState.timers : []).map((t) => {
     const old = prevMap.get(timerKey(t));
     const out = { ...t, prev: old ? old.value : null };
 
@@ -1203,6 +1316,30 @@ function mergeTimers(prevState, nextState) {
     }
     return out;
   });
+
+  // EVENT/DOOM are long-lived appointments — a doctor's visit three days out
+  // will go unmentioned for many turns. If one was dropped and hasn't fired,
+  // carry it forward instead of losing it. Sourced from HISTORY, not the last
+  // parse, so an EVENT invented in a swipe you abandoned doesn't follow you
+  // into the new branch. Fired ones are released, and editor deletes still
+  // work (the block is rewritten before the next merge reads it).
+  const seen = new Set(merged.map(timerKey));
+  (Array.isArray(timerMemory) ? timerMemory : []).forEach((old) => {
+    if (!old || !old.name) return;
+    if (!TIMER_PERSISTENT_KINDS.includes(String(old.kind || "").toUpperCase())) return;
+    if (seen.has(timerKey(old))) return;
+    if (timerInfo(old).done) return;
+    merged.push({
+      owner: old.owner || "",
+      name: old.name,
+      value: old.value,
+      kind: String(old.kind).toUpperCase(),
+      prev: null,
+      kept: true,
+    });
+  });
+
+  return merged;
 }
 
 function advanceTimerTurn() {
@@ -1711,14 +1848,34 @@ function renderBondsTab() {
         ? `<span class="rpg-jump" data-idx="${idx}" style="cursor:pointer; text-decoration:underline; text-decoration-color:#555;">${escHtml(b.name)}</span>`
         : `<span>${escHtml(b.name)}</span>`;
 
+      // Change since the previous message's block. null prev = brand new name.
+      const hasBaseline = Object.prototype.hasOwnProperty.call(b, "prev");
+      const prevVal = !hasBaseline || b.prev === null ? null : parseBondValue(b.prev);
+      const diff = prevVal === null ? 0 : val - prevVal;
+      const deltaHtml = !hasBaseline
+        ? ""
+        : prevVal === null
+        ? `<span title="New to the ledger" style="font-size:0.75em; color:#69f0ae;"> NEW</span>`
+        : diff
+          ? `<span title="Was ${escAttr(prevVal >= 101 ? "∞" : String(prevVal))}"
+                   style="font-size:0.75em; color:${diff > 0 ? "#69f0ae" : "#ff5252"};"> ${diff > 0 ? "▲" : "▼"}${Math.abs(diff)}</span>`
+          : "";
+
+      // Ghost segment on the bar showing where it moved from.
+      const prevPct = prevVal === null ? null : (prevVal >= 101 ? 100 : clamp(Math.abs(prevVal), 0, 100));
+      const ghost = prevPct === null || prevPct === pct ? "" : `
+            <div style="position:absolute; top:0; height:100%; opacity:0.45;
+                        left:${Math.min(pct, prevPct)}%; width:${Math.abs(pct - prevPct)}%;
+                        background:${diff > 0 ? "#69f0ae" : "#ff5252"};"></div>`;
+
       return `
         <div style="padding:4px 0; border-bottom:1px solid #333;">
           <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
             <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${dot} ${nameHtml}</span>
-            <span style="color:${color}; flex:0 0 auto;">${escHtml(label)}/100</span>
+            <span style="color:${color}; flex:0 0 auto;">${escHtml(label)}/100${deltaHtml}</span>
           </div>
-          <div style="width:100%; background:#333; height:4px; border-radius:2px; overflow:hidden; margin-top:3px;">
-            <div style="height:100%; background:${color}; width:${pct}%"></div>
+          <div style="position:relative; width:100%; background:#333; height:4px; border-radius:2px; overflow:hidden; margin-top:3px;">
+            <div style="height:100%; background:${color}; width:${Math.min(pct, prevPct === null ? pct : prevPct)}%"></div>${ghost}
           </div>
         </div>`;
     })
@@ -1862,6 +2019,7 @@ function renderTimersTab() {
     return header + rows + `
       <div style="font-size:0.7em; color:#666; margin-top:4px; line-height:1.35;">
         Value: <span style="color:#888;">2/3</span> (turns) or <span style="color:#888;">Jan 6,14:00</span> (deadline).<br>
+        <span style="color:#ce93d8;">EVENT</span> = appointment · <span style="color:#ff5252;">DOOM</span> = threat. Both survive being dropped.<br>
         Name may be <span style="color:#888;">Owner/Skill</span>. Blank name deletes.
       </div>`;
   }
@@ -1875,12 +2033,13 @@ function renderTimersTab() {
     })
     .map(({ t, info }) => {
       const st = timerKindStyle(info.kind);
-      const dim = info.done && info.kind !== "DOOM" ? "opacity:0.55;" : "";
+      const dim = info.done && !TIMER_PERSISTENT_KINDS.includes(info.kind) ? "opacity:0.55;" : "";
       const delta = timerDelta(t);
       const ownerTag = t.owner
         ? `<span style="font-size:0.75em; color:#888;">${escHtml(t.owner)}·</span>`
         : "";
       const mark = t.repaired ? `<span title="Auto-ticked by the HUD" style="color:#C0A040;">*</span>` : "";
+      const keptMark = t.kept ? `<span title="Carried over — the model stopped listing it" style="color:#888;">°</span>` : "";
       const bar = info.pct === null ? "" : `
         <div style="width:100%; background:#333; height:3px; border-radius:2px; overflow:hidden; margin-top:3px;">
           <div style="height:100%; background:${st.color}; width:${info.pct}%"></div>
@@ -1890,7 +2049,7 @@ function renderTimersTab() {
         <div style="padding:4px 0; border-bottom:1px solid #333; ${dim}">
           <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
             <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-              ${st.icon} ${ownerTag}${escHtml(t.name)}${mark}
+              ${st.icon} ${ownerTag}${escHtml(t.name)}${mark}${keptMark}
             </span>
             <span style="flex:0 0 auto; color:${st.color};">
               ${escHtml(info.label)}
@@ -1928,11 +2087,31 @@ function readTimerInputs() {
 
 function commitTimersEdit() {
   readTimerInputs();
-  rpgState.timers = (rpgState.timers || []).filter((t) => t && String(t.name || "").trim());
+
+  const cleaned = (rpgState.timers || []).filter((t) => t && String(t.name || "").trim());
+  const nowKeys = new Set(cleaned.map(timerKey));
+  const removed = timersSnapshot.filter((t) => !nowKeys.has(timerKey(t)));
+
+  rpgState.timers = cleaned;
   timersEditMode = false;
+  timersSnapshot = [];
   renderRPG();
+
   const ok = writeStateBackToChatMessage(rpgState);
   if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after timer edit");
+
+  if (removed.length) {
+    const label = removed.map((t) => (t.owner ? `${t.owner}/${t.name}` : t.name)).join(", ");
+    const yes = confirm(
+      `Scrub from |Timers:| in ALL earlier messages?\n\n${label}\n\n` +
+      `If you skip this, the AI can still see them in older blocks and may add them back.\n\n` +
+      `This edits your chat history and cannot be undone.`
+    );
+    if (yes) {
+      const n = purgeTimersFromHistory(removed);
+      if (window.toastr) window.toastr.info(`Scrubbed ${removed.length} timer(s) from ${n} message(s).`);
+    }
+  }
 }
 
 function bindTimersTab() {
@@ -1941,7 +2120,13 @@ function bindTimersTab() {
     editBtn.onclick = (e) => {
       e.stopPropagation();
       if (timersEditMode) commitTimersEdit();
-      else { timersEditMode = true; renderRPG(); }
+      else {
+        timersSnapshot = (rpgState.timers || [])
+          .filter((t) => t && String(t.name || "").trim())
+          .map((t) => ({ owner: t.owner || "", name: t.name, kind: t.kind }));
+        timersEditMode = true;
+        renderRPG();
+      }
     };
   }
 
@@ -2029,6 +2214,54 @@ function purgeBondsFromHistory(names) {
   });
 
   if (changed) {
+    invalidateHistoryMemory();
+    try { window.saveChat?.(); } catch (e) { console.warn("RPG HUD: saveChat failed", e); }
+  }
+  return changed;
+}
+
+// --- TIMER HISTORY SCRUB (mirrors the bond version) ---
+// keys are "owner|name", lowercased — same shape as timerKey()
+function stripTimersFromText(text, keys) {
+  return String(text).replace(
+    /(<rpg_state\b[^>]*>)([\s\S]*?)(<\/rpg_state>)/gi,
+    (full, open, body, close) => {
+      const newBody = body.replace(/\|Timers:([^|]*)\|/gi, (m, val) => {
+        const kept = parseTimers(val).filter((t) => !keys.has(timerKey(t)));
+        return `|Timers:${formatTimers(kept)}|`;
+      });
+      return open + newBody + close;
+    }
+  );
+}
+
+function purgeTimersFromHistory(list) {
+  const keys = new Set((list || []).map(timerKey).filter((k) => k && k !== "|"));
+  if (!keys.size) return 0;
+
+  const chat = SillyTavern.getContext()?.chat;
+  if (!Array.isArray(chat)) return 0;
+
+  let changed = 0;
+  chat.forEach((msg) => {
+    if (!msg || typeof msg.mes !== "string") return;
+    if (!/<rpg_state\b/i.test(msg.mes)) return;
+
+    const next = stripTimersFromText(msg.mes, keys);
+    if (next !== msg.mes) {
+      msg.mes = next;
+      changed++;
+    }
+    // alternate swipes hold their own copy of the block
+    if (Array.isArray(msg.swipes)) {
+      msg.swipes = msg.swipes.map((s) =>
+        typeof s === "string" ? stripTimersFromText(s, keys) : s
+      );
+    }
+  });
+
+  if (changed) {
+    invalidateHistoryMemory();
     try { window.saveChat?.(); } catch (e) { console.warn("RPG HUD: saveChat failed", e); }
   }
   return changed;
@@ -2429,7 +2662,7 @@ function saveEditor() {
 }
 
 // --- 4. UI RENDERER ---
-function renderRPG() {
+function renderClassicSkin() {
   let container = document.getElementById("rpg-hud-container");
   if (!container) {
     container = document.createElement("div");
@@ -2676,6 +2909,13 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Appearance</div>
 
         <div style="background:rgba(255,255,255,0.06); border:1px solid #333; border-radius:4px; padding:8px; margin-bottom:10px;">
+        <div style="font-size:0.75em; color:#bbb; margin-bottom:6px;">Skin</div>
+
+        <select id="rpg-skin-select" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px;">
+            <option value="classic">Classic panel</option>
+            <option value="sao">SAO overlay</option>
+        </select>
+
         <div style="font-size:0.75em; color:#bbb; margin-bottom:6px;">Font preset</div>
 
         <select id="rpg-font-preset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px;">
@@ -2981,6 +3221,13 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	  bind("rpg-settings-insert", insertLastStateIntoNarrative);
 	  bind("rpg-settings-remind", remindStateInLastMessage);
 
+	  const skinEl = document.getElementById("rpg-skin-select");
+	  if (skinEl) {
+	    skinEl.value = uiSettings.skin || "classic";
+	    skinEl.onchange = () => { setSkin(skinEl.value); };
+	    skinEl.onclick = (e) => e.stopPropagation();
+	  }
+
 	  const caEl = document.getElementById("rpg-settings-changealerts");
 	  if (caEl) caEl.onchange = () => {
 	    uiSettings.changeAlerts = caEl.checked;
@@ -3029,6 +3276,843 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     console.error("RPG HUD UI Error:", e);
   }
 }
+
+
+// =====================================================================
+// SKIN SYSTEM
+// renderRPG() picks a skin. Each skin owns #rpg-hud-container completely:
+// its layout, its container styling, and its own minimise behaviour.
+// State (rpgState) is shared and untouched — a skin only ever reads it and
+// calls the same handlers the classic skin does.
+// =====================================================================
+
+function setSkin(name) {
+  flushInlineEdits();
+  uiSettings.skin = name === "sao" ? "sao" : "classic";
+  saveUiSettings();
+  isSettingsOpen = false;
+  saoPanel = null;
+  const c = document.getElementById("rpg-hud-container");
+  if (c) { c.innerHTML = ""; c.style.cssText = ""; c.onclick = null; }
+  renderRPG();
+}
+
+function renderRPG() {
+  if ((uiSettings.skin || "classic") === "sao") return renderSaoSkin();
+  return renderClassicSkin();
+}
+
+// ---------------------------------------------------------------- SAO SKIN
+let saoPanel = null;        // null | "status" | "bonds" | "quests" | "place" | "gear"
+let saoMin = true;   // the overlay opens collapsed to its dot
+let saoTimersOpen = false;
+let saoCollapsed = { meters: false, party: false, foes: false };
+let saoSub = "stats";
+let saoSvgUid = 0;
+
+const SAO_SHAPE = { step: 0.60, slope: 2, drop: 0.50, tip: 4, tipy: 0.20 };
+const SAO_RIM = { grey: "#53565e", greyW: 4, metalW: 2, hi: "#eceadf", lo: "#94918a" };
+const SAO_WELL = "rgba(36,39,46,0.82)";
+const SAO_NAME_OVER_AT = 12;
+
+// one hue sweep: green at full, yellow at half, red at empty
+function saoHpStops(p) {
+  const h = clamp(p * 1.1, 0, 110);
+  return [`hsl(${h},84%,64%)`, `hsl(${h},78%,42%)`];
+}
+
+function saoPct(currRaw, maxRaw) {
+  const a = parseFloat(String(currRaw ?? "").replace(/[^\d.\-]/g, ""));
+  const b = parseFloat(String(maxRaw ?? "").replace(/[^\d.\-]/g, ""));
+  if (!isFinite(a) || !isFinite(b) || b <= 0) return 0;
+  return clamp((a / b) * 100, 0, 100);
+}
+
+// The bar is one SVG path, stroked twice then filled. Strokes centre on the
+// path, so the fill hides their inner halves and what survives outside is a
+// grey band with a thin metal line inside it. One path means the rim can't
+// thin out along the diagonal the way two nested clip-paths did.
+function saoBarSvg(W, H, pctVal, c1, c2) {
+  const m = Math.ceil(SAO_RIM.greyW / 2);
+  const x0 = m, y0 = m, w = W - m * 2, h = H - m * 2;
+  if (w <= 2 || h <= 1) return "";
+
+  const stepX = clamp(SAO_SHAPE.step * w, 1, w - 2);
+  const slope = Math.min(SAO_SHAPE.slope, Math.max(0, w - stepX - 1));
+  const tip = Math.min(SAO_SHAPE.tip, Math.max(0, w - stepX - slope - 1));
+  const dropY = y0 + SAO_SHAPE.drop * h;
+  const tipY = y0 + SAO_SHAPE.tipy * h;
+
+  const d = `M${x0} ${y0}H${x0 + w}V${tipY}L${x0 + w - tip} ${dropY}` +
+            `H${x0 + stepX + slope}L${x0 + stepX} ${y0 + h}H${x0}Z`;
+
+  const id = "s" + (++saoSvgUid);
+  const f = clamp(pctVal, 0, 100) / 100;
+  const fx = x0 + w * f;
+  // The fill's leading edge is slanted to match the step. Slide that slant as
+  // the bar fills so it lands flush at both ends: at 100% the BOTTOM corner
+  // reaches the far edge (no grey slither in the tail), at 0% nothing shows.
+  const topX = fx + slope * f;
+  const botX = Math.max(x0, fx - slope * (1 - f));
+  const fillPoly = pctVal > 0
+    ? `<polygon points="${x0},${y0} ${topX},${y0} ${botX},${y0 + h} ${x0},${y0 + h}" fill="url(#g${id})" clip-path="url(#c${id})"/>`
+    : "";
+
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="m${id}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="${SAO_RIM.hi}"/><stop offset="1" stop-color="${SAO_RIM.lo}"/>
+      </linearGradient>
+      <linearGradient id="g${id}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/>
+      </linearGradient>
+      <clipPath id="c${id}"><path d="${d}"/></clipPath>
+    </defs>
+    <path d="${d}" fill="none" stroke="${SAO_RIM.grey}" stroke-width="${SAO_RIM.greyW}" stroke-linejoin="round"/>
+    <path d="${d}" fill="none" stroke="url(#m${id})" stroke-width="${SAO_RIM.metalW}" stroke-linejoin="round"/>
+    <path d="${d}" fill="${SAO_WELL}"/>
+    ${fillPoly}
+  </svg>`;
+}
+
+// Bars can only be drawn once they have a real pixel width, so the markup
+// ships empty and this fills every .rpg-sao-bar after layout.
+function saoPaintBars() {
+  document.querySelectorAll(".rpg-sao-bar").forEach((el) => {
+    const W = el.clientWidth, H = el.clientHeight;
+    if (!W || !H) return;
+    const p = parseFloat(el.dataset.p || "0");
+    el.innerHTML = saoBarSvg(W, H, p, el.dataset.c1 || "#b9f56d", el.dataset.c2 || "#63c322");
+  });
+}
+
+const SAO_PALETTE = {
+  mp: ["#7fd4ff", "#2e8fd6"],
+  foe: ["#ff8a7a", "#d63b28"],
+  meter: ["#d9b6f5", "#8d4fd1"],
+};
+
+function saoBarHtml(cls, pctVal, c1, c2) {
+  return `<div class="rpg-sao-bar ${cls}" data-p="${pctVal}" data-c1="${c1}" data-c2="${c2}"></div>`;
+}
+
+function saoSlimRow(name, curr, max, stops, jumpIdx) {
+  const p = saoPct(curr, max);
+  const tag = jumpIdx === null || jumpIdx === undefined
+    ? `<span class="rpg-sao-tag">${escHtml(name)}</span>`
+    : `<button class="rpg-sao-tag rpg-sao-jump" data-idx="${jumpIdx}" title="Open ${escAttr(name)}">${escHtml(name)}</button>`;
+  return `<div class="rpg-sao-row">${tag}${saoBarHtml("slim", p, stops[0], stops[1])}
+    <span class="rpg-sao-num">${escHtml(curr)}/${escHtml(max)}</span></div>`;
+}
+
+function saoMeterColor(name) {
+  try {
+    const c = typeof meterColorByName === "function" ? meterColorByName(name) : null;
+    return c ? [c, c] : SAO_PALETTE.meter;
+  } catch { return SAO_PALETTE.meter; }
+}
+
+function saoDivider(label, key, color) {
+  const open = !saoCollapsed[key];
+  return `<div class="rpg-sao-div" ${color ? `style="color:${color}"` : ""}>${escHtml(label)}
+    <button class="rpg-sao-caret" data-k="${key}" aria-expanded="${open}">${open ? "&#9662;" : "&#9656;"}</button>
+  </div>`;
+}
+
+// ---- panels -------------------------------------------------------------
+function saoStatusPanel() {
+  const { root, display, type, isVehicle } = getActiveData();
+  const name = display?.name || root?.name || rpgState?.name || "Player";
+
+  const subs = [["stats","Stats"],["inventory","Items"],["skills","Skills"],
+                ["passives","Passive"],["masteries","Mastery"]];
+  let h = `<div class="rpg-sao-subtabs">` + subs.map(([k, label]) =>
+    `<button class="rpg-sao-subtab${saoSub === k ? " on" : ""}" data-sub="${k}">${label}</button>`
+  ).join("") + `</div>`;
+
+  if (saoSub === "stats") {
+    const en = getEnergy(display, isVehicle);
+    h += `<div class="rpg-sao-vline"><span>HP</span><b>${escHtml(display.hp_curr)} / ${escHtml(display.hp_max)}</b></div>`;
+    h += `<div class="rpg-sao-vline"><span>${escHtml(en.label || "MP")}</span><b>${escHtml(en.curr)} / ${escHtml(en.max)}</b></div>`;
+    if ((type === "party" || type === "npc") && !isVehicle && root?.bond !== undefined) {
+      const b = parseBondValue(root.bond);
+      h += `<div class="rpg-sao-vline"><span>Bond</span><b>${b >= 101 ? "&#8734;" : b} / 100</b></div>`;
+    }
+    const stats = display.stats || {};
+    const keys = Object.keys(stats);
+    if (keys.length) {
+      h += `<div class="rpg-sao-grid">` + keys.map((k) =>
+        `<div><span>${escHtml(k.toUpperCase())}</span><span title="${escAttr(stats[k])}">${escHtml(String(stats[k]).replace(/\s*\(.*\)\s*$/, ""))}</span></div>`
+      ).join("") + `</div>`;
+    }
+    const coin = toNumberOr(display.dankcoin ?? root?.dankcoin ?? 0, 0);
+    h += `<div class="rpg-sao-vline" style="margin-top:8px;"><span>Coin</span><b>${escHtml(coin)}</b></div>`;
+
+    const meters = Array.isArray(display.meters) ? display.meters : [];
+    if (meters.length) {
+      h += `<div class="rpg-sao-sub">Meters</div>` + meters.map((m) =>
+        `<div class="rpg-sao-vline"><span>${escHtml(m.name)}</span><b>${escHtml(m.curr)} / ${escHtml(m.max)}</b></div>`
+      ).join("");
+    }
+
+    const st = Array.isArray(display.status_effects) ? display.status_effects : [];
+    h += `<div class="rpg-sao-status">Status: ` +
+      (st.length ? `<b>${st.map(escHtml).join(", ")}</b>` : `Healthy`) + `</div>`;
+  } else {
+    const list = Array.isArray(display[saoSub]) ? display[saoSub] : [];
+    h += list.length
+      ? `<ul class="rpg-sao-entries">` + list.map((it) => `<li>${escHtml(it)}</li>`).join("") + `</ul>`
+      : `<p class="rpg-sao-empty">Nothing recorded.</p>`;
+  }
+  return { title: name, body: h };
+}
+
+function saoWhoStrip() {
+  const party = Array.isArray(rpgState.party) ? rpgState.party : [];
+  const enemies = Array.isArray(rpgState.enemies) ? rpgState.enemies : [];
+  const npcs = Array.isArray(rpgState.npcs) ? rpgState.npcs : [];
+
+  const chips = [{ name: rpgState.name || "Player", idx: 0, foe: false }];
+  party.forEach((u, i) => chips.push({ name: u?.name || `Party ${i + 1}`, idx: charIndexFor("party", i), foe: false }));
+  npcs.forEach((u, i) => chips.push({ name: u?.name || `NPC ${i + 1}`, idx: charIndexFor("npc", i), foe: false }));
+  enemies.forEach((u, i) => chips.push({ name: u?.name || `Enemy ${i + 1}`, idx: charIndexFor("enemy", i), foe: true }));
+
+  return `<div class="rpg-sao-who">` + chips.map((c) =>
+    `<button class="rpg-sao-chip${c.idx === charIndex ? " on" : ""}${c.foe ? " foe" : ""}" data-idx="${c.idx}">${escHtml(c.name)}</button>`
+  ).join("") + `</div>`;
+}
+
+function saoBondsPanel() {
+  if (bondsEditMode) return { title: "Bonds", body: `<div class="rpg-sao-classic">${renderBondsTab()}</div>` };
+
+  const list = Array.isArray(rpgState.bonds) ? rpgState.bonds : [];
+  const party = Array.isArray(rpgState.party) ? rpgState.party : [];
+  const npcs = Array.isArray(rpgState.npcs) ? rpgState.npcs : [];
+  const jumpIdxFor = (name) => {
+    const key = normBondName(name);
+    let i = party.findIndex((u) => normBondName(u?.name) === key);
+    if (i !== -1) return charIndexFor("party", i);
+    i = npcs.findIndex((u) => normBondName(u?.name) === key);
+    if (i !== -1) return charIndexFor("npc", i);
+    return null;
+  };
+
+  const head = `<div class="rpg-sao-panelhead"><button class="rpg-sao-mini" id="rpg-sao-bond-edit">&#9998; Edit</button></div>`;
+  if (!list.length) return { title: "Bonds", body: head + `<p class="rpg-sao-empty">No bonds recorded.</p>` };
+
+  const rows = [...list].sort((a, b) => parseBondValue(b.bond) - parseBondValue(a.bond)).map((b) => {
+    const val = parseBondValue(b.bond);
+    const label = val >= 101 ? "&#8734;" : String(val);
+    let p = val >= 101 ? 100 : clamp(Math.abs(val), 0, 100);
+
+    const hasBase = Object.prototype.hasOwnProperty.call(b, "prev");
+    const prevVal = !hasBase || b.prev === null ? null : parseBondValue(b.prev);
+    let delta = "", ghost = "";
+    if (!hasBase) {
+      delta = "";
+    } else if (prevVal === null) {
+      delta = `<span class="rpg-sao-new">NEW</span>`;
+    } else if (prevVal !== val) {
+      const d = val - prevVal;
+      const pp = prevVal >= 101 ? 100 : clamp(Math.abs(prevVal), 0, 100);
+      delta = `<span class="rpg-sao-delta ${d > 0 ? "up" : "down"}">${d > 0 ? "&#9650;" : "&#9660;"}${Math.abs(d)}</span>`;
+      ghost = `<div class="rpg-sao-ghost" style="left:${Math.min(p, pp)}%; width:${Math.abs(p - pp)}%; background:${d > 0 ? "#3f8f34" : "#c0392b"}"></div>`;
+      p = Math.min(p, pp);
+    }
+
+    const idx = jumpIdxFor(b.name);
+    const nameHtml = idx === null
+      ? `<span class="rpg-sao-who-name">${escHtml(b.name)}</span>`
+      : `<button class="rpg-sao-who-name rpg-sao-jump" data-idx="${idx}">${escHtml(b.name)}</button>`;
+
+    return `<div class="rpg-sao-bond">
+      <div class="rpg-sao-bondtop">
+        <span class="${idx === null ? "away" : "here"}">${idx === null ? "&#9675;" : "&#9679;"}</span>
+        ${nameHtml}<span class="rpg-sao-bondval">${label}</span>${delta}
+      </div>
+      <div class="rpg-sao-bondtrack"><div class="b" style="width:${p}%"></div>${ghost}</div>
+    </div>`;
+  }).join("");
+
+  return { title: "Bonds", body: head + rows };
+}
+
+function saoQuestsPanel() {
+  const quests = Array.isArray(rpgState.quests) ? rpgState.quests : [];
+  if (!quests.length) return { title: "Quests", body: `<p class="rpg-sao-empty">No active quests.</p>` };
+  return {
+    title: "Quests",
+    body: quests.map((q) => `<div class="rpg-sao-quest">${escHtml(q)}</div>`).join(""),
+  };
+}
+
+function saoPlacePanel() {
+  const t = rpgState.world_time || {};
+  const env = Array.isArray(rpgState.env_effects) ? rpgState.env_effects : [];
+  let h = `<div class="rpg-sao-place">${escHtml(rpgState.location || "Unknown")}</div>`;
+  h += `<div class="rpg-sao-weather">${getWeatherEmoji(t.weather)} ${escHtml(t.weather || "Unknown")}
+        &#183; ${escHtml(t.clock || "??:??")}, ${escHtml(t.month || "?")} ${escHtml(t.day ?? "?")} ${escHtml(t.year || "")}</div>`;
+  h += env.length
+    ? env.map((e) => `<div class="rpg-sao-env">${escHtml(e)}</div>`).join("")
+    : `<p class="rpg-sao-empty">No environmental effects.</p>`;
+  return { title: "Location", body: h };
+}
+
+function saoTimersHtml() {
+  if (timersEditMode) return `<div class="rpg-sao-classic">${renderTimersTab()}</div>`;
+
+  const list = Array.isArray(rpgState.timers) ? rpgState.timers : [];
+  const head = `<div class="rpg-sao-timerhead"><h3>TIMERS</h3>
+    <span><button class="rpg-sao-mini" id="rpg-sao-timer-turn" title="Advance one turn">&#9197;</button>
+    <button class="rpg-sao-mini" id="rpg-sao-timer-edit">&#9998;</button></span></div>`;
+  if (!list.length) return head + `<p class="rpg-sao-empty">No active timers.</p>`;
+
+  const rows = list.map((t) => ({ t, info: timerInfo(t) }))
+    .sort((a, b) => {
+      const ka = KIND_RANK[a.info.kind] ?? 9, kb = KIND_RANK[b.info.kind] ?? 9;
+      return ka !== kb ? ka - kb : a.info.sortKey - b.info.sortKey;
+    })
+    .map(({ t, info }) => {
+      const st = timerKindStyle(info.kind);
+      const dim = info.done && !TIMER_PERSISTENT_KINDS.includes(info.kind) ? " spent" : "";
+      const owner = t.owner ? `<span class="rpg-sao-owner">${escHtml(t.owner)}&#183;</span>` : "";
+      const mark = t.repaired ? `<span title="Auto-ticked" style="color:#a8871f;">*</span>` : "";
+      const kept = t.kept ? `<span title="Carried over" style="color:#9b978c;">&#176;</span>` : "";
+      const bar = info.pct === null ? "" :
+        `<div class="rpg-sao-tbar"><div style="width:${info.pct}%; background:${st.color}"></div></div>`;
+      return `<div class="rpg-sao-timer${dim}">
+        <div class="rpg-sao-tline"><span>${st.icon}</span>
+          <span class="rpg-sao-tname">${owner}${escHtml(t.name)}${mark}${kept}</span>
+          <span class="rpg-sao-tleft" style="color:${st.color}">${escHtml(info.label)}</span></div>
+        ${bar}</div>`;
+    }).join("");
+
+  return head + rows;
+}
+
+// the classic caret/error overlay, dropped into a SAO panel
+function saoErrorPanel() {
+  return {
+    title: "Parse error",
+    body: `<div class="rpg-sao-classic rpg-sao-errbed">${buildPipeErrorPanelHtml()}</div>`,
+  };
+}
+
+function saoSettingsHtml() {
+  const row = (id, icon, label) =>
+    `<button class="rpg-sao-mrow" id="${id}"><span class="pip">${icon}</span>${label}</button>`;
+  const toggle = (id, label, on) =>
+    `<div class="rpg-sao-mrow toggle"><span>${label}</span>
+      <button class="rpg-sao-switch${on ? " on" : ""}" id="${id}" aria-label="${escAttr(label)}"></button></div>`;
+
+  return row("rpg-sao-edit", "&#9998;", "Edit state")
+    + row("rpg-sao-remove", "&#10007;", "Remove character")
+    + row("rpg-sao-clear-npcs", "&#9634;", "Clear NPCs")
+    + row("rpg-sao-clear-enemies", "&#9634;", "Clear enemies")
+    + row("rpg-sao-clear-party", "&#9634;", "Clear party")
+    + row("rpg-sao-rescan", "&#8635;", "Rescan now")
+    + row("rpg-sao-diagnose", "!", "Parse diagnostics")
+    + row("rpg-sao-insert", "&#8595;", "Insert state")
+    + row("rpg-sao-remind", "&#9993;", "Remind state")
+    + toggle("rpg-sao-sw-alerts", "Change alerts", !!uiSettings.changeAlerts)
+    + toggle("rpg-sao-sw-inject", "Auto-inject", !!autoInjectState)
+    + toggle("rpg-sao-sw-bars", "Keep bars when minimised", !!uiSettings.barsOnMin)
+    + `<div class="rpg-sao-mrow toggle"><span>Skin</span>
+        <select id="rpg-sao-skin">
+          <option value="classic">Classic</option>
+          <option value="sao" selected>SAO</option>
+        </select></div>`;
+}
+
+// ---- orbs ---------------------------------------------------------------
+const SAO_COG = `<svg viewBox="0 0 24 24">
+  <defs><mask id="rpgSaoCog"><rect width="24" height="24" fill="#fff"/><circle cx="12" cy="12" r="3.15" fill="#000"/></mask></defs>
+  <g mask="url(#rpgSaoCog)"><circle cx="12" cy="12" r="6.7"/>
+  ${[0,45,90,135,180,225,270,315].map((a) =>
+    `<rect x="10.5" y="1.5" width="3" height="4.6" rx="0.7" transform="rotate(${a} 12 12)"/>`).join("")}
+  </g></svg>`;
+
+const SAO_TABS = [
+  { id: "status", label: "Status", icon: `<svg viewBox="0 0 24 24"><circle cx="12" cy="7.4" r="3.8"/><path d="M4.3 20.8c0-4.3 3.4-7 7.7-7s7.7 2.7 7.7 7z"/></svg>` },
+  { id: "bonds", label: "Bonds", icon: `<svg viewBox="0 0 24 24"><circle cx="8.1" cy="7.8" r="3.5"/><path d="M1.5 20.6c0-3.8 2.9-6.2 6.6-6.2s6.6 2.4 6.6 6.2z"/><circle cx="17.7" cy="9.4" r="2.6"/><path d="M12.8 20.6c0-2.8 2.2-4.6 4.9-4.6s4.9 1.8 4.9 4.6z"/></svg>` },
+  { id: "quests", label: "Quests", icon: `<svg viewBox="0 0 24 24"><defs><mask id="rpgSaoMsg"><rect width="24" height="24" fill="#fff"/><rect x="0.2" y="7.1" width="16.6" height="11.3" rx="3" fill="#000"/><path d="M3.6 15.6h6v6.6l-6-3.4z" fill="#000"/></mask></defs><g mask="url(#rpgSaoMsg)"><rect x="8.4" y="2.4" width="14.4" height="10.2" rx="2.4"/><path d="M17.4 10.4h4.4v5.9l-4.4-2.9z"/></g><rect x="1.6" y="8.5" width="13.8" height="8.5" rx="2.2"/><path d="M5 15.1h4.6v5.5L5 17.8z"/></svg>` },
+  { id: "place", label: "Location", icon: `<svg viewBox="0 0 24 24"><path d="M12 1.4c-3.7 0-6.7 2.9-6.7 6.6 0 4.8 6.7 11.5 6.7 11.5s6.7-6.7 6.7-11.5c0-3.7-3-6.6-6.7-6.6zm0 9.1a2.5 2.5 0 110-5 2.5 2.5 0 010 5z"/><rect x="3.6" y="20.8" width="16.8" height="1.7" rx="0.85"/></svg>` },
+  { id: "gear", label: "Settings", icon: SAO_COG },
+];
+
+// matches indicatorColor(): valid | invalid | notag | user
+function saoIndicatorClass(status) {
+  switch (status) {
+    case "valid":   return "ok";
+    case "invalid": return "warn";
+    case "user":    return "user";
+    default:        return "none";
+  }
+}
+
+// ---- the skin -----------------------------------------------------------
+function renderSaoSkin() {
+  let container = document.getElementById("rpg-hud-container");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "rpg-hud-container";
+    document.body.appendChild(container);
+  }
+
+  let latest = { status: "nochat", label: "", detail: "" };
+  try { latest = updateLatestStatusAndToast(SillyTavern.getContext()?.chat); } catch {}
+
+  container.style.cssText = `position:fixed; top:0; left:0; right:0; bottom:auto;
+    height:100vh; height:100svh; z-index:9999; pointer-events:none;
+    font-family:${uiSettings.fontFamily || "'Rajdhani','Segoe UI',sans-serif"};
+    font-size:${0.9 * (uiSettings.fontScale || 1)}em;`;
+  container.onclick = null;
+
+  try {
+    const { root, display, type, isVehicle } = getActiveData();
+    const player = rpgState;
+    const pName = player.name || "Player";
+    const en = getEnergy(player, false);
+
+    const hpPct = saoPct(player.hp_curr, player.hp_max);
+    const hpStops = saoHpStops(hpPct);
+    const mpPct = saoPct(en.curr, en.max);
+
+    const party = Array.isArray(rpgState.party) ? rpgState.party : [];
+    const enemies = Array.isArray(rpgState.enemies) ? rpgState.enemies : [];
+    const npcs = Array.isArray(rpgState.npcs) ? rpgState.npcs : [];
+    const pMeters = Array.isArray(player.meters) ? player.meters : [];
+
+    const showBars = !saoMin || uiSettings.barsOnMin;
+    const inCombat = !!rpgState?.combat?.active;
+
+    // --- vitals ---
+    let vitals = "";
+    if (showBars) {
+      const over = pName.length > SAO_NAME_OVER_AT;
+      vitals = `<div class="rpg-sao-vitals">
+        <div class="rpg-sao-card">
+          <div class="rpg-sao-block${over ? " over" : ""}">
+            <div class="rpg-sao-name">${escHtml(pName)}</div>
+            <div class="rpg-sao-stack">
+              <div class="rpg-sao-vrow">${saoBarHtml("", hpPct, hpStops[0], hpStops[1])}
+                <span class="rpg-sao-vnum">${escHtml(player.hp_curr)}/${escHtml(player.hp_max)}</span></div>
+              <div class="rpg-sao-vrow">${saoBarHtml("mid", mpPct, SAO_PALETTE.mp[0], SAO_PALETTE.mp[1])}
+                <span class="rpg-sao-vnum">${escHtml(en.curr)}/${escHtml(en.max)}</span></div>
+            </div>
+          </div>
+        </div>`;
+
+      if (pMeters.length) {
+        vitals += saoDivider("METERS", "meters");
+        vitals += `<div class="rpg-sao-slim${saoCollapsed.meters ? " hide" : ""}">` +
+          pMeters.map((m) => saoSlimRow(m.name, m.curr, m.max, saoMeterColor(m.name), null)).join("") + `</div>`;
+      }
+      const allies = [...party.map((u, i) => ({ u, idx: charIndexFor("party", i) })),
+                      ...npcs.map((u, i) => ({ u, idx: charIndexFor("npc", i) }))];
+      if (allies.length) {
+        vitals += saoDivider("PARTY", "party");
+        vitals += `<div class="rpg-sao-slim${saoCollapsed.party ? " hide" : ""}">` +
+          allies.map(({ u, idx }) => saoSlimRow(u?.name || "?", u?.hp_curr, u?.hp_max,
+            saoHpStops(saoPct(u?.hp_curr, u?.hp_max)), idx)).join("") + `</div>`;
+      }
+    }
+
+    // --- enemies ---
+    let foesHtml = "";
+    if (showBars && inCombat && enemies.length) {
+      foesHtml = `<div class="rpg-sao-foes">` +
+        saoDivider(`ROUND ${escHtml(rpgState.combat.round ?? 1)}`, "foes", "#f0b6ab") +
+        `<div class="rpg-sao-slim${saoCollapsed.foes ? " hide" : ""}">` +
+        enemies.map((u, i) => saoSlimRow(u?.name || `Enemy ${i + 1}`, u?.hp_curr, u?.hp_max,
+          SAO_PALETTE.foe, charIndexFor("enemy", i))).join("") + `</div></div>`;
+    }
+
+    // --- orbs ---
+    const orbs = `<div class="rpg-sao-col">` +
+      (saoMin ? "" : SAO_TABS.map((t) =>
+        `<button class="rpg-sao-orb${saoPanel === t.id ? " on" : ""}" data-tab="${t.id}" title="${escAttr(t.label)}">${t.icon}</button>`
+      ).join("") + `<div class="rpg-sao-rule"></div>`) +
+      (latest.status === "invalid"
+        ? `<button class="rpg-sao-orb diag" id="rpg-sao-diag" title="Show the parse error">!</button>` : "") +
+      `<button class="rpg-sao-orb min" id="rpg-sao-min" title="${escAttr(latest.label || "Toggle HUD")}">
+        <span class="rpg-sao-dot ${saoIndicatorClass(latest.status)}"></span></button></div>`;
+
+    // --- panel ---
+    let panelHtml = "";
+    if (!saoMin && saoPanel && saoPanel !== "gear") {
+      const built = saoPanel === "status" ? saoStatusPanel()
+                  : saoPanel === "bonds" ? saoBondsPanel()
+                  : saoPanel === "quests" ? saoQuestsPanel()
+                  : saoPanel === "error" ? saoErrorPanel()
+                  : saoPlacePanel();
+      panelHtml = `<div class="rpg-sao-panel">
+        <h2>${escHtml(built.title)}</h2>
+        ${saoPanel === "status" ? saoWhoStrip() : ""}
+        <div class="rpg-sao-body">${built.body}</div></div>`;
+    }
+
+    const menuHtml = (!saoMin && saoPanel === "gear")
+      ? `<div class="rpg-sao-menu">${saoSettingsHtml()}</div>` : "";
+
+    // --- clock ---
+    const t = rpgState.world_time || {};
+    const clockHtml = saoMin ? "" : `<div class="rpg-sao-clockwrap">
+      ${saoTimersOpen ? `<div class="rpg-sao-timers">${saoTimersHtml()}</div>` : ""}
+      <button class="rpg-sao-clock" id="rpg-sao-clock">
+        <span class="rpg-sao-dot ${saoIndicatorClass(latest.status)}"></span>
+        <span class="rpg-sao-glyph">${getWeatherEmoji(t.weather)}</span>
+        <span class="rpg-sao-cstack">
+          <span class="hhmm">${escHtml(t.clock || "??:??")}</span>
+          <span class="date">${escHtml(t.month || "?")} ${escHtml(t.day ?? "?")} ${escHtml(t.year || "")}</span>
+        </span></button></div>`;
+
+    if (vitals) vitals += foesHtml + `</div>`;
+    container.innerHTML = SAO_CSS + vitals + orbs + panelHtml + menuHtml + clockHtml;
+
+    saoPaintBars();
+    requestAnimationFrame(saoPaintBars);
+    saoBind();
+  } catch (e) {
+    container.innerHTML = `<div style="pointer-events:auto; position:fixed; top:60px; right:20px;
+      background:#111; color:#ff5252; border:1px solid #ff5252; padding:10px; z-index:99999;">
+      SAO skin crashed: ${escHtml(e.message)}<br>
+      <button id="rpg-sao-fallback">Back to classic skin</button></div>`;
+    const b = document.getElementById("rpg-sao-fallback");
+    if (b) b.onclick = () => setSkin("classic");
+    console.error("RPG HUD SAO skin error:", e);
+  }
+}
+
+function saoBind() {
+  const on = (sel, fn) => document.querySelectorAll(sel).forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); fn(el, e); };
+  });
+
+  on(".rpg-sao-orb[data-tab]", (el) => {
+    flushInlineEdits();
+    const tab = el.dataset.tab;
+    saoPanel = saoPanel === tab ? null : tab;
+    renderRPG();
+  });
+
+  const minBtn = document.getElementById("rpg-sao-min");
+  if (minBtn) minBtn.onclick = (e) => {
+    e.stopPropagation();
+    flushInlineEdits();
+    saoMin = !saoMin;
+    if (saoMin) saoPanel = null;
+    renderRPG();
+  };
+
+  on(".rpg-sao-caret", (el) => {
+    const k = el.dataset.k;
+    saoCollapsed[k] = !saoCollapsed[k];
+    renderRPG();
+  });
+
+  on(".rpg-sao-jump, .rpg-sao-chip", (el) => {
+    const idx = parseInt(el.dataset.idx, 10);
+    if (!Number.isFinite(idx)) return;
+    charIndex = idx;
+    saoSub = "stats";
+    saoPanel = "status";
+    renderRPG();
+  });
+
+  on(".rpg-sao-subtab", (el) => { saoSub = el.dataset.sub; renderRPG(); });
+
+  const clock = document.getElementById("rpg-sao-clock");
+  if (clock) clock.onclick = (e) => { e.stopPropagation(); saoTimersOpen = !saoTimersOpen; renderRPG(); };
+
+  // bonds / timers reuse the classic editors, so their own binders apply
+  const bondEdit = document.getElementById("rpg-sao-bond-edit");
+  if (bondEdit) bondEdit.onclick = (e) => {
+    e.stopPropagation();
+    bondsEditMode = true;
+    bondsSnapshot = (rpgState.bonds || []).map((b) => b?.name).filter(Boolean);
+    renderRPG();
+  };
+  const timerEdit = document.getElementById("rpg-sao-timer-edit");
+  if (timerEdit) timerEdit.onclick = (e) => {
+    e.stopPropagation();
+    timersEditMode = true;
+    timersSnapshot = (rpgState.timers || [])
+      .filter((t) => t && String(t.name || "").trim())
+      .map((t) => ({ owner: t.owner || "", name: t.name, kind: t.kind }));
+    renderRPG();
+  };
+  const timerTurn = document.getElementById("rpg-sao-timer-turn");
+  if (timerTurn) timerTurn.onclick = (e) => { e.stopPropagation(); advanceTimerTurn(); };
+
+  if (bondsEditMode) bindBondsTab();
+  if (timersEditMode) bindTimersTab();
+
+  // settings
+  const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(e); }; };
+  bind("rpg-sao-diag", () => {
+    saoMin = false;
+    saoPanel = saoPanel === "error" ? null : "error";
+    renderRPG();
+  });
+  bind("rpg-sao-diagnose", () => { saoMin = false; saoPanel = "error"; renderRPG(); });
+  bind("rpg-sao-edit", openEditorFromSettings);
+  bind("rpg-sao-remove", removeActiveCharacter);
+  bind("rpg-sao-clear-npcs", (e) => clearArray("npc", e));
+  bind("rpg-sao-clear-enemies", (e) => clearArray("enemy", e));
+  bind("rpg-sao-clear-party", (e) => clearArray("party", e));
+  bind("rpg-sao-rescan", () => checkMessage(true));
+  bind("rpg-sao-insert", insertLastStateIntoNarrative);
+  bind("rpg-sao-remind", remindStateInLastMessage);
+  bind("rpg-sao-sw-alerts", () => { uiSettings.changeAlerts = !uiSettings.changeAlerts; saveUiSettings(); renderRPG(); });
+  bind("rpg-sao-sw-inject", () => {
+    autoInjectState = !autoInjectState;
+    const box = document.getElementById("rpg-settings-autoinject");
+    if (box) box.checked = autoInjectState;
+    if (window.toastr) window.toastr.info(`Auto-Inject ${autoInjectState ? "Enabled" : "Disabled"}`);
+    renderRPG();
+  });
+  bind("rpg-sao-sw-bars", () => { uiSettings.barsOnMin = !uiSettings.barsOnMin; saveUiSettings(); renderRPG(); });
+
+  const skinSel = document.getElementById("rpg-sao-skin");
+  if (skinSel) {
+    skinSel.onchange = () => setSkin(skinSel.value);
+    skinSel.onclick = (e) => e.stopPropagation();
+  }
+}
+
+if (!window.__rpgSaoResizeBound) {
+  window.__rpgSaoResizeBound = true;
+  let rt = null;
+  window.addEventListener("resize", () => {
+    if ((uiSettings.skin || "classic") !== "sao") return;
+    clearTimeout(rt);
+    rt = setTimeout(saoPaintBars, 120);
+  });
+}
+
+const SAO_CSS = `<style id="rpg-sao-style">
+#rpg-hud-container > *{pointer-events:auto}
+#rpg-hud-container button{font-family:inherit}
+
+.rpg-sao-vitals{position:absolute; left:8px; width:322px;
+  top:calc(env(safe-area-inset-top, 0px) + 12px)}
+.rpg-sao-card{padding:5px 6px 6px; background:rgba(226,233,244,.11);
+  border:1px solid rgba(255,255,255,.2); border-radius:3px;
+  backdrop-filter:blur(2px); box-shadow:0 4px 16px rgba(0,0,0,.25)}
+.rpg-sao-block{display:flex; align-items:center; gap:5px}
+.rpg-sao-block.over{flex-direction:column; align-items:stretch; gap:3px}
+.rpg-sao-stack{flex:1 1 auto; min-width:0}
+.rpg-sao-name{flex:0 0 40px; width:40px; font-size:11px; font-weight:600; line-height:1.12;
+  color:#f4f1e8; overflow-wrap:anywhere}
+.rpg-sao-block.over .rpg-sao-name{flex:none; width:auto; padding-left:2px; font-size:11.5px}
+.rpg-sao-vrow{display:flex; align-items:center; gap:8px}
+.rpg-sao-vrow + .rpg-sao-vrow{margin-top:4px}
+.rpg-sao-vnum{flex:0 0 auto; font-size:11px; font-weight:600; color:#d3cfc4;
+  min-width:56px; text-align:right}
+
+.rpg-sao-bar{position:relative; flex:1 1 auto; min-width:0; height:15px}
+.rpg-sao-bar.mid{height:11px}
+.rpg-sao-bar.slim{height:9px}
+.rpg-sao-bar svg{position:absolute; inset:0; width:100%; height:100%; display:block;
+  filter:drop-shadow(0 1px 3px rgba(0,0,0,.4))}
+.rpg-sao-slim .rpg-sao-bar svg{filter:none}
+
+.rpg-sao-slim{opacity:.78; margin-right:56px}
+.rpg-sao-slim.hide{display:none}
+.rpg-sao-row{display:flex; align-items:center; gap:7px; margin-bottom:3px}
+.rpg-sao-tag{flex:0 0 50px; font-size:10.5px; font-weight:600; color:#ddd9ce; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; background:none; border:0; padding:0; text-align:left}
+button.rpg-sao-tag{cursor:pointer; text-decoration:underline;
+  text-decoration-color:rgba(255,255,255,.28); text-underline-offset:2px}
+button.rpg-sao-tag:hover{color:#fff}
+.rpg-sao-num{flex:0 0 auto; font-size:9.5px; color:#c2beb4; min-width:46px;
+  text-align:right}
+
+.rpg-sao-div{margin:9px 0 5px; font-size:10px; font-weight:700; letter-spacing:2px;
+  color:#cdc8bb; display:flex; align-items:center; gap:7px}
+.rpg-sao-div::after{content:""; flex:1; height:1px;
+  background:linear-gradient(90deg,rgba(220,215,200,.4),transparent)}
+.rpg-sao-caret{background:none; border:0; color:inherit; cursor:pointer; padding:0 2px;
+  font-size:10px; order:3}
+
+.rpg-sao-foes{margin-top:2px}
+.rpg-sao-foes .rpg-sao-div{color:#f0b6ab}
+
+.rpg-sao-col{position:absolute; right:22px; top:0; bottom:0;
+  padding:calc(env(safe-area-inset-top, 0px) + 12px) 0
+          calc(env(safe-area-inset-bottom, 0px) + var(--rpg-sao-clock-lift, 84px) + 58px);
+  display:flex; flex-direction:column; justify-content:center; align-items:center;
+  gap:clamp(4px, 1.4svh, 14px); pointer-events:none; overflow:visible}
+.rpg-sao-col > *{pointer-events:auto; flex:0 0 auto}
+.rpg-sao-orb{width:clamp(30px, 6.2svh, 54px); height:clamp(30px, 6.2svh, 54px); border-radius:50%;
+  background:radial-gradient(circle at 34% 28%, rgba(255,255,255,.26), rgba(255,255,255,.10));
+  border:2px solid rgba(255,255,255,.62);
+  box-shadow:0 2px 8px rgba(0,0,0,.35), inset 0 0 14px rgba(255,255,255,.14);
+  backdrop-filter:blur(2px); display:grid; place-items:center; cursor:pointer;
+  color:rgba(255,255,255,.92); transition:transform .16s, box-shadow .2s, border-color .2s}
+.rpg-sao-orb svg{width:48%; height:48%; fill:currentColor;
+  filter:drop-shadow(0 1px 1px rgba(0,0,0,.5))}
+.rpg-sao-orb:hover{transform:scale(1.07)}
+.rpg-sao-orb.on{border-color:#f2c141;
+  background:radial-gradient(circle at 34% 28%, #fff6dc, #eeb52b);
+  box-shadow:0 0 18px rgba(242,193,65,.9), 0 0 40px rgba(242,193,65,.35),
+    0 2px 8px rgba(0,0,0,.45), inset 0 0 12px rgba(255,255,255,.5); color:#4a3714}
+.rpg-sao-orb.on svg{filter:none}
+.rpg-sao-orb.min{width:clamp(26px, 5svh, 42px); height:clamp(26px, 5svh, 42px); margin-top:2px}
+.rpg-sao-rule{width:26px; height:1px; background:rgba(255,255,255,.4)}
+.rpg-sao-orb.diag{width:clamp(26px, 5svh, 42px); height:clamp(26px, 5svh, 42px);
+  border-color:#f2c141; color:#2a2209; font-weight:700; font-size:18px;
+  background:radial-gradient(circle at 34% 28%, #fff6dc, #eeb52b);
+  box-shadow:0 0 14px rgba(242,193,65,.8), 0 2px 8px rgba(0,0,0,.45)}
+
+.rpg-sao-dot{width:12px; height:12px; border-radius:50%; background:currentColor;
+  box-shadow:0 0 6px currentColor, 0 1px 3px rgba(0,0,0,.8); flex:0 0 auto}
+.rpg-sao-dot.ok{color:#5ddb6d} .rpg-sao-dot.warn{color:#f2c141}
+.rpg-sao-dot.user{color:#e2574c} .rpg-sao-dot.none{color:#8d8a83}
+.rpg-sao-clock .rpg-sao-dot{width:9px; height:9px}
+
+.rpg-sao-panel{position:absolute; right:96px; top:50%; transform:translateY(-50%);
+  width:336px; max-height:76vh; background:rgba(249,248,244,.94);
+  border:1px solid rgba(255,255,255,.85); box-shadow:0 10px 34px rgba(0,0,0,.5);
+  backdrop-filter:blur(3px); color:#3c3a35; display:flex; flex-direction:column}
+.rpg-sao-panel::after{content:""; position:absolute; right:-13px; top:50%; margin-top:-11px;
+  border-left:13px solid rgba(249,248,244,.94);
+  border-top:11px solid transparent; border-bottom:11px solid transparent}
+.rpg-sao-panel h2{margin:0; padding:11px 16px 8px; font-size:15px; font-weight:600;
+  letter-spacing:1.2px; text-align:center; border-bottom:1px solid #c7c3b8}
+.rpg-sao-body{padding:11px 16px 15px; overflow-y:auto}
+
+.rpg-sao-who{display:flex; gap:5px; overflow-x:auto; padding:7px 10px;
+  border-bottom:1px solid #c7c3b8}
+.rpg-sao-chip{flex:0 0 auto; padding:3px 10px; font-size:11.5px; font-weight:600;
+  cursor:pointer; white-space:nowrap; background:#e9e6dd; border:1px solid #c7c3b8; color:#87837a}
+.rpg-sao-chip.on{background:#4a4740; border-color:#4a4740; color:#fff}
+.rpg-sao-chip.foe{border-color:#d8a89f}
+.rpg-sao-chip.foe.on{background:#b34a38; border-color:#b34a38}
+
+.rpg-sao-subtabs{display:flex; gap:3px; margin-bottom:11px; border-bottom:1px solid #c7c3b8}
+.rpg-sao-subtab{flex:1; padding:5px 2px; text-align:center; font-size:11px; font-weight:600;
+  color:#87837a; cursor:pointer; border:0; border-bottom:2px solid transparent; background:none}
+.rpg-sao-subtab.on{color:#3c3a35; border-bottom-color:#b3903f}
+.rpg-sao-vline{display:flex; justify-content:space-between; font-size:13px;
+  padding:3px 0; border-bottom:1px solid #c7c3b8}
+.rpg-sao-sub{margin-top:9px; font-size:10px; font-weight:700; letter-spacing:1.4px; color:#87837a}
+.rpg-sao-grid{display:grid; grid-template-columns:1fr 1fr; gap:5px 14px; font-size:13px; margin-top:9px}
+.rpg-sao-grid div{display:flex; justify-content:space-between;
+  border-bottom:1px dotted #c7c3b8; padding-bottom:2px; gap:6px}
+.rpg-sao-grid span:last-child{font-weight:700; text-align:right}
+.rpg-sao-status{margin-top:9px; font-size:12.5px}
+.rpg-sao-status b{color:#b4472f}
+.rpg-sao-empty{font-size:12.5px; color:#87837a; font-style:italic}
+.rpg-sao-entries{list-style:none; margin:0; padding:0; font-size:13px}
+.rpg-sao-entries li{padding:5px 0; border-bottom:1px solid #c7c3b8; line-height:1.35}
+.rpg-sao-entries li:last-child{border-bottom:0}
+
+.rpg-sao-panelhead{display:flex; justify-content:flex-end; margin-bottom:6px}
+.rpg-sao-mini{background:#e9e6dd; border:1px solid #c7c3b8; color:#3c3a35;
+  font-size:11px; font-weight:600; padding:2px 8px; cursor:pointer}
+.rpg-sao-mini:hover{background:#fff}
+
+.rpg-sao-bond{padding:6px 0; border-bottom:1px solid #c7c3b8}
+.rpg-sao-bond:last-child{border-bottom:0}
+.rpg-sao-bondtop{display:flex; align-items:center; gap:6px; font-size:13px}
+.rpg-sao-bondtop .here{color:#4e9c3f; font-size:10px}
+.rpg-sao-bondtop .away{color:#b3ada0; font-size:10px}
+.rpg-sao-who-name{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; background:none; border:0; padding:0; text-align:left;
+  color:inherit; font-size:13px}
+button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decoration-color:#bdb7a9}
+.rpg-sao-bondval{font-weight:700}
+.rpg-sao-delta{font-size:11px; font-weight:700}
+.rpg-sao-delta.up{color:#3f8f34} .rpg-sao-delta.down{color:#c0392b}
+.rpg-sao-new{color:#3f8f34; font-size:10px; font-weight:700}
+.rpg-sao-bondtrack{position:relative; height:5px; margin-top:4px;
+  background:#ddd9cf; border:1px solid #c2bdb1}
+.rpg-sao-bondtrack .b{position:absolute; top:0; bottom:0;
+  background:linear-gradient(180deg,#f7a0c0,#e0568f)}
+.rpg-sao-ghost{position:absolute; top:0; bottom:0; opacity:.5}
+
+.rpg-sao-quest{padding:4px 0; border-bottom:1px solid #c7c3b8; font-size:13px; line-height:1.3}
+.rpg-sao-quest:last-child{border-bottom:0}
+.rpg-sao-place{font-size:20px; font-weight:600; letter-spacing:.5px}
+.rpg-sao-weather{font-size:13px; color:#87837a; margin:2px 0 10px}
+.rpg-sao-env{font-size:12.5px; padding:4px 0; border-bottom:1px solid #c7c3b8}
+.rpg-sao-env:last-child{border-bottom:0}
+
+.rpg-sao-menu{position:absolute; left:96px; top:50%; transform:translateY(-50%);
+  width:206px; max-height:76vh; overflow-y:auto}
+.rpg-sao-mrow{display:flex; align-items:center; gap:9px; padding:7px 11px; margin-bottom:2px;
+  width:100%; text-align:left; background:rgba(249,248,244,.94);
+  border:1px solid rgba(255,255,255,.8); box-shadow:0 3px 12px rgba(0,0,0,.42);
+  color:#3c3a35; font-size:12.5px; font-weight:600; cursor:pointer}
+.rpg-sao-mrow .pip{flex:0 0 22px; height:22px; border-radius:50%; background:#6b6355;
+  color:#fff; display:grid; place-items:center; font-size:11px}
+.rpg-sao-mrow:hover{background:#fff}
+.rpg-sao-mrow.toggle{cursor:default; justify-content:space-between; gap:6px}
+.rpg-sao-mrow select{font-family:inherit; font-size:12px; background:#e9e6dd;
+  border:1px solid #c7c3b8; color:#3c3a35; padding:2px 4px}
+.rpg-sao-switch{position:relative; width:34px; height:18px; border-radius:9px;
+  background:#bdb7a9; cursor:pointer; transition:background .2s; flex:0 0 auto; border:0}
+.rpg-sao-switch::after{content:""; position:absolute; top:2px; left:2px; width:14px; height:14px;
+  border-radius:50%; background:#fff; transition:transform .2s}
+.rpg-sao-switch.on{background:#4e9c3f}
+.rpg-sao-switch.on::after{transform:translateX(16px)}
+
+/* --rpg-sao-clock-lift: how far above the chat box the clock sits. One number;
+   the orb column reserves this much space too, so the two can't overlap. */
+#rpg-hud-container{--rpg-sao-clock-lift:84px}
+.rpg-sao-clockwrap{position:absolute; right:22px;
+  bottom:calc(env(safe-area-inset-bottom, 0px) + var(--rpg-sao-clock-lift, 84px));
+  display:flex; flex-direction:column; align-items:flex-end; gap:8px}
+.rpg-sao-timers{width:252px; background:rgba(249,248,244,.94);
+  border:1px solid rgba(255,255,255,.8); box-shadow:0 8px 26px rgba(0,0,0,.45);
+  color:#3c3a35; padding:8px 12px 10px; max-height:52vh; overflow-y:auto}
+.rpg-sao-timerhead{display:flex; justify-content:space-between; align-items:center;
+  border-bottom:1px solid #c7c3b8; padding-bottom:4px; margin-bottom:6px}
+.rpg-sao-timerhead h3{margin:0; font-size:11px; font-weight:700; letter-spacing:1.6px; color:#87837a}
+.rpg-sao-timerhead span{display:flex; gap:4px}
+.rpg-sao-timer{padding:5px 0; border-bottom:1px solid #c7c3b8}
+.rpg-sao-timer:last-child{border-bottom:0}
+.rpg-sao-timer.spent{opacity:.5}
+.rpg-sao-tline{display:flex; align-items:center; gap:6px; font-size:12.5px}
+.rpg-sao-tname{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.rpg-sao-owner{color:#87837a; font-size:11px}
+.rpg-sao-tleft{font-weight:700}
+.rpg-sao-tbar{position:relative; height:3px; margin-top:4px; background:#ddd9cf}
+.rpg-sao-tbar div{position:absolute; top:0; bottom:0; left:0}
+
+.rpg-sao-clock{display:flex; align-items:center; gap:9px; background:none; border:0;
+  padding:2px 0; cursor:pointer; color:#f2f0e8}
+.rpg-sao-glyph{font-size:17px}
+.rpg-sao-cstack{text-align:right; line-height:1}
+.rpg-sao-cstack .hhmm{display:block; font-size:30px; font-weight:600; letter-spacing:3px}
+.rpg-sao-cstack .date{display:block; font-size:11px; letter-spacing:1.6px; color:#d5d1c6;
+  margin-top:2px}
+
+/* the classic bond/timer editors get dropped in as-is, so give them a dark bed */
+.rpg-sao-classic{background:rgba(12,12,16,.94); margin:-11px -16px -15px; padding:10px 12px;
+  color:#e0e0e0; font-family:'Courier New',monospace; font-size:12px}
+/* the error overlay is absolutely positioned in the classic skin; un-pin it here */
+.rpg-sao-errbed{position:relative; min-height:220px}
+.rpg-sao-errbed #rpg-error-overlay{position:relative !important; inset:auto !important;
+  background:none !important; border:0 !important; padding:0 !important}
+.rpg-sao-timers .rpg-sao-classic{margin:-8px -12px -10px}
+
+@media (max-width:720px){
+  .rpg-sao-vitals{width:min(72vw,268px)}
+  .rpg-sao-slim{margin-right:44px}
+  .rpg-sao-panel{right:auto; left:12px; width:calc(100vw - 100px); max-width:330px; max-height:62vh}
+  .rpg-sao-menu{left:12px; right:auto}
+  .rpg-sao-col{right:12px}
+  .rpg-sao-clockwrap{right:12px}
+  .rpg-sao-timers{width:min(74vw,246px)}
+  .rpg-sao-cstack .hhmm{font-size:20px; letter-spacing:2px}
+  .rpg-sao-cstack .date{font-size:10px}
+  .rpg-sao-glyph{font-size:14px}
+}
+@media (prefers-reduced-motion:reduce){ #rpg-hud-container *{transition:none !important} }
+</style>`;
 
 // --- 5. EDITOR RENDERER ---
 function renderEditor() {
@@ -3494,8 +4578,22 @@ function parsePipeFormat(text) {
     }
   }
 
-  newState.bonds = mergeBondLedger(rpgState?.bonds, newState.bonds);
+  newState.bonds = mergeBondLedger(bondMemory, newState.bonds);
   syncLiveBondsIntoLedger(newState);
+
+  // Deltas measure against the same memory, so they're swipe-stable too and the
+  // observer's repeat scans of one message can't erase the arrow.
+  const baseline = new Map(
+    (Array.isArray(bondMemory) ? bondMemory : [])
+      .map((b) => [normBondName(b?.name), parseBondValue(b?.bond)])
+  );
+  if (baseline.size) {
+    newState.bonds.forEach((b) => {
+      const key = normBondName(b?.name);
+      b.prev = baseline.has(key) ? baseline.get(key) : null;
+    });
+  }
+
   newState.timers = mergeTimers(rpgState, newState);
   if (!newState.world_time.year && rpgState?.world_time?.year) {
     newState.world_time.year = rpgState.world_time.year;
@@ -3515,6 +4613,9 @@ const checkMessage = async (manual = false) => {
   if (chatKey !== lastChatKey) {
     lastChatKey = chatKey;
     lastListSnapshot = null;
+    bondMemory = [];
+    timerMemory = [];
+    historyMemoryKey = null;
   }
   renderRPG();
 
@@ -3526,6 +4627,9 @@ const checkMessage = async (manual = false) => {
 
   try {
     let cleanText = rawBlock.replace(/```[a-z]*\n?/g, "").replace(/```/g, "").trim();
+
+    // must run AFTER findLatestRpgBlock set lastRpgMsgIndex, BEFORE the parse
+    refreshHistoryMemory(chat, chatKey);
 
     const parsedState = parsePipeFormat(cleanText);
 
@@ -3600,6 +4704,10 @@ $(document).on('change', '#rpg-settings-autoinject', function() {
   const evt = event_types?.[name];
   if (!evt) return;
   eventSource.on(evt, () => {
+    // an edit or deletion can change history underneath the cached ledger
+    if (name === "MESSAGE_UPDATED" || name === "MESSAGE_EDITED" || name === "MESSAGE_DELETED") {
+      invalidateHistoryMemory();
+    }
     // small delay: some events fire before chat[] is updated
     setTimeout(() => checkMessage(), 150);
   });
