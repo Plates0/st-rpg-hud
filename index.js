@@ -3380,6 +3380,23 @@ const SAO_WELL = "rgba(36,39,46,0.82)";
 // and the device, so it is measured after layout rather than guessed.
 // Centring can leave an element on a fractional pixel, which blurs all the
 // text inside it. Nudge it back onto a whole pixel.
+// Below ~50% lightness the panel is dark, so the text has to invert with it.
+// Light text on a dark panel also renders crisper at small sizes than dark
+// text on a light one, which is why the classic HUD always looked sharper.
+function saoPanelVars() {
+  const l = clamp(uiSettings.saoPanelLight ?? 92, 18, 98);
+  const s = clamp(uiSettings.saoPanelSat ?? 10, 0, 40);
+  const dark = l < 50;
+  return {
+    l,
+    ink: dark ? "#f2f0ea" : "#33312c",
+    inkDim: dark ? "#b7b2a8" : "#6b6760",
+    rule: `hsl(44 ${s * 0.7}% ${dark ? Math.min(l + 16, 96) : l - 17}%)`,
+    chip: `hsl(44 ${s}% ${dark ? Math.min(l + 9, 92) : l - 7}%)`,
+    dark,
+  };
+}
+
 function saoSnapPixels() {
   document.querySelectorAll(".rpg-sao-panel, .rpg-sao-menu, .rpg-sao-timers").forEach((el) => {
     el.style.top = "0px";
@@ -3761,7 +3778,7 @@ function saoHelpPanel() {
       + item("Text backing",
           "The other way to solve the same problem: a faint card behind that text instead of a shadow. Use one or the other, or neither.")
       + item("Panel brightness",
-          "Dims the paper colour of the panels while they stay solid. Lower is darker, not more see-through.")
+          "Dims the panels while they stay solid. Take it below halfway and they go dark, with the text inverting to light \u2014 small light-on-dark text renders crisper than dark-on-light.")
       + item("Font",
           "The skin follows your font preset by default. The preset is a monospace, whose bold can look heavy in the panels \u2014 Sans is lighter.")
       + item("Bar backdrop",
@@ -3809,7 +3826,7 @@ function saoSettingsHtml() {
     + (bondBlocklist.size
         ? row("rpg-sao-unblock", "&#8635;", `Unblock ${bondBlocklist.size} bond(s)`) : "")
     + `<div class="rpg-sao-mrow toggle"><span>Panel brightness</span>
-        <input type="range" id="rpg-sao-panel-a" min="58" max="98"
+        <input type="range" id="rpg-sao-panel-a" min="18" max="98"
                value="${Math.round(uiSettings.saoPanelLight ?? 92)}"></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Bar backdrop</span>
         <input type="range" id="rpg-sao-card-a" min="0" max="70"
@@ -3866,7 +3883,11 @@ function renderSaoSkin() {
 
   container.style.cssText = `position:fixed; top:0; left:0; right:0; bottom:auto;
     height:100vh; height:100svh; z-index:9999; pointer-events:none;
-    --rpg-sao-panel-l:${clamp(uiSettings.saoPanelLight ?? 92, 58, 98)}%;
+    --rpg-sao-panel-l:${saoPanelVars().l}%;
+    --rpg-sao-ink:${saoPanelVars().ink};
+    --rpg-sao-ink-dim:${saoPanelVars().inkDim};
+    --rpg-sao-rule:${saoPanelVars().rule};
+    --rpg-sao-chip:${saoPanelVars().chip};
     --rpg-sao-card-a:${clamp(uiSettings.saoCardAlpha ?? 11, 0, 70)}%;`;
   container.className =
     (uiSettings.saoTextShadow ? "rpg-sao-sh " : "") +
@@ -4123,9 +4144,8 @@ function saoBind() {
   const pa = document.getElementById("rpg-sao-panel-a");
   if (pa) {
     pa.oninput = () => {
-      const v = clamp(parseFloat(pa.value), 58, 98);
-      uiSettings.saoPanelLight = v;
-      document.getElementById("rpg-hud-container")?.style.setProperty("--rpg-sao-panel-l", v + "%");
+      uiSettings.saoPanelLight = clamp(parseFloat(pa.value), 18, 98);
+      renderRPG();   // ink, rules and chips all flip with it
     };
     pa.onchange = () => saveUiSettings();
     pa.onclick = (e) => e.stopPropagation();
@@ -4283,7 +4303,7 @@ button.rpg-sao-tag:hover{color:#fff}
 .rpg-sao-panel{position:relative;
   width:336px; max-height:76svh; overflow:hidden; background:var(--rpg-sao-panel);
   border:1px solid rgba(255,255,255,.85); box-shadow:0 2px 6px rgba(0,0,0,.5), 0 14px 40px rgba(0,0,0,.6);
-  color:#3c3a35; display:flex; flex-direction:column}
+  color:var(--rpg-sao-ink); display:flex; flex-direction:column}
 .rpg-sao-panel::after{content:""; position:absolute; right:-13px; top:50%; margin-top:-11px;
   border-left:13px solid var(--rpg-sao-panel);
   border-top:11px solid transparent; border-bottom:11px solid transparent}
@@ -4294,34 +4314,35 @@ button.rpg-sao-tag:hover{color:#fff}
 .rpg-sao-cats{display:flex; flex:0 0 auto; padding:0 10px; gap:2px;
   border-bottom:1px solid var(--rpg-sao-rule)}
 .rpg-sao-cat{flex:1 1 auto; padding:6px 2px 5px; font-size:11px; font-weight:700;
-  letter-spacing:.4px; color:#87837a; cursor:pointer; background:none; border:0;
+  letter-spacing:.4px; color:var(--rpg-sao-ink-dim); cursor:pointer; background:none; border:0;
   border-bottom:2px solid transparent; white-space:nowrap}
 .rpg-sao-cat i{font-style:normal; font-size:9.5px; opacity:.7}
-.rpg-sao-cat.on{color:#3c3a35; border-bottom-color:#b3903f}
+.rpg-sao-cat.on{color:var(--rpg-sao-ink); border-bottom-color:#b3903f}
 .rpg-sao-cat.foe.on{color:#b34a38; border-bottom-color:#b34a38}
 
 .rpg-sao-who{display:flex; gap:5px; overflow-x:auto; flex:0 0 auto; padding:6px 10px;
   border-bottom:1px solid var(--rpg-sao-rule)}
 .rpg-sao-chip{flex:0 0 auto; padding:3px 10px; font-size:11.5px; font-weight:600;
-  cursor:pointer; white-space:nowrap; background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:#87837a}
-.rpg-sao-chip.on{background:#4a4740; border-color:#4a4740; color:#fff}
+  cursor:pointer; white-space:nowrap; background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink-dim)}
+.rpg-sao-chip.on{background:var(--rpg-sao-ink); border-color:var(--rpg-sao-ink);
+  color:var(--rpg-sao-panel)}
 .rpg-sao-chip.foe{border-color:#d8a89f}
 .rpg-sao-chip.foe.on{background:#b34a38; border-color:#b34a38}
 
 .rpg-sao-subtabs{display:flex; gap:3px; margin-bottom:11px; border-bottom:1px solid var(--rpg-sao-rule)}
 .rpg-sao-subtab{flex:1; padding:5px 2px; text-align:center; font-size:11px; font-weight:600;
-  color:#87837a; cursor:pointer; border:0; border-bottom:2px solid transparent; background:none}
-.rpg-sao-subtab.on{color:#3c3a35; border-bottom-color:#b3903f}
+  color:var(--rpg-sao-ink-dim); cursor:pointer; border:0; border-bottom:2px solid transparent; background:none}
+.rpg-sao-subtab.on{color:var(--rpg-sao-ink); border-bottom-color:#b3903f}
 .rpg-sao-vline{display:flex; justify-content:space-between; font-size:13px;
   padding:3px 0; border-bottom:1px solid var(--rpg-sao-rule)}
-.rpg-sao-sub{margin-top:9px; font-size:10px; font-weight:700; letter-spacing:1.4px; color:#87837a}
+.rpg-sao-sub{margin-top:9px; font-size:10px; font-weight:700; letter-spacing:1.4px; color:var(--rpg-sao-ink-dim)}
 .rpg-sao-grid{display:grid; grid-template-columns:1fr 1fr; gap:5px 14px; font-size:13px; margin-top:9px}
 .rpg-sao-grid div{display:flex; justify-content:space-between;
   border-bottom:1px dotted var(--rpg-sao-rule); padding-bottom:2px; gap:6px}
 .rpg-sao-grid span:last-child{font-weight:700; text-align:right}
 .rpg-sao-status{margin-top:9px; font-size:12.5px}
 .rpg-sao-status b{color:#b4472f}
-.rpg-sao-empty{font-size:12.5px; color:#87837a; font-style:italic}
+.rpg-sao-empty{font-size:12.5px; color:var(--rpg-sao-ink-dim); font-style:italic}
 .rpg-sao-entries{list-style:none; margin:0; padding:0; font-size:13px}
 .rpg-sao-entries li{padding:5px 0; border-bottom:1px solid var(--rpg-sao-rule); line-height:1.35}
 .rpg-sao-entries li:last-child{border-bottom:0}
@@ -4330,15 +4351,15 @@ button.rpg-sao-tag:hover{color:#fff}
 .rpg-sao-help-item{padding:6px 0; border-bottom:1px solid var(--rpg-sao-rule)}
 .rpg-sao-help-item:last-child{border-bottom:0}
 .rpg-sao-help dt{font-size:12.5px; font-weight:700}
-.rpg-sao-help dd{margin:2px 0 0; font-size:12px; line-height:1.35; color:#5f5c55}
+.rpg-sao-help dd{margin:2px 0 0; font-size:12px; line-height:1.35; color:var(--rpg-sao-ink-dim)}
 .rpg-sao-help-sec{margin:12px 0 2px; font-size:10px; font-weight:700;
-  letter-spacing:1.6px; color:#87837a; border-bottom:1px solid var(--rpg-sao-rule);
+  letter-spacing:1.6px; color:var(--rpg-sao-ink-dim); border-bottom:1px solid var(--rpg-sao-rule);
   padding-bottom:3px}
 
 .rpg-sao-panelhead{display:flex; justify-content:flex-end; margin-bottom:6px}
-.rpg-sao-mini{background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:#3c3a35;
+.rpg-sao-mini{background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink);
   font-size:11px; font-weight:600; padding:2px 8px; cursor:pointer}
-.rpg-sao-mini:hover{background:#fff}
+.rpg-sao-mini:hover{filter:brightness(1.06)}
 
 .rpg-sao-bond{padding:6px 0; border-bottom:1px solid var(--rpg-sao-rule)}
 .rpg-sao-bond:last-child{border-bottom:0}
@@ -4362,7 +4383,7 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 .rpg-sao-quest{padding:4px 0; border-bottom:1px solid var(--rpg-sao-rule); font-size:13px; line-height:1.3}
 .rpg-sao-quest:last-child{border-bottom:0}
 .rpg-sao-place{font-size:20px; font-weight:600; letter-spacing:.5px}
-.rpg-sao-weather{font-size:13px; color:#87837a; margin:2px 0 10px}
+.rpg-sao-weather{font-size:13px; color:var(--rpg-sao-ink-dim); margin:2px 0 10px}
 .rpg-sao-env{font-size:12.5px; padding:4px 0; border-bottom:1px solid var(--rpg-sao-rule)}
 .rpg-sao-env:last-child{border-bottom:0}
 
@@ -4370,13 +4391,13 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 .rpg-sao-mrow{display:flex; align-items:center; gap:9px; padding:7px 11px; margin-bottom:2px;
   width:100%; text-align:left; background:var(--rpg-sao-panel);
   border:1px solid rgba(255,255,255,.8); box-shadow:0 2px 5px rgba(0,0,0,.5), 0 8px 22px rgba(0,0,0,.45);
-  color:#3c3a35; font-size:12.5px; font-weight:600; cursor:pointer}
+  color:var(--rpg-sao-ink); font-size:12.5px; font-weight:600; cursor:pointer}
 .rpg-sao-mrow .pip{flex:0 0 22px; height:22px; border-radius:50%; background:#6b6355;
   color:#fff; display:grid; place-items:center; font-size:11px}
-.rpg-sao-mrow:hover{background:#fff}
+.rpg-sao-mrow:hover{filter:brightness(1.06)}
 .rpg-sao-mrow.toggle{cursor:default; justify-content:space-between; gap:6px}
 .rpg-sao-mrow select{font-family:inherit; font-size:12px; background:var(--rpg-sao-chip);
-  border:1px solid var(--rpg-sao-rule); color:#3c3a35; padding:2px 4px}
+  border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink); padding:2px 4px}
 .rpg-sao-mrow input[type=range]{width:78px; flex:0 0 auto}
 .rpg-sao-switch{position:relative; width:34px; height:18px; border-radius:9px;
   background:#bdb7a9; cursor:pointer; transition:background .2s; flex:0 0 auto; border:0}
@@ -4394,25 +4415,25 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   --rpg-sao-panel-l:92%;
   --rpg-sao-panel-s:10%;   /* raise for warmer paper, 0% for neutral grey */
   --rpg-sao-panel:hsl(44 var(--rpg-sao-panel-s) var(--rpg-sao-panel-l));
-  --rpg-sao-rule:hsl(44 calc(var(--rpg-sao-panel-s) * 0.7) calc(var(--rpg-sao-panel-l) - 17%));
-  --rpg-sao-chip:hsl(44 var(--rpg-sao-panel-s) calc(var(--rpg-sao-panel-l) - 7%));
+  /* --rpg-sao-ink, --rpg-sao-ink-dim, --rpg-sao-rule and --rpg-sao-chip are set
+     on the container, because they have to flip once the panel goes dark. */
 }
 .rpg-sao-clockwrap{position:absolute; right:22px;
   bottom:calc(env(safe-area-inset-bottom, 0px) + var(--rpg-sao-clock-lift, 84px));
   display:flex; flex-direction:column; align-items:flex-end; gap:8px}
 .rpg-sao-timers{position:relative; width:252px; background:var(--rpg-sao-panel);
   border:1px solid rgba(255,255,255,.8); box-shadow:0 2px 6px rgba(0,0,0,.5), 0 12px 34px rgba(0,0,0,.58);
-  color:#3c3a35; padding:8px 12px 10px; max-height:52svh; overflow-y:auto}
+  color:var(--rpg-sao-ink); padding:8px 12px 10px; max-height:52svh; overflow-y:auto}
 .rpg-sao-timerhead{display:flex; justify-content:space-between; align-items:center;
   border-bottom:1px solid var(--rpg-sao-rule); padding-bottom:4px; margin-bottom:6px}
-.rpg-sao-timerhead h3{margin:0; font-size:11px; font-weight:700; letter-spacing:1.6px; color:#87837a}
+.rpg-sao-timerhead h3{margin:0; font-size:11px; font-weight:700; letter-spacing:1.6px; color:var(--rpg-sao-ink-dim)}
 .rpg-sao-timerhead span{display:flex; gap:4px}
 .rpg-sao-timer{padding:5px 0; border-bottom:1px solid var(--rpg-sao-rule)}
 .rpg-sao-timer:last-child{border-bottom:0}
 .rpg-sao-timer.spent{opacity:.5}
 .rpg-sao-tline{display:flex; align-items:center; gap:6px; font-size:12.5px}
 .rpg-sao-tname{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
-.rpg-sao-owner{color:#87837a; font-size:11px}
+.rpg-sao-owner{color:var(--rpg-sao-ink-dim); font-size:11px}
 .rpg-sao-tleft{font-weight:700}
 .rpg-sao-tbar{position:relative; height:3px; margin-top:4px; background:#ddd9cf}
 .rpg-sao-tbar div{position:absolute; top:0; bottom:0; left:0}
