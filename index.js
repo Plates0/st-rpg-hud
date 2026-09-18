@@ -3347,10 +3347,15 @@ function saoBarSvg(W, H, pctVal, c1, c2) {
             `H${x0 + stepX + slope}L${x0 + stepX} ${y0 + h}H${x0}Z`;
 
   const id = "s" + (++saoSvgUid);
-  const fx = x0 + (w * clamp(pctVal, 0, 100)) / 100;
-  const back = Math.max(x0, fx - slope);
+  const f = clamp(pctVal, 0, 100) / 100;
+  const fx = x0 + w * f;
+  // The fill's leading edge is slanted to match the step. Slide that slant as
+  // the bar fills so it lands flush at both ends: at 100% the BOTTOM corner
+  // reaches the far edge (no grey slither in the tail), at 0% nothing shows.
+  const topX = fx + slope * f;
+  const botX = Math.max(x0, fx - slope * (1 - f));
   const fillPoly = pctVal > 0
-    ? `<polygon points="${x0},${y0} ${fx},${y0} ${back},${y0 + h} ${x0},${y0 + h}" fill="url(#g${id})" clip-path="url(#c${id})"/>`
+    ? `<polygon points="${x0},${y0} ${topX},${y0} ${botX},${y0 + h} ${x0},${y0 + h}" fill="url(#g${id})" clip-path="url(#c${id})"/>`
     : "";
 
   return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
@@ -3899,12 +3904,12 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-block.over{flex-direction:column; align-items:stretch; gap:3px}
 .rpg-sao-stack{flex:1 1 auto; min-width:0}
 .rpg-sao-name{flex:0 0 40px; width:40px; font-size:11px; font-weight:600; line-height:1.12;
-  color:#f4f1e8; text-shadow:0 1px 1px rgba(0,0,0,.55); overflow-wrap:anywhere}
+  color:#f4f1e8; overflow-wrap:anywhere}
 .rpg-sao-block.over .rpg-sao-name{flex:none; width:auto; padding-left:2px; font-size:11.5px}
 .rpg-sao-vrow{display:flex; align-items:center; gap:8px}
 .rpg-sao-vrow + .rpg-sao-vrow{margin-top:4px}
 .rpg-sao-vnum{flex:0 0 auto; font-size:11px; font-weight:600; color:#d3cfc4;
-  min-width:56px; text-align:right; text-shadow:0 1px 1px rgba(0,0,0,.55)}
+  min-width:56px; text-align:right}
 
 .rpg-sao-bar{position:relative; flex:1 1 auto; min-width:0; height:15px}
 .rpg-sao-bar.mid{height:11px}
@@ -3916,17 +3921,16 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-slim{opacity:.78; margin-right:56px}
 .rpg-sao-slim.hide{display:none}
 .rpg-sao-row{display:flex; align-items:center; gap:7px; margin-bottom:3px}
-.rpg-sao-tag{flex:0 0 50px; font-size:10.5px; font-weight:600; color:#ddd9ce;
-  text-shadow:0 1px 1px rgba(0,0,0,.55); overflow:hidden; text-overflow:ellipsis;
+.rpg-sao-tag{flex:0 0 50px; font-size:10.5px; font-weight:600; color:#ddd9ce; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; background:none; border:0; padding:0; text-align:left}
 button.rpg-sao-tag{cursor:pointer; text-decoration:underline;
   text-decoration-color:rgba(255,255,255,.28); text-underline-offset:2px}
 button.rpg-sao-tag:hover{color:#fff}
 .rpg-sao-num{flex:0 0 auto; font-size:9.5px; color:#c2beb4; min-width:46px;
-  text-align:right; text-shadow:0 1px 1px rgba(0,0,0,.55)}
+  text-align:right}
 
 .rpg-sao-div{margin:9px 0 5px; font-size:10px; font-weight:700; letter-spacing:2px;
-  color:#cdc8bb; text-shadow:0 1px 1px rgba(0,0,0,.55); display:flex; align-items:center; gap:7px}
+  color:#cdc8bb; display:flex; align-items:center; gap:7px}
 .rpg-sao-div::after{content:""; flex:1; height:1px;
   background:linear-gradient(90deg,rgba(220,215,200,.4),transparent)}
 .rpg-sao-caret{background:none; border:0; color:inherit; cursor:pointer; padding:0 2px;
@@ -4080,12 +4084,11 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 
 .rpg-sao-clock{display:flex; align-items:center; gap:9px; background:none; border:0;
   padding:2px 0; cursor:pointer; color:#f2f0e8}
-.rpg-sao-glyph{font-size:17px; filter:drop-shadow(0 1px 1px rgba(0,0,0,.55))}
+.rpg-sao-glyph{font-size:17px}
 .rpg-sao-cstack{text-align:right; line-height:1}
-.rpg-sao-cstack .hhmm{display:block; font-size:30px; font-weight:600; letter-spacing:3px;
-  text-shadow:0 1px 1px rgba(0,0,0,.6)}
+.rpg-sao-cstack .hhmm{display:block; font-size:30px; font-weight:600; letter-spacing:3px}
 .rpg-sao-cstack .date{display:block; font-size:11px; letter-spacing:1.6px; color:#d5d1c6;
-  margin-top:2px; text-shadow:0 1px 1px rgba(0,0,0,.55)}
+  margin-top:2px}
 
 /* the classic bond/timer editors get dropped in as-is, so give them a dark bed */
 .rpg-sao-classic{background:rgba(12,12,16,.94); margin:-11px -16px -15px; padding:10px 12px;
