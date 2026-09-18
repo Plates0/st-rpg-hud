@@ -289,6 +289,40 @@ let timersSnapshot = [];
 // The ledger as it stood in the messages BEFORE the one being parsed. Read from
 // chat history, not from the last parse, so an abandoned swipe leaves no trace.
 // Doubles as the baseline for the ▲/▼ deltas.
+// Names the user deleted. Without this, deleting a bond just means the next
+// scan re-adds it from the character's live |Bond:| value a second later.
+const BOND_BLOCK_KEY = "rpg_hud_bond_block_v1";
+let bondBlocklist = new Set();
+let bondBlockChatKey = "";
+
+function loadBondBlocklist(chatKey) {
+  bondBlockChatKey = String(chatKey ?? "");
+  try {
+    const all = JSON.parse(localStorage.getItem(BOND_BLOCK_KEY) || "{}");
+    const list = all[bondBlockChatKey];
+    bondBlocklist = new Set(Array.isArray(list) ? list : []);
+  } catch { bondBlocklist = new Set(); }
+}
+
+function saveBondBlocklist() {
+  try {
+    const all = JSON.parse(localStorage.getItem(BOND_BLOCK_KEY) || "{}");
+    if (bondBlocklist.size) all[bondBlockChatKey] = [...bondBlocklist];
+    else delete all[bondBlockChatKey];
+    localStorage.setItem(BOND_BLOCK_KEY, JSON.stringify(all));
+  } catch (e) { console.warn("RPG HUD: couldn't save bond blocklist", e); }
+}
+
+function blockBonds(names) {
+  (names || []).forEach((n) => { const k = normBondName(n); if (k) bondBlocklist.add(k); });
+  saveBondBlocklist();
+}
+
+function clearBondBlocklist() {
+  bondBlocklist = new Set();
+  saveBondBlocklist();
+}
+
 let bondMemory = [];
 let timerMemory = [];
 let historyMemoryKey = null;
@@ -314,7 +348,11 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 
 const defaultUiSettings = {
-  skin: "classic",        // "classic" | "sao"
+  skin: "classic",
+  autoAddBonds: true,     // add party/NPC |Bond:| values to the ledger automatically
+  saoPanelAlpha: 0.82,
+  saoTextShadow: false,   // shadow behind the text that sits straight on the chat
+  saoTextBacking: false,  // translucent card behind that text instead        // "classic" | "sao"
   barsOnMin: true,        // sao skin: keep the bars visible when minimised
   fontPreset: "retro_mono",
   fontFamily: "'Courier New', Courier, monospace",
@@ -1925,9 +1963,12 @@ function commitBondsEdit() {
       `If you skip this, the AI can still see them in older blocks and may add them back.\n\n` +
       `This edits your chat history and cannot be undone.`
     );
+    blockBonds(removed);   // stop the next scan re-adding them from live |Bond:| values
     if (yes) {
       const n = purgeBondsFromHistory(removed);
       if (window.toastr) window.toastr.info(`Scrubbed ${removed.length} name(s) from ${n} message(s).`);
+    } else if (window.toastr) {
+      window.toastr.info(`${removed.length} bond(s) removed and blocked from returning.`);
     }
   }
 }
@@ -2906,6 +2947,12 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
              <button id="rpg-settings-reset" style="background:#b71c1c; border:1px solid #ff5252; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold; grid-column:1 / span 2;">X Reset</button>
           </div>
 
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+          <span style="font-size:0.8em; color:#ddd;">Auto-add bonds</span>
+          <input type="checkbox" id="rpg-settings-autobond" ${uiSettings.autoAddBonds ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
+        </div>
+        ${bondBlocklist.size ? `<button id="rpg-settings-unblock" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px; cursor:pointer;">Unblock ${bondBlocklist.size} bond(s)</button>` : ""}
+
         <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Appearance</div>
 
         <div style="background:rgba(255,255,255,0.06); border:1px solid #333; border-radius:4px; padding:8px; margin-bottom:10px;">
@@ -3221,6 +3268,19 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	  bind("rpg-settings-insert", insertLastStateIntoNarrative);
 	  bind("rpg-settings-remind", remindStateInLastMessage);
 
+	  const abEl = document.getElementById("rpg-settings-autobond");
+	  if (abEl) {
+	    abEl.onclick = (e) => e.stopPropagation();
+	    abEl.onchange = () => { uiSettings.autoAddBonds = abEl.checked; saveUiSettings(); };
+	  }
+	  const ubEl = document.getElementById("rpg-settings-unblock");
+	  if (ubEl) ubEl.onclick = (e) => {
+	    e.stopPropagation();
+	    clearBondBlocklist();
+	    if (window.toastr) window.toastr.info("Bond blocklist cleared for this chat.");
+	    renderRPG();
+	  };
+
 	  const skinEl = document.getElementById("rpg-skin-select");
 	  if (skinEl) {
 	    skinEl.value = uiSettings.skin || "classic";
@@ -3293,7 +3353,7 @@ function setSkin(name) {
   isSettingsOpen = false;
   saoPanel = null;
   const c = document.getElementById("rpg-hud-container");
-  if (c) { c.innerHTML = ""; c.style.cssText = ""; c.onclick = null; }
+  if (c) { c.innerHTML = ""; c.style.cssText = ""; c.className = ""; c.onclick = null; }
   renderRPG();
 }
 
@@ -3390,6 +3450,7 @@ const SAO_PALETTE = {
   mp: ["#7fd4ff", "#2e8fd6"],
   foe: ["#ff8a7a", "#d63b28"],
   meter: ["#d9b6f5", "#8d4fd1"],
+  vehicle: ["#e0a6f0", "#9b3fbf"],
 };
 
 function saoBarHtml(cls, pctVal, c1, c2) {
@@ -3403,6 +3464,24 @@ function saoSlimRow(name, curr, max, stops, jumpIdx) {
     : `<button class="rpg-sao-tag rpg-sao-jump" data-idx="${jumpIdx}" title="Open ${escAttr(name)}">${escHtml(name)}</button>`;
   return `<div class="rpg-sao-row">${tag}${saoBarHtml("slim", p, stops[0], stops[1])}
     <span class="rpg-sao-num">${escHtml(curr)}/${escHtml(max)}</span></div>`;
+}
+
+// A unit in an active vehicle is displayed as the vehicle, the way the
+// classic skin does it, so the bars and chips don't show a stale pilot.
+function saoUnitView(unit) {
+  const v = unit?.vehicle;
+  if (v && v.active) {
+    return { name: `\u{1F916} ${v.name || "Vehicle"}`, hp_curr: v.hp_curr, hp_max: v.hp_max,
+             isVeh: true, en: getEnergy(v, true) };
+  }
+  return { name: unit?.name || "?", hp_curr: unit?.hp_curr, hp_max: unit?.hp_max,
+           isVeh: false, en: getEnergy(unit, false) };
+}
+
+function saoUnitStops(view, foe) {
+  if (view.isVeh) return SAO_PALETTE.vehicle;
+  if (foe) return SAO_PALETTE.foe;
+  return saoHpStops(saoPct(view.hp_curr, view.hp_max));
 }
 
 function saoMeterColor(name) {
@@ -3472,10 +3551,10 @@ function saoWhoStrip() {
   const enemies = Array.isArray(rpgState.enemies) ? rpgState.enemies : [];
   const npcs = Array.isArray(rpgState.npcs) ? rpgState.npcs : [];
 
-  const chips = [{ name: rpgState.name || "Player", idx: 0, foe: false }];
-  party.forEach((u, i) => chips.push({ name: u?.name || `Party ${i + 1}`, idx: charIndexFor("party", i), foe: false }));
-  npcs.forEach((u, i) => chips.push({ name: u?.name || `NPC ${i + 1}`, idx: charIndexFor("npc", i), foe: false }));
-  enemies.forEach((u, i) => chips.push({ name: u?.name || `Enemy ${i + 1}`, idx: charIndexFor("enemy", i), foe: true }));
+  const chips = [{ name: saoUnitView(rpgState).name || "Player", idx: 0, foe: false }];
+  party.forEach((u, i) => chips.push({ name: saoUnitView(u).name, idx: charIndexFor("party", i), foe: false }));
+  npcs.forEach((u, i) => chips.push({ name: saoUnitView(u).name, idx: charIndexFor("npc", i), foe: false }));
+  enemies.forEach((u, i) => chips.push({ name: saoUnitView(u).name, idx: charIndexFor("enemy", i), foe: true }));
 
   return `<div class="rpg-sao-who">` + chips.map((c) =>
     `<button class="rpg-sao-chip${c.idx === charIndex ? " on" : ""}${c.foe ? " foe" : ""}" data-idx="${c.idx}">${escHtml(c.name)}</button>`
@@ -3617,6 +3696,14 @@ function saoSettingsHtml() {
     + toggle("rpg-sao-sw-alerts", "Change alerts", !!uiSettings.changeAlerts)
     + toggle("rpg-sao-sw-inject", "Auto-inject", !!autoInjectState)
     + toggle("rpg-sao-sw-bars", "Keep bars when minimised", !!uiSettings.barsOnMin)
+    + toggle("rpg-sao-sw-shadow", "Text shadow", !!uiSettings.saoTextShadow)
+    + toggle("rpg-sao-sw-backing", "Text backing", !!uiSettings.saoTextBacking)
+    + toggle("rpg-sao-sw-autobond", "Auto-add bonds", !!uiSettings.autoAddBonds)
+    + (bondBlocklist.size
+        ? row("rpg-sao-unblock", "&#8635;", `Unblock ${bondBlocklist.size} bond(s)`) : "")
+    + `<div class="rpg-sao-mrow toggle"><span>Panel brightness</span>
+        <input type="range" id="rpg-sao-panel-a" min="35" max="100"
+               value="${Math.round((uiSettings.saoPanelAlpha ?? 0.82) * 100)}"></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Skin</span>
         <select id="rpg-sao-skin">
           <option value="classic">Classic</option>
@@ -3664,6 +3751,11 @@ function renderSaoSkin() {
 
   container.style.cssText = `position:fixed; top:0; left:0; right:0; bottom:auto;
     height:100vh; height:100svh; z-index:9999; pointer-events:none;
+    --rpg-sao-panel-a:${clamp(uiSettings.saoPanelAlpha ?? 0.82, 0.35, 1)};`;
+  container.className =
+    (uiSettings.saoTextShadow ? "rpg-sao-sh " : "") +
+    (uiSettings.saoTextBacking ? "rpg-sao-bk" : "");
+  container.style.cssText += `
     font-family:${uiSettings.fontFamily || "'Rajdhani','Segoe UI',sans-serif"};
     font-size:${0.9 * (uiSettings.fontScale || 1)}em;`;
   container.onclick = null;
@@ -3671,11 +3763,12 @@ function renderSaoSkin() {
   try {
     const { root, display, type, isVehicle } = getActiveData();
     const player = rpgState;
-    const pName = player.name || "Player";
-    const en = getEnergy(player, false);
+    const pView = saoUnitView(player);
+    const pName = pView.name;
+    const en = pView.en;
 
-    const hpPct = saoPct(player.hp_curr, player.hp_max);
-    const hpStops = saoHpStops(hpPct);
+    const hpPct = saoPct(pView.hp_curr, pView.hp_max);
+    const hpStops = saoUnitStops(pView, false);
     const mpPct = saoPct(en.curr, en.max);
 
     const party = Array.isArray(rpgState.party) ? rpgState.party : [];
@@ -3696,7 +3789,7 @@ function renderSaoSkin() {
             <div class="rpg-sao-name">${escHtml(pName)}</div>
             <div class="rpg-sao-stack">
               <div class="rpg-sao-vrow">${saoBarHtml("", hpPct, hpStops[0], hpStops[1])}
-                <span class="rpg-sao-vnum">${escHtml(player.hp_curr)}/${escHtml(player.hp_max)}</span></div>
+                <span class="rpg-sao-vnum">${escHtml(pView.hp_curr)}/${escHtml(pView.hp_max)}</span></div>
               <div class="rpg-sao-vrow">${saoBarHtml("mid", mpPct, SAO_PALETTE.mp[0], SAO_PALETTE.mp[1])}
                 <span class="rpg-sao-vnum">${escHtml(en.curr)}/${escHtml(en.max)}</span></div>
             </div>
@@ -3704,28 +3797,34 @@ function renderSaoSkin() {
         </div>`;
 
       if (pMeters.length) {
-        vitals += saoDivider("METERS", "meters");
-        vitals += `<div class="rpg-sao-slim${saoCollapsed.meters ? " hide" : ""}">` +
-          pMeters.map((m) => saoSlimRow(m.name, m.curr, m.max, saoMeterColor(m.name), null)).join("") + `</div>`;
+        vitals += `<div class="rpg-sao-group">` + saoDivider("METERS", "meters") +
+          `<div class="rpg-sao-slim${saoCollapsed.meters ? " hide" : ""}">` +
+          pMeters.map((m) => saoSlimRow(m.name, m.curr, m.max, saoMeterColor(m.name), null)).join("") +
+          `</div></div>`;
       }
       const allies = [...party.map((u, i) => ({ u, idx: charIndexFor("party", i) })),
                       ...npcs.map((u, i) => ({ u, idx: charIndexFor("npc", i) }))];
       if (allies.length) {
-        vitals += saoDivider("PARTY", "party");
-        vitals += `<div class="rpg-sao-slim${saoCollapsed.party ? " hide" : ""}">` +
-          allies.map(({ u, idx }) => saoSlimRow(u?.name || "?", u?.hp_curr, u?.hp_max,
-            saoHpStops(saoPct(u?.hp_curr, u?.hp_max)), idx)).join("") + `</div>`;
+        vitals += `<div class="rpg-sao-group">` + saoDivider("PARTY", "party") +
+          `<div class="rpg-sao-slim${saoCollapsed.party ? " hide" : ""}">` +
+          allies.map(({ u, idx }) => {
+            const v = saoUnitView(u);
+            return saoSlimRow(v.name, v.hp_curr, v.hp_max, saoUnitStops(v, false), idx);
+          }).join("") + `</div></div>`;
       }
     }
 
     // --- enemies ---
     let foesHtml = "";
     if (showBars && inCombat && enemies.length) {
-      foesHtml = `<div class="rpg-sao-foes">` +
+      foesHtml = `<div class="rpg-sao-foes"><div class="rpg-sao-group">` +
         saoDivider(`ROUND ${escHtml(rpgState.combat.round ?? 1)}`, "foes", "#f0b6ab") +
         `<div class="rpg-sao-slim${saoCollapsed.foes ? " hide" : ""}">` +
-        enemies.map((u, i) => saoSlimRow(u?.name || `Enemy ${i + 1}`, u?.hp_curr, u?.hp_max,
-          SAO_PALETTE.foe, charIndexFor("enemy", i))).join("") + `</div></div>`;
+        enemies.map((u, i) => {
+          const v = saoUnitView(u);
+          return saoSlimRow(v.isVeh ? v.name : (u?.name || `Enemy ${i + 1}`),
+            v.hp_curr, v.hp_max, saoUnitStops(v, true), charIndexFor("enemy", i));
+        }).join("") + `</div></div></div>`;
     }
 
     // --- orbs ---
@@ -3873,6 +3972,26 @@ function saoBind() {
     renderRPG();
   });
   bind("rpg-sao-sw-bars", () => { uiSettings.barsOnMin = !uiSettings.barsOnMin; saveUiSettings(); renderRPG(); });
+  bind("rpg-sao-sw-shadow", () => { uiSettings.saoTextShadow = !uiSettings.saoTextShadow; saveUiSettings(); renderRPG(); });
+  bind("rpg-sao-sw-backing", () => { uiSettings.saoTextBacking = !uiSettings.saoTextBacking; saveUiSettings(); renderRPG(); });
+  bind("rpg-sao-sw-autobond", () => { uiSettings.autoAddBonds = !uiSettings.autoAddBonds; saveUiSettings(); renderRPG(); });
+  bind("rpg-sao-unblock", () => {
+    clearBondBlocklist();
+    if (window.toastr) window.toastr.info("Bond blocklist cleared for this chat.");
+    renderRPG();
+  });
+
+  // live, without a re-render: rebuilding the menu would drop the slider mid-drag
+  const pa = document.getElementById("rpg-sao-panel-a");
+  if (pa) {
+    pa.oninput = () => {
+      const v = clamp(parseFloat(pa.value) / 100, 0.35, 1);
+      uiSettings.saoPanelAlpha = v;
+      document.getElementById("rpg-hud-container")?.style.setProperty("--rpg-sao-panel-a", String(v));
+    };
+    pa.onchange = () => saveUiSettings();
+    pa.onclick = (e) => e.stopPropagation();
+  }
 
   const skinSel = document.getElementById("rpg-sao-skin");
   if (skinSel) {
@@ -3893,27 +4012,33 @@ if (!window.__rpgSaoResizeBound) {
 
 const SAO_CSS = `<style id="rpg-sao-style">
 #rpg-hud-container > *{pointer-events:auto}
+/* the column spans the whole height, so it must stay click-through itself;
+   this needs the ID to outrank the blanket rule above. */
+#rpg-hud-container .rpg-sao-col{pointer-events:none}
+#rpg-hud-container .rpg-sao-col > *{pointer-events:auto}
 #rpg-hud-container button{font-family:inherit}
 
 .rpg-sao-vitals{position:absolute; left:8px; width:322px;
   top:calc(env(safe-area-inset-top, 0px) + 12px)}
 .rpg-sao-card{padding:5px 6px 6px; background:rgba(226,233,244,.11);
   border:1px solid rgba(255,255,255,.2); border-radius:3px;
-  backdrop-filter:blur(2px); box-shadow:0 4px 16px rgba(0,0,0,.25)}
+  backdrop-filter:blur(2px); box-shadow:0 2px 5px rgba(0,0,0,.35), 0 8px 22px rgba(0,0,0,.3)}
 .rpg-sao-block{display:flex; align-items:center; gap:5px}
 .rpg-sao-block.over{flex-direction:column; align-items:stretch; gap:3px}
 .rpg-sao-stack{flex:1 1 auto; min-width:0}
 .rpg-sao-name{flex:0 0 40px; width:40px; font-size:11px; font-weight:600; line-height:1.12;
   color:#f4f1e8; overflow-wrap:anywhere}
 .rpg-sao-block.over .rpg-sao-name{flex:none; width:auto; padding-left:2px; font-size:11.5px}
-.rpg-sao-vrow{display:flex; align-items:center; gap:8px}
-.rpg-sao-vrow + .rpg-sao-vrow{margin-top:4px}
-.rpg-sao-vnum{flex:0 0 auto; font-size:11px; font-weight:600; color:#d3cfc4;
-  min-width:56px; text-align:right}
+/* The step leaves the bar's lower-right corner empty. The readout sits in
+   that gap, tucked under the tail, instead of hanging off the right edge. */
+.rpg-sao-vrow{position:relative; padding-bottom:5px}
+.rpg-sao-vrow + .rpg-sao-vrow{margin-top:5px}
+.rpg-sao-vnum{position:absolute; right:3px; top:54%; line-height:1;
+  font-size:10px; font-weight:600; color:#d3cfc4; white-space:nowrap}
 
-.rpg-sao-bar{position:relative; flex:1 1 auto; min-width:0; height:15px}
+.rpg-sao-bar{position:relative; flex:1 1 auto; min-width:0; width:100%; height:15px}
 .rpg-sao-bar.mid{height:11px}
-.rpg-sao-bar.slim{height:9px}
+.rpg-sao-bar.slim{height:9px; width:auto}
 .rpg-sao-bar svg{position:absolute; inset:0; width:100%; height:100%; display:block;
   filter:drop-shadow(0 1px 3px rgba(0,0,0,.4))}
 .rpg-sao-slim .rpg-sao-bar svg{filter:none}
@@ -3973,11 +4098,11 @@ button.rpg-sao-tag:hover{color:#fff}
 .rpg-sao-clock .rpg-sao-dot{width:9px; height:9px}
 
 .rpg-sao-panel{position:absolute; right:96px; top:50%; transform:translateY(-50%);
-  width:336px; max-height:76vh; background:rgba(249,248,244,.94);
-  border:1px solid rgba(255,255,255,.85); box-shadow:0 10px 34px rgba(0,0,0,.5);
+  width:336px; max-height:76vh; background:var(--rpg-sao-panel);
+  border:1px solid rgba(255,255,255,.85); box-shadow:0 2px 6px rgba(0,0,0,.5), 0 14px 40px rgba(0,0,0,.6);
   backdrop-filter:blur(3px); color:#3c3a35; display:flex; flex-direction:column}
 .rpg-sao-panel::after{content:""; position:absolute; right:-13px; top:50%; margin-top:-11px;
-  border-left:13px solid rgba(249,248,244,.94);
+  border-left:13px solid var(--rpg-sao-panel);
   border-top:11px solid transparent; border-bottom:11px solid transparent}
 .rpg-sao-panel h2{margin:0; padding:11px 16px 8px; font-size:15px; font-weight:600;
   letter-spacing:1.2px; text-align:center; border-bottom:1px solid #c7c3b8}
@@ -4043,8 +4168,8 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 .rpg-sao-menu{position:absolute; left:96px; top:50%; transform:translateY(-50%);
   width:206px; max-height:76vh; overflow-y:auto}
 .rpg-sao-mrow{display:flex; align-items:center; gap:9px; padding:7px 11px; margin-bottom:2px;
-  width:100%; text-align:left; background:rgba(249,248,244,.94);
-  border:1px solid rgba(255,255,255,.8); box-shadow:0 3px 12px rgba(0,0,0,.42);
+  width:100%; text-align:left; background:var(--rpg-sao-panel);
+  border:1px solid rgba(255,255,255,.8); box-shadow:0 2px 5px rgba(0,0,0,.5), 0 8px 22px rgba(0,0,0,.45);
   color:#3c3a35; font-size:12.5px; font-weight:600; cursor:pointer}
 .rpg-sao-mrow .pip{flex:0 0 22px; height:22px; border-radius:50%; background:#6b6355;
   color:#fff; display:grid; place-items:center; font-size:11px}
@@ -4052,6 +4177,7 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 .rpg-sao-mrow.toggle{cursor:default; justify-content:space-between; gap:6px}
 .rpg-sao-mrow select{font-family:inherit; font-size:12px; background:#e9e6dd;
   border:1px solid #c7c3b8; color:#3c3a35; padding:2px 4px}
+.rpg-sao-mrow input[type=range]{width:78px; flex:0 0 auto}
 .rpg-sao-switch{position:relative; width:34px; height:18px; border-radius:9px;
   background:#bdb7a9; cursor:pointer; transition:background .2s; flex:0 0 auto; border:0}
 .rpg-sao-switch::after{content:""; position:absolute; top:2px; left:2px; width:14px; height:14px;
@@ -4062,11 +4188,14 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 /* --rpg-sao-clock-lift: how far above the chat box the clock sits. One number;
    the orb column reserves this much space too, so the two can't overlap. */
 #rpg-hud-container{--rpg-sao-clock-lift:84px}
+/* --rpg-sao-panel-a dims the panels by letting the chat through, so the paper
+   colour is unchanged but it stops glaring. Settings > Panel brightness. */
+#rpg-hud-container{--rpg-sao-panel:rgb(249 248 244 / var(--rpg-sao-panel-a, .82))}
 .rpg-sao-clockwrap{position:absolute; right:22px;
   bottom:calc(env(safe-area-inset-bottom, 0px) + var(--rpg-sao-clock-lift, 84px));
   display:flex; flex-direction:column; align-items:flex-end; gap:8px}
-.rpg-sao-timers{width:252px; background:rgba(249,248,244,.94);
-  border:1px solid rgba(255,255,255,.8); box-shadow:0 8px 26px rgba(0,0,0,.45);
+.rpg-sao-timers{width:252px; background:var(--rpg-sao-panel);
+  border:1px solid rgba(255,255,255,.8); box-shadow:0 2px 6px rgba(0,0,0,.5), 0 12px 34px rgba(0,0,0,.58);
   color:#3c3a35; padding:8px 12px 10px; max-height:52vh; overflow-y:auto}
 .rpg-sao-timerhead{display:flex; justify-content:space-between; align-items:center;
   border-bottom:1px solid #c7c3b8; padding-bottom:4px; margin-bottom:6px}
@@ -4084,6 +4213,26 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 
 .rpg-sao-clock{display:flex; align-items:center; gap:9px; background:none; border:0;
   padding:2px 0; cursor:pointer; color:#f2f0e8}
+
+/* Optional legibility aids for the text that sits straight on the chat, with
+   nothing behind it. Both off by default; Settings > Text shadow / backing. */
+#rpg-hud-container.rpg-sao-sh .rpg-sao-name,
+#rpg-hud-container.rpg-sao-sh .rpg-sao-tag,
+#rpg-hud-container.rpg-sao-sh .rpg-sao-num,
+#rpg-hud-container.rpg-sao-sh .rpg-sao-vnum,
+#rpg-hud-container.rpg-sao-sh .rpg-sao-div,
+#rpg-hud-container.rpg-sao-sh .rpg-sao-cstack .hhmm,
+#rpg-hud-container.rpg-sao-sh .rpg-sao-cstack .date{text-shadow:0 1px 2px rgba(0,0,0,.8)}
+#rpg-hud-container.rpg-sao-sh .rpg-sao-glyph{filter:drop-shadow(0 1px 2px rgba(0,0,0,.8))}
+
+#rpg-hud-container.rpg-sao-bk .rpg-sao-group{
+  background:rgba(13,15,19,.55); border:1px solid rgba(255,255,255,.12);
+  border-radius:3px; padding:4px 7px 6px; margin-right:52px; backdrop-filter:blur(2px)}
+#rpg-hud-container.rpg-sao-bk .rpg-sao-group .rpg-sao-div{margin-top:2px}
+#rpg-hud-container.rpg-sao-bk .rpg-sao-group .rpg-sao-slim{margin-right:0}
+#rpg-hud-container.rpg-sao-bk .rpg-sao-clock{
+  background:rgba(13,15,19,.55); border:1px solid rgba(255,255,255,.12);
+  border-radius:3px; padding:3px 10px 4px; backdrop-filter:blur(2px)}
 .rpg-sao-glyph{font-size:17px}
 .rpg-sao-cstack{text-align:right; line-height:1}
 .rpg-sao-cstack .hhmm{display:block; font-size:30px; font-weight:600; letter-spacing:3px}
@@ -4118,6 +4267,18 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 function renderEditor() {
   let container = document.getElementById("rpg-hud-container");
   if (!container) return;
+
+  // The SAO skin leaves the container as a full-screen click-through overlay,
+  // which the editor is not built for. Give it a normal panel box first.
+  if ((uiSettings.skin || "classic") === "sao") {
+    container.style.cssText = `position:fixed; top:50px; right:12px; left:auto;
+      width:min(${uiSettings.hudWidth || 280}px, calc(100vw - 24px));
+      max-height:calc(100svh - 120px); overflow-y:auto;
+      background:rgba(12,12,16,0.97); border:1px solid #444; border-radius:6px;
+      padding:10px; box-sizing:border-box; z-index:10000; pointer-events:auto;
+      color:#e0e0e0; box-shadow:0 10px 34px rgba(0,0,0,.6);
+      font-family:${uiSettings.fontFamily}; font-size:${0.9 * (uiSettings.fontScale || 1)}em;`;
+  }
 
   const { root, display, type, isVehicle } = getActiveData();
 
@@ -4579,7 +4740,17 @@ function parsePipeFormat(text) {
   }
 
   newState.bonds = mergeBondLedger(bondMemory, newState.bonds);
+
+  // names the block itself declared, before live |Bond:| values get folded in
+  const declared = new Set(newState.bonds.map((b) => normBondName(b?.name)));
   syncLiveBondsIntoLedger(newState);
+
+  newState.bonds = newState.bonds.filter((b) => {
+    const k = normBondName(b?.name);
+    if (bondBlocklist.has(k)) return false;                       // deleted on purpose
+    if (!uiSettings.autoAddBonds && !declared.has(k)) return false; // no silent adds
+    return true;
+  });
 
   // Deltas measure against the same memory, so they're swipe-stable too and the
   // observer's repeat scans of one message can't erase the arrow.
@@ -4616,6 +4787,7 @@ const checkMessage = async (manual = false) => {
     bondMemory = [];
     timerMemory = [];
     historyMemoryKey = null;
+    loadBondBlocklist(chatKey);
   }
   renderRPG();
 
