@@ -3442,20 +3442,29 @@ function saoApplyPanelVars() {
 // of the panel. Clamped so it can't slide off the panel's own edges.
 function saoAimNotch() {
   const wrap = document.querySelector(".rpg-sao-panelwrap");
-  if (!wrap) return;
-  const panel = wrap.querySelector(".rpg-sao-panel");
-  const orb = document.querySelector(".rpg-sao-orb.on");
-  if (!panel || !orb) { wrap.style.setProperty("--rpg-sao-notch", "50%"); return; }
+  const notch = wrap && wrap.querySelector(".rpg-sao-notch");
+  const panel = wrap && wrap.querySelector(".rpg-sao-panel");
+  if (!wrap || !notch || !panel) return;
+
+  // the diagnostics orb never gets .on, so fall back to it explicitly
+  const orb = document.querySelector(".rpg-sao-orb.on")
+           || document.getElementById("rpg-sao-diag");
 
   const w = wrap.getBoundingClientRect();
   const p = panel.getBoundingClientRect();
-  const o = orb.getBoundingClientRect();
-  if (!w.height || !p.height) return;
+  if (!w.height || !p.height) { notch.style.display = "none"; return; }
+
+  const o = orb ? orb.getBoundingClientRect() : null;
+  // the orbs sit to the right of the panel; if they don't, there's nothing to aim at
+  if (!o || o.left < p.right - 4) { notch.style.display = "none"; return; }
 
   const y = o.top + o.height / 2 - w.top;
   const lo = p.top - w.top + 16;
   const hi = p.bottom - w.top - 16;
-  wrap.style.setProperty("--rpg-sao-notch", `${Math.round(clamp(y, lo, hi))}px`);
+
+  notch.style.display = "block";
+  notch.style.top = `${Math.round(clamp(y, lo, hi)) - 11}px`;
+  notch.style.left = `${Math.round(p.right - w.left)}px`;
 }
 
 function saoSnapPixels() {
@@ -4058,7 +4067,7 @@ function renderSaoSkin() {
       const help = saoHelpPanel();
       panelHtml = `<div class="rpg-sao-panelwrap"><div class="rpg-sao-panel">
         <h2>${escHtml(help.title)}</h2>
-        <div class="rpg-sao-body">${help.body}</div></div></div>`;
+        <div class="rpg-sao-body">${help.body}</div></div><div class="rpg-sao-notch"></div></div>`;
     } else if (!saoMin && saoPanel && saoPanel !== "gear") {
       const built = saoPanel === "status" ? saoStatusPanel()
                   : saoPanel === "bonds" ? saoBondsPanel()
@@ -4068,7 +4077,7 @@ function renderSaoSkin() {
       panelHtml = `<div class="rpg-sao-panelwrap"><div class="rpg-sao-panel">
         <h2>${escHtml(built.title)}</h2>
         ${saoPanel === "status" ? saoWhoStrip() : ""}
-        <div class="rpg-sao-body">${built.body}</div></div></div>`;
+        <div class="rpg-sao-body">${built.body}</div></div><div class="rpg-sao-notch"></div></div>`;
     }
 
     const menuHtml = (!saoMin && saoPanel === "gear")
@@ -4401,11 +4410,13 @@ button.rpg-sao-tag:hover{color:#fff}
 
 .rpg-sao-panel{position:relative;
   width:336px; max-height:76svh; overflow:hidden; background:var(--rpg-sao-panel);
-  border:1px solid rgba(255,255,255,.85); box-shadow:0 2px 6px rgba(0,0,0,.5), 0 14px 40px rgba(0,0,0,.6);
+  border:0;
+  box-shadow:inset 0 5px 5px -4px rgba(0,0,0,.4),
+             inset -5px 0 5px -4px rgba(0,0,0,.33),
+             0 2px 6px rgba(0,0,0,.5), 0 14px 40px rgba(0,0,0,.6);
   color:var(--rpg-sao-ink); display:flex; flex-direction:column}
 .rpg-sao-panelwrap{position:absolute}
-.rpg-sao-panelwrap::after{content:""; position:absolute; right:-12px;
-  top:var(--rpg-sao-notch, 50%); margin-top:-11px;
+.rpg-sao-notch{position:absolute; width:0; height:0; pointer-events:none;
   border-left:12px solid var(--rpg-sao-panel);
   border-top:11px solid transparent; border-bottom:11px solid transparent;
   filter:drop-shadow(2px 0 2px rgba(0,0,0,.35))}
@@ -4501,10 +4512,13 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 .rpg-sao-menu{position:relative; width:206px; max-height:76svh; overflow-y:auto}
 .rpg-sao-mrow{display:flex; align-items:center; gap:9px; padding:7px 11px; margin-bottom:2px;
   width:100%; text-align:left; background:var(--rpg-sao-panel);
-  border:0; border-top:1px solid rgba(255,255,255,.92);
-  border-right:1px solid rgba(255,255,255,.55);
-  border-bottom:1px solid rgba(150,122,62,.5);
-  box-shadow:0 2px 5px rgba(0,0,0,.5), 0 8px 22px rgba(0,0,0,.45);
+  border:0;
+  /* a soft dark band just inside the top and right edges reads as a sloped
+     face, so each row looks like a plate with thickness */
+  box-shadow:inset 0 4px 4px -3px rgba(0,0,0,.45),
+             inset -4px 0 4px -3px rgba(0,0,0,.38),
+             inset 0 -1px 0 rgba(0,0,0,.12),
+             0 2px 5px rgba(0,0,0,.5), 0 8px 22px rgba(0,0,0,.45);
   color:var(--rpg-sao-ink); font-size:12.5px; font-weight:600; cursor:pointer}
 .rpg-sao-mrow .pip{flex:0 0 22px; height:22px; border-radius:50%; background:#6b6355;
   color:#fff; display:grid; place-items:center; font-size:11px}
