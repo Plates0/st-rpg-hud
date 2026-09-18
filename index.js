@@ -3438,6 +3438,26 @@ function saoApplyPanelVars() {
   c.style.setProperty("--rpg-sao-chip", v.chip);
 }
 
+// Point the notch at the orb that is actually lit, rather than at the middle
+// of the panel. Clamped so it can't slide off the panel's own edges.
+function saoAimNotch() {
+  const wrap = document.querySelector(".rpg-sao-panelwrap");
+  if (!wrap) return;
+  const panel = wrap.querySelector(".rpg-sao-panel");
+  const orb = document.querySelector(".rpg-sao-orb.on");
+  if (!panel || !orb) { wrap.style.setProperty("--rpg-sao-notch", "50%"); return; }
+
+  const w = wrap.getBoundingClientRect();
+  const p = panel.getBoundingClientRect();
+  const o = orb.getBoundingClientRect();
+  if (!w.height || !p.height) return;
+
+  const y = o.top + o.height / 2 - w.top;
+  const lo = p.top - w.top + 16;
+  const hi = p.bottom - w.top - 16;
+  wrap.style.setProperty("--rpg-sao-notch", `${Math.round(clamp(y, lo, hi))}px`);
+}
+
 function saoSnapPixels() {
   document.querySelectorAll(".rpg-sao-panel, .rpg-sao-menu, .rpg-sao-timers").forEach((el) => {
     el.style.top = "0px";
@@ -4072,7 +4092,8 @@ function renderSaoSkin() {
     saoFitName();          // may change the bar width, so run it first
     saoPaintBars();
     saoSnapPixels();
-    requestAnimationFrame(() => { saoFitName(); saoPaintBars(); saoSnapPixels(); });
+    saoAimNotch();
+    requestAnimationFrame(() => { saoFitName(); saoPaintBars(); saoSnapPixels(); saoAimNotch(); });
     saoBind();
   } catch (e) {
     container.innerHTML = `<div style="pointer-events:auto; position:fixed; top:60px; right:20px;
@@ -4258,7 +4279,7 @@ if (!window.__rpgSaoResizeBound) {
   window.addEventListener("resize", () => {
     if ((uiSettings.skin || "classic") !== "sao") return;
     clearTimeout(rt);
-    rt = setTimeout(() => { saoFitName(); saoPaintBars(); saoSnapPixels(); }, 120);
+    rt = setTimeout(() => { saoFitName(); saoPaintBars(); saoSnapPixels(); saoAimNotch(); }, 120);
   });
 }
 
@@ -4383,7 +4404,8 @@ button.rpg-sao-tag:hover{color:#fff}
   border:1px solid rgba(255,255,255,.85); box-shadow:0 2px 6px rgba(0,0,0,.5), 0 14px 40px rgba(0,0,0,.6);
   color:var(--rpg-sao-ink); display:flex; flex-direction:column}
 .rpg-sao-panelwrap{position:absolute}
-.rpg-sao-panelwrap::after{content:""; position:absolute; right:-12px; top:50%; margin-top:-11px;
+.rpg-sao-panelwrap::after{content:""; position:absolute; right:-12px;
+  top:var(--rpg-sao-notch, 50%); margin-top:-11px;
   border-left:12px solid var(--rpg-sao-panel);
   border-top:11px solid transparent; border-bottom:11px solid transparent;
   filter:drop-shadow(2px 0 2px rgba(0,0,0,.35))}
@@ -4479,7 +4501,10 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 .rpg-sao-menu{position:relative; width:206px; max-height:76svh; overflow-y:auto}
 .rpg-sao-mrow{display:flex; align-items:center; gap:9px; padding:7px 11px; margin-bottom:2px;
   width:100%; text-align:left; background:var(--rpg-sao-panel);
-  border:1px solid rgba(255,255,255,.8); box-shadow:0 2px 5px rgba(0,0,0,.5), 0 8px 22px rgba(0,0,0,.45);
+  border:0; border-top:1px solid rgba(255,255,255,.92);
+  border-right:1px solid rgba(255,255,255,.55);
+  border-bottom:1px solid rgba(150,122,62,.5);
+  box-shadow:0 2px 5px rgba(0,0,0,.5), 0 8px 22px rgba(0,0,0,.45);
   color:var(--rpg-sao-ink); font-size:12.5px; font-weight:600; cursor:pointer}
 .rpg-sao-mrow .pip{flex:0 0 22px; height:22px; border-radius:50%; background:#6b6355;
   color:#fff; display:grid; place-items:center; font-size:11px}
