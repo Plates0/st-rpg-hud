@@ -3440,40 +3440,49 @@ function saoApplyPanelVars() {
 
 // Point the notch at the orb that is actually lit, rather than at the middle
 // of the panel. Clamped so it can't slide off the panel's own edges.
-function saoAimNotch() {
-  // the settings menu aims at the gear; everything else at whichever orb is lit
+function saoPlacePanels() {
   const lit = document.querySelector(".rpg-sao-orb.on")
            || document.getElementById("rpg-sao-diag");
   const gear = document.querySelector('.rpg-sao-orb[data-tab="gear"]') || lit;
+  const vh = window.innerHeight || document.documentElement.clientHeight || 0;
 
   document.querySelectorAll(".rpg-sao-panelwrap, .rpg-sao-menuwrap").forEach((wrap) => {
-    const notch = wrap.querySelector(".rpg-sao-notch");
     const box = wrap.querySelector(".rpg-sao-panel, .rpg-sao-menu");
-    if (!notch || !box) return;
+    const notch = wrap.querySelector(".rpg-sao-notch");
+    if (!box) return;
 
-    const orb = wrap.classList.contains("rpg-sao-menuwrap") ? gear : lit;
+    box.style.top = "0px";
+    const isMenu = wrap.classList.contains("rpg-sao-menuwrap");
+    const orb = isMenu ? gear : lit;
     const w = wrap.getBoundingClientRect();
     const b = box.getBoundingClientRect();
     const o = orb ? orb.getBoundingClientRect() : null;
 
-    // only draw it when the orb really is off the box's right-hand side
-    if (!w.height || !b.height || !o || o.left < b.right - 4) {
-      notch.style.display = "none";
-      return;
+    if (!b.height) return;
+
+    let shift = 0;
+    if (o) {
+      shift = (o.top + o.height / 2) - (b.top + b.height / 2);
+      const maxUp = b.top - 8;                       // don't leave the top
+      const maxDown = vh - 8 - b.bottom;             // or the bottom
+      shift = clamp(shift, -maxUp, maxDown);
     }
+    const frac = b.top - Math.round(b.top);
+    box.style.top = `${Math.round(shift) - frac}px`;
 
+    if (!notch) return;
+    if (!o || o.left < b.right - 4) { notch.style.display = "none"; return; }
+
+    const nb = box.getBoundingClientRect();          // re-read after the shift
     const y = o.top + o.height / 2 - w.top;
-    const lo = b.top - w.top + 18;
-    const hi = b.bottom - w.top - 18;
-
+    const lo = nb.top - w.top + 14;
+    const hi = nb.bottom - w.top - 14;
     notch.style.display = "block";
     notch.style.top = `${Math.round(clamp(y, lo, hi)) - 12}px`;
-    notch.style.left = `${Math.round(b.right - w.left)}px`;
+    notch.style.left = `${Math.round(nb.right - w.left)}px`;
   });
-}
 
-function saoSnapPixels() {
-  document.querySelectorAll(".rpg-sao-panel, .rpg-sao-menu, .rpg-sao-timers").forEach((el) => {
+  document.querySelectorAll(".rpg-sao-timers").forEach((el) => {
     el.style.top = "0px";
     const r = el.getBoundingClientRect();
     const frac = r.top - Math.round(r.top);
@@ -4105,9 +4114,8 @@ function renderSaoSkin() {
 
     saoFitName();          // may change the bar width, so run it first
     saoPaintBars();
-    saoSnapPixels();
-    saoAimNotch();
-    requestAnimationFrame(() => { saoFitName(); saoPaintBars(); saoSnapPixels(); saoAimNotch(); });
+    saoPlacePanels();
+    requestAnimationFrame(() => { saoFitName(); saoPaintBars(); saoPlacePanels(); });
     saoBind();
   } catch (e) {
     container.innerHTML = `<div style="pointer-events:auto; position:fixed; top:60px; right:20px;
@@ -4293,7 +4301,7 @@ if (!window.__rpgSaoResizeBound) {
   window.addEventListener("resize", () => {
     if ((uiSettings.skin || "classic") !== "sao") return;
     clearTimeout(rt);
-    rt = setTimeout(() => { saoFitName(); saoPaintBars(); saoSnapPixels(); saoAimNotch(); }, 120);
+    rt = setTimeout(() => { saoFitName(); saoPaintBars(); saoPlacePanels(); }, 120);
   });
 }
 
@@ -4418,18 +4426,17 @@ button.rpg-sao-tag:hover{color:#fff}
 .rpg-sao-panel{position:relative;
   width:336px; max-height:76svh; overflow:hidden; background:var(--rpg-sao-panel);
   border:0;
-  box-shadow:inset 0 7px 6px -4px rgba(0,0,0,.55),
-             inset -7px 0 6px -4px rgba(0,0,0,.45),
+  box-shadow:inset 0 3px 0 rgba(0,0,0,.24),
+             inset -3px 0 0 rgba(0,0,0,.18),
              0 2px 6px rgba(0,0,0,.5), 0 14px 40px rgba(0,0,0,.6);
   color:var(--rpg-sao-ink); display:flex; flex-direction:column}
 .rpg-sao-panelwrap{position:absolute}
 /* built from a clipped box rather than borders, so it can carry the same
    sloped top face as the plate it grows out of */
 .rpg-sao-notch{position:absolute; width:13px; height:24px; pointer-events:none;
-  background:linear-gradient(180deg, rgba(0,0,0,.42) 0, rgba(0,0,0,.10) 34%, rgba(0,0,0,0) 58%),
-             var(--rpg-sao-panel);
+  background:var(--rpg-sao-panel);
   clip-path:polygon(0 0, 100% 50%, 0 100%);
-  filter:drop-shadow(2px 1px 2px rgba(0,0,0,.4))}
+  filter:drop-shadow(1px 1px 1px rgba(0,0,0,.35))}
 .rpg-sao-panel h2{margin:0; flex:0 0 auto; padding:11px 16px 8px; font-size:15px; font-weight:600;
   letter-spacing:1.2px; text-align:center; border-bottom:1px solid var(--rpg-sao-rule)}
 .rpg-sao-body{padding:11px 16px 15px; overflow-y:auto; min-height:0; flex:1 1 auto}
@@ -4525,9 +4532,9 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   border:0;
   /* a soft dark band just inside the top and right edges reads as a sloped
      face, so each row looks like a plate with thickness */
-  box-shadow:inset 0 6px 5px -3px rgba(0,0,0,.62),
-             inset -6px 0 5px -3px rgba(0,0,0,.52),
-             inset 0 -1px 0 rgba(0,0,0,.18),
+  box-shadow:inset 0 3px 0 rgba(0,0,0,.26),
+             inset -3px 0 0 rgba(0,0,0,.20),
+             inset 0 -1px 0 rgba(0,0,0,.16),
              0 2px 5px rgba(0,0,0,.5), 0 8px 22px rgba(0,0,0,.45);
   color:var(--rpg-sao-ink); font-size:12.5px; font-weight:600; cursor:pointer}
 .rpg-sao-mrow .pip{flex:0 0 22px; height:22px; border-radius:50%; background:#6b6355;
