@@ -352,7 +352,8 @@ const defaultUiSettings = {
   autoAddBonds: true,     // add party/NPC |Bond:| values to the ledger automatically
   saoPanelLight: 92,      // panel lightness %, lower = dimmer but still solid
   saoCardAlpha: 11,       // % wash behind the player's HP/MP bars; higher = lighter
-  saoFont: "preset",      // "preset" follows the font setting, "sans" uses the skin's own
+  saoFont: "preset",      // "preset" | "sans" | "squarish"
+  saoInk: 70,             // text contrast against the panel, 0 = faint, 100 = maximum
   saoUiScale: 100,        // % size of the bar cluster; a desktop usually wants ~130
   saoTextShadow: false,   // shadow behind the text that sits straight on the chat
   saoTextBacking: false,  // translucent card behind that text instead        // "classic" | "sao"
@@ -3413,14 +3414,39 @@ const SAO_WELL = "rgba(36,39,46,0.82)";
 // Below ~50% lightness the panel is dark, so the text has to invert with it.
 // Light text on a dark panel also renders crisper at small sizes than dark
 // text on a light one, which is why the classic HUD always looked sharper.
+const SAO_FONTS = {
+  sans: "'Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif",
+  // Straight vertical stems and squared curves, like the reference. Those need
+  // far less antialiasing than a humanist sans, so they render cleaner small.
+  squarish: "'Rajdhani','Bahnschrift','DIN Alternate','Avenir Next Condensed'," +
+            "'Futura','Century Gothic','Segoe UI',sans-serif",
+};
+
+// Rajdhani isn't installed anywhere by default, so fetch it once when asked.
+// If there's no network the stack above falls through to a local face.
+function saoEnsureWebFont() {
+  if (uiSettings.saoFont !== "squarish") return;
+  if (document.getElementById("rpg-sao-webfont")) return;
+  const link = document.createElement("link");
+  link.id = "rpg-sao-webfont";
+  link.rel = "stylesheet";
+  link.href = "https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap";
+  document.head.appendChild(link);
+}
+
 function saoPanelVars() {
   const l = clamp(uiSettings.saoPanelLight ?? 92, 18, 98);
   const s = clamp(uiSettings.saoPanelSat ?? 10, 0, 40);
   const dark = l < 50;
+  // Antialiasing fringe is most visible at maximum contrast, so backing the
+  // ink off toward the panel visibly softens it on small text.
+  const c = clamp(uiSettings.saoInk ?? 70, 0, 100);
+  const inkL = dark ? 50 + c * 0.45 : 50 - c * 0.42;
+  const dimL = dark ? inkL - 22 : inkL + 22;
   return {
     l,
-    ink: dark ? "#f2f0ea" : "#33312c",
-    inkDim: dark ? "#b7b2a8" : "#6b6760",
+    ink: `hsl(44 6% ${inkL.toFixed(1)}%)`,
+    inkDim: `hsl(44 5% ${dimL.toFixed(1)}%)`,
     rule: `hsl(44 ${s * 0.7}% ${dark ? Math.min(l + 16, 96) : l - 17}%)`,
     chip: `hsl(44 ${s}% ${dark ? Math.min(l + 9, 92) : l - 7}%)`,
     dark,
@@ -3865,8 +3891,10 @@ function saoHelpPanel() {
           "Dims the panels while they stay solid. Take it below halfway and they go dark, with the text inverting to light \u2014 small light-on-dark text renders crisper than dark-on-light.")
       + item("Reset settings",
           "Puts every slider and toggle back to its default. Your skin choice and chat data stay as they are.")
+      + item("Text contrast",
+          "How far the text sits from the panel behind it. Maximum contrast also maximises the antialiasing fringe, so backing it off makes small text look cleaner.")
       + item("Font",
-          "The skin follows your font preset by default. The preset is a monospace, whose bold can look heavy in the panels \u2014 Sans is lighter.")
+          "Follows your font preset by default, which is a monospace. Sans is lighter; Squarish uses straight-stemmed letterforms closer to the reference, which need less antialiasing at small sizes.")
       + item("Editor width",
           "How wide Edit state opens. The classic skin sets this by dragging its edge; this is the same number, so you don't have to switch skins to change it.")
       + item("Bar size",
@@ -3922,6 +3950,9 @@ function saoSettingsHtml() {
     + `<div class="rpg-sao-mrow toggle"><span>Editor width</span>
         <input type="range" id="rpg-sao-edit-w" min="240" max="560" step="10"
                value="${clamp(uiSettings.hudWidth || 280, 240, 560)}"></div>`
+    + `<div class="rpg-sao-mrow toggle"><span>Text contrast</span>
+        <input type="range" id="rpg-sao-ink" min="25" max="100"
+               value="${Math.round(uiSettings.saoInk ?? 70)}"></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Bar size</span>
         <input type="range" id="rpg-sao-ui-scale" min="70" max="300"
                value="${Math.round(uiSettings.saoUiScale ?? 100)}"></div>`
@@ -3930,8 +3961,9 @@ function saoSettingsHtml() {
                value="${Math.round(uiSettings.saoCardAlpha ?? 11)}"></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Font</span>
         <select id="rpg-sao-font">
-          <option value="preset"${uiSettings.saoFont !== "sans" ? " selected" : ""}>Follow preset</option>
+          <option value="preset"${!SAO_FONTS[uiSettings.saoFont] ? " selected" : ""}>Follow preset</option>
           <option value="sans"${uiSettings.saoFont === "sans" ? " selected" : ""}>Sans</option>
+          <option value="squarish"${uiSettings.saoFont === "squarish" ? " selected" : ""}>Squarish</option>
         </select></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Skin</span>
         <select id="rpg-sao-skin">
@@ -3975,6 +4007,8 @@ function renderSaoSkin() {
     document.body.appendChild(container);
   }
 
+  saoEnsureWebFont();
+
   let latest = { status: "nochat", label: "", detail: "" };
   try { latest = updateLatestStatusAndToast(SillyTavern.getContext()?.chat); } catch {}
 
@@ -3989,9 +4023,7 @@ function renderSaoSkin() {
     (uiSettings.saoTextShadow ? "rpg-sao-sh " : "") +
     (uiSettings.saoTextBacking ? "rpg-sao-bk" : "");
   container.style.cssText += `
-    font-family:${uiSettings.saoFont === "sans"
-      ? "'Rajdhani','Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif"
-      : (uiSettings.fontFamily || "'Segoe UI',system-ui,sans-serif")};
+    font-family:${SAO_FONTS[uiSettings.saoFont] || uiSettings.fontFamily || SAO_FONTS.sans};
     font-size:${0.9 * (uiSettings.fontScale || 1)}em;`;
   container.onclick = null;
 
@@ -4250,6 +4282,16 @@ function saoBind() {
     };
     pa.onchange = () => saveUiSettings();
     pa.onclick = (e) => e.stopPropagation();
+  }
+
+  const ink = document.getElementById("rpg-sao-ink");
+  if (ink) {
+    ink.oninput = () => {
+      uiSettings.saoInk = clamp(parseFloat(ink.value), 25, 100);
+      saoApplyPanelVars();      // never re-render: it would drop the drag
+    };
+    ink.onchange = () => saveUiSettings();
+    ink.onclick = (e) => e.stopPropagation();
   }
 
   const ew = document.getElementById("rpg-sao-edit-w");
