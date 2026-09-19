@@ -3496,20 +3496,17 @@ function saoResetLayout() {
 function saoBindDragging() {
   if (!saoLayoutMode) return;
   const vw = window.innerWidth, vh = window.innerHeight;
-  document.querySelectorAll("[data-drag]").forEach((el) => {
-    const key = el.dataset.drag;
+  document.querySelectorAll(".rpg-sao-ghost").forEach((el) => {
+    const key = el.dataset.ghost;
     if (!SAO_DRAG_KEYS.includes(key)) return;
     const whole = key === "col";     // must stay fully reachable
-    const K = SAO_KEEP_VISIBLE;
-    el.classList.add("draggable");
 
     el.addEventListener("pointerdown", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
       const start = saoPos()[key].slice();
       const x0 = ev.clientX, y0 = ev.clientY;
-      const box = document.querySelector(`[data-drag-box="${key}"]`) || el;
-      const r = box.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
       el.setPointerCapture?.(ev.pointerId);
       el.classList.add("dragging");
 
@@ -3524,10 +3521,14 @@ function saoBindDragging() {
         ? (v) => clamp(v, 4 - r.top, vh - 4 - r.bottom)
         : (v) => clamp(v, K - r.bottom, vh - K - r.top);
 
+      const gx = parseFloat(el.style.left) || 0, gy = parseFloat(el.style.top) || 0;
       const apply = (m) => {
+        const dx = clampX(m.clientX - x0), dy = clampY(m.clientY - y0);
         const c = document.getElementById("rpg-hud-container");
-        c?.style.setProperty(`--sao-${key}-x`, `${Math.round(start[0] + clampX(m.clientX - x0))}px`);
-        c?.style.setProperty(`--sao-${key}-y`, `${Math.round(start[1] + clampY(m.clientY - y0))}px`);
+        c?.style.setProperty(`--sao-${key}-x`, `${Math.round(start[0] + dx)}px`);
+        c?.style.setProperty(`--sao-${key}-y`, `${Math.round(start[1] + dy)}px`);
+        el.style.left = `${Math.round(gx + dx)}px`;   // overlay follows live
+        el.style.top = `${Math.round(gy + dy)}px`;
       };
       const move = apply;
 
@@ -3543,6 +3544,7 @@ function saoBindDragging() {
         uiSettings.saoPos = next;
         saveUiSettings();
         saoPlacePanels();
+        requestAnimationFrame(saoDrawGhosts);
       };
 
       el.addEventListener("pointermove", move);
@@ -3571,6 +3573,49 @@ function saoApplyPanelVars() {
 // Point the notch at the orb that is actually lit, rather than at the middle
 // of the panel. Clamped so it can't slide off the panel's own edges.
 // Applied on every render so a bad saved offset can never survive a reload.
+// union of a piece's visible children, in viewport coordinates
+function saoContentRect(el) {
+  let box = null;
+  const add = (r) => {
+    if (!r || r.width < 1 || r.height < 1) return;
+    box = box ? {
+      left: Math.min(box.left, r.left), top: Math.min(box.top, r.top),
+      right: Math.max(box.right, r.right), bottom: Math.max(box.bottom, r.bottom),
+    } : { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+  };
+  Array.from(el.children).forEach((c) => {
+    if (c.classList?.contains("rpg-sao-ghost")) return;
+    add(c.getBoundingClientRect());
+  });
+  if (!box) add(el.getBoundingClientRect());
+  return box;
+}
+
+// Rebuild the drag overlays so each one sits exactly on what it moves.
+function saoDrawGhosts() {
+  const c = document.getElementById("rpg-hud-container");
+  if (!c) return;
+  c.querySelectorAll(".rpg-sao-ghost").forEach((g) => g.remove());
+  if (!saoLayoutMode) return;
+
+  const cr = c.getBoundingClientRect();
+  SAO_DRAG_KEYS.forEach((key) => {
+    const el = document.querySelector(`[data-drag="${key}"]`);
+    if (!el) return;
+    const b = saoContentRect(el);
+    if (!b) return;
+    const g = document.createElement("div");
+    g.className = "rpg-sao-ghost";
+    g.dataset.ghost = key;
+    g.style.left = `${Math.round(b.left - cr.left) - 3}px`;
+    g.style.top = `${Math.round(b.top - cr.top) - 3}px`;
+    g.style.width = `${Math.round(b.right - b.left) + 6}px`;
+    g.style.height = `${Math.round(b.bottom - b.top) + 6}px`;
+    g.textContent = key === "vitals" ? "BARS" : key === "col" ? "MENU" : "CLOCK";
+    c.appendChild(g);
+  });
+}
+
 function saoEnforceOnScreen() {
   const vw = window.innerWidth, vh = window.innerHeight;
   const c = document.getElementById("rpg-hud-container");
@@ -4257,7 +4302,7 @@ function renderSaoSkin() {
 
     // A fresh install or "no chat selected" has 0/0 everywhere, which drew an
     // empty box in layout mode. Show representative bars so it can be placed.
-    const noData = !toNumberOr(pView.hp_max, 0) && !toNumberOr(pView.hp_curr, 0);
+    const noData = !toNumberOr(pView.hp_curr, 0) || !toNumberOr(pView.hp_max, 0);
     const demo = saoLayoutMode && noData;
 
     const hpPct = demo ? 72 : saoPct(pView.hp_curr, pView.hp_max);
@@ -4384,9 +4429,9 @@ function renderSaoSkin() {
     saoPaintBars();
     saoEnforceOnScreen();
     saoPlacePanels();
-    saoBindDragging();
     requestAnimationFrame(() => {
       saoFitName(); saoPaintBars(); saoEnforceOnScreen(); saoPlacePanels();
+      saoDrawGhosts(); saoBindDragging();
     });
     saoBind();
   } catch (e) {
@@ -4957,23 +5002,19 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 }
 #rpg-hud-container.layout .rpg-sao-colinner{pointer-events:auto}
 
-/* paint-only: outline sits outside the box and shifts nothing */
-#rpg-hud-container.layout .draggable{
-  outline:1px dashed rgba(255,255,255,.65); outline-offset:0;
-  cursor:move; touch-action:none;
+/* The overlay is measured from the content, so it always sits on what you
+   can see, whatever shape the underlying element happens to be. */
+.rpg-sao-ghost{
+  position:absolute; z-index:6; box-sizing:border-box;
+  border:1px dashed rgba(255,255,255,.7); border-radius:3px;
+  background:rgba(120,160,220,.07); cursor:move; touch-action:none;
+  font-size:9px; font-weight:700; letter-spacing:1.2px; color:#f2c141;
+  padding:1px 4px; line-height:1.1; text-align:right;
 }
-#rpg-hud-container.layout .draggable.dragging{outline:2px solid #f2c141; outline-offset:0}
-#rpg-hud-container.layout .draggable::after{
-  content:attr(data-drag); position:absolute; right:0; bottom:100%; z-index:4;
-  margin-bottom:3px; pointer-events:none;
-  font-size:9px; font-weight:700; letter-spacing:1px; text-transform:uppercase;
-  background:rgba(14,16,20,.92); color:#f2c141; padding:1px 5px; border-radius:2px;
-}
-#rpg-hud-container.layout .draggable button,
-#rpg-hud-container.layout .draggable input,
-#rpg-hud-container.layout .draggable select,
-#rpg-hud-container.layout .draggable a{pointer-events:none !important}
-#rpg-hud-container.layout [data-drag]{pointer-events:auto !important; touch-action:none}
+.rpg-sao-ghost.dragging{border:2px solid #f2c141; background:rgba(242,193,65,.12)}
+/* nothing underneath responds while arranging; the overlay catches it all */
+#rpg-hud-container.layout [data-drag],
+#rpg-hud-container.layout [data-drag] *{pointer-events:none !important}
 /* only clipping changes, so a group can be pulled clear of the stack */
 #rpg-hud-container.layout .rpg-sao-vitals{overflow:visible}
 #rpg-sao-layout-bar{
