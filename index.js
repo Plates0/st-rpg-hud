@@ -4684,7 +4684,7 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
           calc(env(safe-area-inset-bottom, 0px) + var(--rpg-sao-clock-lift, 84px) + 58px);
   display:flex; flex-direction:column; justify-content:center; align-items:center;
   pointer-events:none; overflow:visible}
-.rpg-sao-colinner{display:flex; flex-direction:column; align-items:center;
+.rpg-sao-colinner{position:relative; display:flex; flex-direction:column; align-items:center;
   gap:clamp(4px, 1.4svh, 14px); pointer-events:none}
 .rpg-sao-colinner > *{pointer-events:auto; flex:0 0 auto}
 .rpg-sao-orb{width:var(--rpg-sao-orb); height:var(--rpg-sao-orb); border-radius:50%;
@@ -4952,39 +4952,38 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   to{opacity:1; transform:none}
 }
 #rpg-hud-container.layout .rpg-sao-colinner{pointer-events:auto}
+
+/* paint-only: outline sits outside the box and shifts nothing */
 #rpg-hud-container.layout .draggable{
-  outline:2px dashed rgba(255,255,255,.55); outline-offset:3px;
-  cursor:move; touch-action:none; border-radius:3px;
+  outline:2px dashed rgba(255,255,255,.6); outline-offset:2px;
+  cursor:move; touch-action:none;
 }
-#rpg-hud-container.layout .draggable.dragging{outline-color:#f2c141}
+#rpg-hud-container.layout .draggable.dragging{outline-color:#f2c141; outline-style:solid}
+#rpg-hud-container.layout .draggable::after{
+  content:attr(data-drag); position:absolute; right:0; bottom:100%; z-index:4;
+  margin-bottom:3px; pointer-events:none;
+  font-size:9px; font-weight:700; letter-spacing:1px; text-transform:uppercase;
+  background:rgba(14,16,20,.92); color:#f2c141; padding:1px 5px; border-radius:2px;
+}
+/* the stack's handle is the only thing layout mode adds to the flow, and it
+   only exists while arranging */
 .rpg-sao-handle{
-  display:none; font-size:10px; font-weight:700; letter-spacing:1.5px;
-  color:#f2c141; background:rgba(14,16,20,.9);
+  display:none; position:absolute; top:-22px; left:0; z-index:4;
+  font-size:10px; font-weight:700; letter-spacing:1.5px;
+  color:#f2c141; background:rgba(14,16,20,.92);
   border:1px solid rgba(242,193,65,.5); border-radius:3px;
-  padding:3px 8px; margin-bottom:5px; cursor:move; touch-action:none;
-  width:max-content;
+  padding:3px 8px; cursor:move; touch-action:none; white-space:nowrap;
 }
 #rpg-hud-container.layout .rpg-sao-handle{display:block}
-#rpg-hud-container.layout .rpg-sao-handle::before{content:none}
-#rpg-hud-container.layout .draggable::before{
-  content:attr(data-drag); position:absolute; top:-8px; left:0; z-index:3;
-  font-size:9px; font-weight:700; letter-spacing:1px; text-transform:uppercase;
-  background:rgba(14,16,20,.9); color:#f2c141; padding:1px 5px; border-radius:2px;
-  pointer-events:none;
-}
+#rpg-hud-container.layout .rpg-sao-handle::after{content:none}
+
 #rpg-hud-container.layout .draggable button,
 #rpg-hud-container.layout .draggable input,
 #rpg-hud-container.layout .draggable select,
 #rpg-hud-container.layout .draggable a{pointer-events:none !important}
-/* a group inside the bar stack is itself draggable, so it keeps its events */
 #rpg-hud-container.layout [data-drag]{pointer-events:auto !important; touch-action:none}
-/* let a piece be dragged clear of the stack instead of being clipped by it */
-#rpg-hud-container.layout .rpg-sao-vitals{overflow:visible; max-height:none; width:max-content;
-  min-width:180px; max-width:none}
-#rpg-hud-container.layout .rpg-sao-clockwrap{width:max-content}
-#rpg-hud-container.layout .rpg-sao-colinner{width:max-content}
-/* so an empty-looking piece still reads as a target */
-#rpg-hud-container.layout .draggable{background:rgba(255,255,255,.04); min-height:22px}
+/* only clipping changes, so a group can be pulled clear of the stack */
+#rpg-hud-container.layout .rpg-sao-vitals{overflow:visible}
 #rpg-sao-layout-bar{
   position:absolute; left:50%; transform:translateX(-50%);
   bottom:calc(env(safe-area-inset-bottom, 0px) + 12px);
