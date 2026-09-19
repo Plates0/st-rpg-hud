@@ -3460,26 +3460,27 @@ function saoPanelVars() {
   };
 }
 
-const SAO_DRAGGABLE = {
-  vitals: ".rpg-sao-vitals",
-  col: ".rpg-sao-col",
-  clock: ".rpg-sao-clockwrap",
-};
+// vitals/col/clock are anchored to the viewport; the rest sit in the bar
+// stack and shift relative to where they'd normally fall.
+const SAO_DRAG_KEYS = ["vitals", "col", "clock", "card", "meters", "party", "npcs", "foes"];
+
+// how much of a piece must stay on screen while dragging
+const SAO_KEEP_VISIBLE = 28;
 
 function saoPos() {
   const p = uiSettings.saoPos || {};
-  return {
-    vitals: Array.isArray(p.vitals) ? p.vitals : [0, 0],
-    col: Array.isArray(p.col) ? p.col : [0, 0],
-    clock: Array.isArray(p.clock) ? p.clock : [0, 0],
-  };
+  const out = {};
+  SAO_DRAG_KEYS.forEach((k) => { out[k] = Array.isArray(p[k]) ? p[k] : [0, 0]; });
+  return out;
 }
 
 function saoPosCss() {
   const p = saoPos();
-  return Object.keys(SAO_DRAGGABLE)
-    .map((k) => `--sao-${k}-x:${p[k][0]}px; --sao-${k}-y:${p[k][1]}px;`)
-    .join(" ");
+  return SAO_DRAG_KEYS.map((k) => `--sao-${k}-x:${p[k][0]}px; --sao-${k}-y:${p[k][1]}px;`).join(" ");
+}
+
+function saoDragStyle(key) {
+  return `position:relative; left:var(--sao-${key}-x, 0px); top:var(--sao-${key}-y, 0px);`;
 }
 
 function saoResetLayout() {
@@ -3494,10 +3495,11 @@ function saoResetLayout() {
 function saoBindDragging() {
   if (!saoLayoutMode) return;
   const vw = window.innerWidth, vh = window.innerHeight;
+  const K = SAO_KEEP_VISIBLE;
 
-  Object.entries(SAO_DRAGGABLE).forEach(([key, sel]) => {
-    const el = document.querySelector(sel);
-    if (!el) return;
+  document.querySelectorAll("[data-drag]").forEach((el) => {
+    const key = el.dataset.drag;
+    if (!SAO_DRAG_KEYS.includes(key)) return;
     el.classList.add("draggable");
 
     el.addEventListener("pointerdown", (ev) => {
@@ -3509,14 +3511,16 @@ function saoBindDragging() {
       el.setPointerCapture?.(ev.pointerId);
       el.classList.add("dragging");
 
-      const move = (m) => {
-        // keep at least a corner of the cluster reachable
-        const dx = clamp(m.clientX - x0, -r.left + 8, vw - r.right - 8 + r.width - 40);
-        const dy = clamp(m.clientY - y0, -r.top + 8, vh - r.bottom - 8 + r.height - 40);
+      // free to go nearly off screen; only a corner has to stay reachable
+      const clampX = (v) => clamp(v, K - r.right, vw - K - r.left);
+      const clampY = (v) => clamp(v, K - r.bottom, vh - K - r.top);
+
+      const apply = (m) => {
         const c = document.getElementById("rpg-hud-container");
-        c?.style.setProperty(`--sao-${key}-x`, `${Math.round(start[0] + dx)}px`);
-        c?.style.setProperty(`--sao-${key}-y`, `${Math.round(start[1] + dy)}px`);
+        c?.style.setProperty(`--sao-${key}-x`, `${Math.round(start[0] + clampX(m.clientX - x0))}px`);
+        c?.style.setProperty(`--sao-${key}-y`, `${Math.round(start[1] + clampY(m.clientY - y0))}px`);
       };
+      const move = apply;
 
       const up = (u) => {
         el.releasePointerCapture?.(ev.pointerId);
@@ -3524,10 +3528,9 @@ function saoBindDragging() {
         el.removeEventListener("pointermove", move);
         el.removeEventListener("pointerup", up);
         el.removeEventListener("pointercancel", up);
-        const dx = clamp(u.clientX - x0, -r.left + 8, vw - r.right - 8 + r.width - 40);
-        const dy = clamp(u.clientY - y0, -r.top + 8, vh - r.bottom - 8 + r.height - 40);
         const next = { ...saoPos() };
-        next[key] = [Math.round(start[0] + dx), Math.round(start[1] + dy)];
+        next[key] = [Math.round(start[0] + clampX(u.clientX - x0)),
+                     Math.round(start[1] + clampY(u.clientY - y0))];
         uiSettings.saoPos = next;
         saveUiSettings();
         saoPlacePanels();
@@ -4213,8 +4216,8 @@ function renderSaoSkin() {
     // --- vitals ---
     let vitals = "";
     if (showBars) {
-      vitals = `<div class="rpg-sao-vitals${animKind === "restore" && !uiSettings.barsOnMin ? " fadein" : ""}">
-        <div class="rpg-sao-card">
+      vitals = `<div class="rpg-sao-vitals${animKind === "restore" && !uiSettings.barsOnMin ? " fadein" : ""}" data-drag="vitals">
+        <div class="rpg-sao-card" data-drag="card" style="${saoDragStyle("card")}">
           <div class="rpg-sao-block">
             <div class="rpg-sao-name">${escHtml(pName)}</div>
             <div class="rpg-sao-stack">
@@ -4227,7 +4230,8 @@ function renderSaoSkin() {
         </div>`;
 
       if (pMeters.length) {
-        vitals += `<div class="rpg-sao-group">` + saoDivider("METERS", "meters") +
+        vitals += `<div class="rpg-sao-group" data-drag="meters" style="${saoDragStyle("meters")}">`
+          + saoDivider("METERS", "meters") +
           `<div class="rpg-sao-slim${saoCollapsed.meters ? " hide" : ""}">` +
           pMeters.map((m) => saoSlimRow(m.name, m.curr, m.max, saoMeterColor(m.name), null, false,
             `p/m:${normBondName(m.name)}`)).join("") +
@@ -4236,7 +4240,8 @@ function renderSaoSkin() {
       // party and NPCs get their own sections, each independently collapsible
       const unitGroup = (label, key, list, type) => {
         if (!list.length) return "";
-        return `<div class="rpg-sao-group">` + saoDivider(label, key) +
+        return `<div class="rpg-sao-group" data-drag="${key}" style="${saoDragStyle(key)}">`
+          + saoDivider(label, key) +
           `<div class="rpg-sao-slim${saoCollapsed[key] ? " hide" : ""}">` +
           list.map((u, i) => {
             const v = saoUnitView(u);
@@ -4252,7 +4257,7 @@ function renderSaoSkin() {
     // --- enemies ---
     let foesHtml = "";
     if (showBars && inCombat && enemies.length) {
-      foesHtml = `<div class="rpg-sao-foes"><div class="rpg-sao-group">` +
+      foesHtml = `<div class="rpg-sao-foes"><div class="rpg-sao-group" data-drag="foes" style="${saoDragStyle("foes")}">` +
         saoDivider(`ROUND ${escHtml(rpgState.combat.round ?? 1)}`, "foes", "#f0b6ab") +
         `<div class="rpg-sao-slim${saoCollapsed.foes ? " hide" : ""}">` +
         enemies.map((u, i) => {
@@ -4265,7 +4270,7 @@ function renderSaoSkin() {
     }
 
     // --- orbs ---
-    const orbs = `<div class="rpg-sao-col">` +
+    const orbs = `<div class="rpg-sao-col" data-drag="col">` +
       (saoMin ? "" : SAO_TABS.map((t, i) =>
         `<button class="rpg-sao-orb${saoPanel === t.id ? " on" : ""}" data-tab="${t.id}"
           style="animation-delay:${i * 45}ms" title="${escAttr(t.label)}">${t.icon}</button>`
@@ -4299,7 +4304,7 @@ function renderSaoSkin() {
 
     // --- clock ---
     const t = rpgState.world_time || {};
-    const clockHtml = saoMin ? "" : `<div class="rpg-sao-clockwrap">
+    const clockHtml = saoMin ? "" : `<div class="rpg-sao-clockwrap" data-drag="clock">
       ${saoTimersOpen ? `<div class="rpg-sao-timers">${saoTimersHtml()}</div>` : ""}
       <button class="rpg-sao-clock" id="rpg-sao-clock">
         <span class="rpg-sao-dot ${saoIndicatorClass(latest.status)}"></span>
@@ -4887,7 +4892,14 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   cursor:move; touch-action:none; border-radius:3px;
 }
 #rpg-hud-container.layout .draggable.dragging{outline-color:#f2c141}
-#rpg-hud-container.layout .draggable *{pointer-events:none !important}
+#rpg-hud-container.layout .draggable button,
+#rpg-hud-container.layout .draggable input,
+#rpg-hud-container.layout .draggable select,
+#rpg-hud-container.layout .draggable a{pointer-events:none !important}
+/* a group inside the bar stack is itself draggable, so it keeps its events */
+#rpg-hud-container.layout [data-drag]{pointer-events:auto !important; touch-action:none}
+/* let a piece be dragged clear of the stack instead of being clipped by it */
+#rpg-hud-container.layout .rpg-sao-vitals{overflow:visible; max-height:none}
 #rpg-sao-layout-bar{
   position:absolute; left:50%; transform:translateX(-50%);
   top:calc(env(safe-area-inset-top, 0px) + 10px);
