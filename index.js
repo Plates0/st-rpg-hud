@@ -355,6 +355,7 @@ const defaultUiSettings = {
   saoFont: "preset",      // "preset" | "sans" | "squarish"
   saoInk: 70,             // text contrast against the panel, 0 = faint, 100 = maximum
   saoAnimate: true,       // bar tweening, orb unfold, panel and clock fades
+  saoPos: null,           // {vitals:[x,y], col:[x,y], clock:[x,y]} drag offsets
   saoUiScale: 100,        // % size of the bar cluster; a desktop usually wants ~130
   saoTextShadow: false,   // shadow behind the text that sits straight on the chat
   saoTextBacking: false,  // translucent card behind that text instead        // "classic" | "sao"
@@ -3401,6 +3402,7 @@ let saoPanel = null;        // null | "status" | "bonds" | "quests" | "place" | 
 let saoMin = true;   // the overlay opens collapsed to its dot
 let saoTimersOpen = false;
 let saoHelpOpen = false;
+let saoLayoutMode = false;   // drag clusters around instead of using them
 let saoAnimKind = "";        // "" | "restore" | "collapse" | "panel"
 let saoAnimUntil = 0;        // animations apply to any render before this time
 let saoLastPct = new Map();  // bar key -> last painted %, so values can tween
@@ -3458,6 +3460,86 @@ function saoPanelVars() {
   };
 }
 
+const SAO_DRAGGABLE = {
+  vitals: ".rpg-sao-vitals",
+  col: ".rpg-sao-col",
+  clock: ".rpg-sao-clockwrap",
+};
+
+function saoPos() {
+  const p = uiSettings.saoPos || {};
+  return {
+    vitals: Array.isArray(p.vitals) ? p.vitals : [0, 0],
+    col: Array.isArray(p.col) ? p.col : [0, 0],
+    clock: Array.isArray(p.clock) ? p.clock : [0, 0],
+  };
+}
+
+function saoPosCss() {
+  const p = saoPos();
+  return Object.keys(SAO_DRAGGABLE)
+    .map((k) => `--sao-${k}-x:${p[k][0]}px; --sao-${k}-y:${p[k][1]}px;`)
+    .join(" ");
+}
+
+function saoResetLayout() {
+  uiSettings.saoPos = null;
+  saveUiSettings();
+  renderRPG();
+  if (window.toastr) window.toastr.info("HUD layout reset.");
+}
+
+// Drag by pointer. Interactive bits are switched off while this is on, so a
+// drag can't fire a button and a tap can't be mistaken for a nudge.
+function saoBindDragging() {
+  if (!saoLayoutMode) return;
+  const vw = window.innerWidth, vh = window.innerHeight;
+
+  Object.entries(SAO_DRAGGABLE).forEach(([key, sel]) => {
+    const el = document.querySelector(sel);
+    if (!el) return;
+    el.classList.add("draggable");
+
+    el.addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const start = saoPos()[key].slice();
+      const x0 = ev.clientX, y0 = ev.clientY;
+      const r = el.getBoundingClientRect();
+      el.setPointerCapture?.(ev.pointerId);
+      el.classList.add("dragging");
+
+      const move = (m) => {
+        // keep at least a corner of the cluster reachable
+        const dx = clamp(m.clientX - x0, -r.left + 8, vw - r.right - 8 + r.width - 40);
+        const dy = clamp(m.clientY - y0, -r.top + 8, vh - r.bottom - 8 + r.height - 40);
+        const c = document.getElementById("rpg-hud-container");
+        c?.style.setProperty(`--sao-${key}-x`, `${Math.round(start[0] + dx)}px`);
+        c?.style.setProperty(`--sao-${key}-y`, `${Math.round(start[1] + dy)}px`);
+      };
+
+      const up = (u) => {
+        el.releasePointerCapture?.(ev.pointerId);
+        el.classList.remove("dragging");
+        el.removeEventListener("pointermove", move);
+        el.removeEventListener("pointerup", up);
+        el.removeEventListener("pointercancel", up);
+        const dx = clamp(u.clientX - x0, -r.left + 8, vw - r.right - 8 + r.width - 40);
+        const dy = clamp(u.clientY - y0, -r.top + 8, vh - r.bottom - 8 + r.height - 40);
+        const next = { ...saoPos() };
+        next[key] = [Math.round(start[0] + dx), Math.round(start[1] + dy)];
+        uiSettings.saoPos = next;
+        saveUiSettings();
+        saoPlacePanels();
+      };
+
+      el.addEventListener("pointermove", move);
+      el.addEventListener("pointerup", up);
+      el.addEventListener("pointercancel", up);
+    });
+  });
+}
+
 function saoAnim(kind, ms) {
   saoAnimKind = kind;
   saoAnimUntil = performance.now() + (ms || 260);
@@ -3477,6 +3559,23 @@ function saoApplyPanelVars() {
 // Point the notch at the orb that is actually lit, rather than at the middle
 // of the panel. Clamped so it can't slide off the panel's own edges.
 function saoPlacePanels() {
+  // The column is draggable, so anchor the panels to where it actually is
+  // rather than to a fixed inset. On narrow screens they stay left-aligned.
+  const col = document.querySelector(".rpg-sao-col");
+  const vw = window.innerWidth || 0;
+  if (col && vw > 720) {
+    const cr = col.getBoundingClientRect();
+    const base = clamp(vw - cr.left + 14, 12, Math.max(12, vw - 360));
+    const menu = document.querySelector(".rpg-sao-menuwrap");
+    const panel = document.querySelector(".rpg-sao-panelwrap");
+    if (menu) menu.style.right = `${Math.round(base)}px`;
+    if (panel) {
+      const shift = panel.classList.contains("helpshift")
+        ? (menu ? menu.getBoundingClientRect().width + 14 : 220) : 0;
+      panel.style.right = `${Math.round(base + shift)}px`;
+    }
+  }
+
   const lit = document.querySelector(".rpg-sao-orb.on")
            || document.getElementById("rpg-sao-diag");
   const gear = document.querySelector('.rpg-sao-orb[data-tab="gear"]') || lit;
@@ -3945,6 +4044,8 @@ function saoHelpPanel() {
           "Dims the panels while they stay solid. Take it below halfway and they go dark, with the text inverting to light \u2014 small light-on-dark text renders crisper than dark-on-light.")
       + item("Reset settings",
           "Puts every slider and toggle back to its default. Your skin choice and chat data stay as they are.")
+      + item("Move HUD pieces",
+          "Drag the bars, the orb column and the clock wherever you like. Buttons stop responding while you're arranging, so a tap can't fire by accident. Reset puts them back.")
       + item("Animations",
           "Bars slide to their new value, orbs unfold when you reopen the HUD, and panels fade in. Off means everything snaps.")
       + item("Text contrast",
@@ -3989,6 +4090,7 @@ function saoSettingsHtml() {
     + row("rpg-sao-rescan", "&#8635;", "Rescan now")
     + row("rpg-sao-diagnose", "!", "Parse diagnostics")
     + row("rpg-sao-help", "?", saoHelpOpen ? "Hide help" : "What these do")
+    + row("rpg-sao-move", "\u2725", "Move HUD pieces")
     + row("rpg-sao-reset", "\u21BA", "Reset settings")
     + row("rpg-sao-insert", "&#8595;", "Insert state")
     + row("rpg-sao-remind", "&#9993;", "Remind state")
@@ -4072,6 +4174,7 @@ function renderSaoSkin() {
   container.style.cssText = `position:fixed; top:0; left:0; right:0; bottom:auto;
     height:100vh; height:100svh; z-index:9999; pointer-events:none;
     --rpg-sao-ui:${clamp(uiSettings.saoUiScale ?? 100, 70, 300) / 100};
+    ${saoPosCss()}
     ${(() => { const v = saoPanelVars(); return `--rpg-sao-panel-l:${v.l}%;
     --rpg-sao-ink:${v.ink}; --rpg-sao-ink-dim:${v.inkDim};
     --rpg-sao-rule:${v.rule}; --rpg-sao-chip:${v.chip};`; })()}
@@ -4080,6 +4183,7 @@ function renderSaoSkin() {
   const animKind = live ? saoAnimKind : "";
   const anim = animKind ? ` anim-${animKind}` : "";
   container.className =
+    (saoLayoutMode ? "layout " : "") +
     (uiSettings.saoTextShadow ? "rpg-sao-sh " : "") +
     (uiSettings.saoTextBacking ? "rpg-sao-bk" : "") + anim;
   container.style.cssText += `
@@ -4206,11 +4310,18 @@ function renderSaoSkin() {
         </span></button></div>`;
 
     if (vitals) vitals += foesHtml + `</div>`;
-    container.innerHTML = SAO_CSS + vitals + orbs + panelHtml + menuHtml + clockHtml;
+    const layoutBar = saoLayoutMode
+      ? `<div id="rpg-sao-layout-bar">Drag the pieces
+          <button class="ghost" id="rpg-sao-layout-reset">Reset</button>
+          <button id="rpg-sao-layout-done">Done</button></div>`
+      : "";
+
+    container.innerHTML = SAO_CSS + vitals + orbs + panelHtml + menuHtml + clockHtml + layoutBar;
 
     saoFitName();          // may change the bar width, so run it first
     saoPaintBars();
     saoPlacePanels();
+    saoBindDragging();
     requestAnimationFrame(() => { saoFitName(); saoPaintBars(); saoPlacePanels(); });
     saoBind();
   } catch (e) {
@@ -4308,6 +4419,9 @@ function saoBind() {
   });
   bind("rpg-sao-diagnose", () => { saoMin = false; saoPanel = "error"; renderRPG(); });
   bind("rpg-sao-help", () => { saoHelpOpen = !saoHelpOpen; renderRPG(); });
+  bind("rpg-sao-move", () => { saoLayoutMode = true; saoPanel = null; renderRPG(); });
+  bind("rpg-sao-layout-done", () => { saoLayoutMode = false; renderRPG(); });
+  bind("rpg-sao-layout-reset", saoResetLayout);
   bind("rpg-sao-reset", resetUiSettings);
   // the embedded error panel closes itself via isErrorOpen, which this skin
   // doesn't use — its visibility is saoPanel, so close that instead
@@ -4429,7 +4543,7 @@ const SAO_CSS = `<style id="rpg-sao-style">
    screen. The reserved strip matches the clock's, so it clears the chat box. */
 .rpg-sao-vitals{position:absolute; left:8px;
   width:min(calc(322px * var(--rpg-sao-ui, 1)), calc(100vw - 130px));
-  top:calc(env(safe-area-inset-top, 0px) + 12px);
+  top:calc(env(safe-area-inset-top, 0px) + 12px + var(--sao-vitals-y, 0px));
   max-height:calc(100svh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)
                   - var(--rpg-sao-clock-lift, 84px) - 24px);
   overflow-y:auto; overflow-x:hidden; padding-right:4px;
@@ -4496,7 +4610,8 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-sao-foes .rpg-sao-div{color:#f0b6ab}
 .rpg-sao-npcdiv{color:#bcd4e8}
 
-.rpg-sao-col{position:absolute; right:22px; top:0; bottom:0;
+.rpg-sao-col{position:absolute; right:calc(22px - var(--sao-col-x, 0px));
+  top:var(--sao-col-y, 0px); bottom:calc(0px - var(--sao-col-y, 0px));
   padding:calc(env(safe-area-inset-top, 0px) + 12px) 0
           calc(env(safe-area-inset-bottom, 0px) + var(--rpg-sao-clock-lift, 84px) + 58px);
   display:flex; flex-direction:column; justify-content:center; align-items:center;
@@ -4684,8 +4799,9 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   /* --rpg-sao-ink, --rpg-sao-ink-dim, --rpg-sao-rule and --rpg-sao-chip are set
      on the container, because they have to flip once the panel goes dark. */
 }
-.rpg-sao-clockwrap{position:absolute; right:22px;
-  bottom:calc(env(safe-area-inset-bottom, 0px) + var(--rpg-sao-clock-lift, 84px));
+.rpg-sao-clockwrap{position:absolute; right:calc(22px - var(--sao-clock-x, 0px));
+  bottom:calc(env(safe-area-inset-bottom, 0px) + var(--rpg-sao-clock-lift, 84px)
+              - var(--sao-clock-y, 0px));
   display:flex; flex-direction:column; align-items:flex-end; gap:8px}
 .rpg-sao-timers{position:relative; width:252px; background:var(--rpg-sao-panel);
   box-sizing:border-box; border:3px solid transparent;
@@ -4752,8 +4868,8 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   .rpg-sao-menu{width:min(206px, calc(100vw - var(--rpg-sao-orb) - 62px))}
   .rpg-sao-menuwrap.hashelp{display:none}
   .rpg-sao-panelwrap.helpshift{right:auto; left:12px}
-  .rpg-sao-col{right:12px}
-  .rpg-sao-clockwrap{right:12px}
+  .rpg-sao-col{right:calc(12px - var(--sao-col-x, 0px))}
+  .rpg-sao-clockwrap{right:calc(12px - var(--sao-clock-x, 0px))}
   .rpg-sao-timers{width:min(74vw,246px)}
   .rpg-sao-cstack .hhmm{font-size:20px; letter-spacing:2px}
   .rpg-sao-cstack .date{font-size:10px}
@@ -4765,6 +4881,26 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   from{opacity:0; transform:translateX(14px) scale(.72)}
   to{opacity:1; transform:none}
 }
+#rpg-hud-container.layout .rpg-sao-col{pointer-events:auto}
+#rpg-hud-container.layout .draggable{
+  outline:2px dashed rgba(255,255,255,.55); outline-offset:3px;
+  cursor:move; touch-action:none; border-radius:3px;
+}
+#rpg-hud-container.layout .draggable.dragging{outline-color:#f2c141}
+#rpg-hud-container.layout .draggable *{pointer-events:none !important}
+#rpg-sao-layout-bar{
+  position:absolute; left:50%; transform:translateX(-50%);
+  top:calc(env(safe-area-inset-top, 0px) + 10px);
+  display:flex; gap:6px; align-items:center;
+  background:rgba(14,16,20,.92); border:1px solid rgba(255,255,255,.25);
+  border-radius:4px; padding:6px 8px; color:#e8e6e0; font-size:12px; font-weight:600;
+}
+#rpg-sao-layout-bar button{
+  font-family:inherit; font-size:12px; font-weight:700; cursor:pointer;
+  background:#f2c141; color:#2a2209; border:0; padding:4px 12px; border-radius:3px;
+}
+#rpg-sao-layout-bar button.ghost{background:transparent; color:#cfcbc2; border:1px solid #4a4d55}
+
 @keyframes rpgSaoFadeIn{ from{opacity:0} to{opacity:1} }
 @keyframes rpgSaoRise{ from{opacity:0; transform:translateY(8px)} to{opacity:1; transform:none} }
 @keyframes rpgSaoDotIn{
