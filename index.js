@@ -3520,6 +3520,7 @@ function saoBindDragging() {
     const r = el.getBoundingClientRect();
     const gx = parseFloat(el.style.left) || 0, gy = parseFloat(el.style.top) || 0;
     el.classList.add("dragging");
+    saoDragging = true;
 
     // Panels open to the LEFT of the orbs, so the column stops short of that
     // edge; everything else may go nearly off screen.
@@ -3560,6 +3561,7 @@ function saoBindDragging() {
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
       el.classList.remove("dragging");
+      saoDragging = false;
       const [dx, dy] = apply(u);
       c.querySelectorAll(".rpg-sao-guide").forEach((g) => g.remove());
       const next = { ...saoPos() };
@@ -3595,101 +3597,14 @@ function saoApplyPanelVars() {
 
 // Point the notch at the orb that is actually lit, rather than at the middle
 // of the panel. Clamped so it can't slide off the panel's own edges.
-// Applied on every render so a bad saved offset can never survive a reload.
-const SAO_SNAP_PX = 9;
-
-// Edges and centres worth lining up to: the other pieces, and the viewport.
-// All in container coordinates, which start at the top-left of the screen.
-function saoSnapTargets(exceptKey) {
-  const c = document.getElementById("rpg-hud-container");
-  const xs = [], ys = [];
-  if (!c) return { xs, ys };
-
-  const vw = window.innerWidth, vh = window.innerHeight;
-  xs.push(0, vw / 2, vw);
-  ys.push(0, vh / 2, vh);
-
-  c.querySelectorAll(".rpg-sao-ghost").forEach((g) => {
-    if (g.dataset.ghost === exceptKey) return;
-    const l = parseFloat(g.style.left) || 0, t = parseFloat(g.style.top) || 0;
-    const w = g.offsetWidth, h = g.offsetHeight;
-    xs.push(l, l + w / 2, l + w);
-    ys.push(t, t + h / 2, t + h);
-  });
-  return { xs, ys };
-}
-
-// nearest target within the threshold, or null
-function saoNearest(values, targets) {
-  let best = null;
-  targets.forEach((t) => {
-    values.forEach((v) => {
-      const d = t - v;
-      if (Math.abs(d) <= SAO_SNAP_PX && (!best || Math.abs(d) < Math.abs(best.d))) best = { d, at: t };
-    });
-  });
-  return best;
-}
-
-function saoDrawGuides(x, y) {
-  const c = document.getElementById("rpg-hud-container");
-  if (!c) return;
-  c.querySelectorAll(".rpg-sao-guide").forEach((g) => g.remove());
-  const add = (vertical, at) => {
-    const g = document.createElement("div");
-    g.className = "rpg-sao-guide";
-    if (vertical) { g.style.left = `${at}px`; g.style.top = "0"; g.style.width = "1px"; g.style.height = "100%"; }
-    else { g.style.top = `${at}px`; g.style.left = "0"; g.style.height = "1px"; g.style.width = "100%"; }
-    c.appendChild(g);
-  };
-  if (x !== null) add(true, x);
-  if (y !== null) add(false, y);
-}
-
-// union of a piece's visible children, in viewport coordinates
-function saoContentRect(el) {
-  let box = null;
-  const add = (r) => {
-    if (!r || r.width < 1 || r.height < 1) return;
-    box = box ? {
-      left: Math.min(box.left, r.left), top: Math.min(box.top, r.top),
-      right: Math.max(box.right, r.right), bottom: Math.max(box.bottom, r.bottom),
-    } : { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
-  };
-  Array.from(el.children).forEach((c) => {
-    if (c.classList?.contains("rpg-sao-ghost")) return;
-    add(c.getBoundingClientRect());
-  });
-  if (!box) add(el.getBoundingClientRect());
-  return box;
-}
-
-// Rebuild the drag overlays so each one sits exactly on what it moves.
-function saoDrawGhosts() {
-  const c = document.getElementById("rpg-hud-container");
-  if (!c) return;
-  c.querySelectorAll(".rpg-sao-ghost").forEach((g) => g.remove());
-  if (!saoLayoutMode) return;
-
-  const cr = c.getBoundingClientRect();
-  SAO_DRAG_KEYS.forEach((key) => {
-    const el = document.querySelector(`[data-drag="${key}"]`);
-    if (!el) return;
-    const b = saoContentRect(el);
-    if (!b) return;
-    const g = document.createElement("div");
-    g.className = "rpg-sao-ghost";
-    g.dataset.ghost = key;
-    g.style.left = `${Math.round(b.left - cr.left) - 3}px`;
-    g.style.top = `${Math.round(b.top - cr.top) - 3}px`;
-    g.style.width = `${Math.round(b.right - b.left) + 6}px`;
-    g.style.height = `${Math.round(b.bottom - b.top) + 6}px`;
-    g.textContent = key === "vitals" ? "BARS" : key === "col" ? "MENU" : "CLOCK";
-    c.appendChild(g);
-  });
-}
+// A last-resort rescue, not a layout rule. It only acts when a piece is
+// genuinely unreachable — almost entirely off screen — because anything
+// stricter nudges pieces on ordinary renders and the correction is saved,
+// so small errors would accumulate every time the HUD redrew.
+let saoDragging = false;
 
 function saoEnforceOnScreen() {
+  if (saoDragging) return;
   const vw = window.innerWidth, vh = window.innerHeight;
   const c = document.getElementById("rpg-hud-container");
   if (!vw || !vh || !c) return;
@@ -3701,25 +3616,17 @@ function saoEnforceOnScreen() {
     const el = document.querySelector(`[data-drag="${key}"]`);
     if (!el) return;
     const r = el.getBoundingClientRect();
-    if (!r.width || !r.height) return;
+    if (r.width < 2 || r.height < 2) return;
 
+    // "unreachable" means there is nothing left to grab, with a wide margin
+    const MIN = 24;
     let dx = 0, dy = 0;
-    if (key === "col") {
-      // must stay entirely visible, and leave room for the panels it opens
-      const leftRoom = vw > 720 ? 330 : 120;
-      if (r.left < leftRoom) dx = leftRoom - r.left;
-      if (r.right + dx > vw - 4) dx = vw - 4 - r.right;
-      if (r.top < 4) dy = 4 - r.top;
-      if (r.bottom + dy > vh - 4) dy = vh - 4 - r.bottom;
-    } else {
-      const K = SAO_KEEP_VISIBLE;
-      if (r.right < K) dx = K - r.right;
-      else if (r.left > vw - K) dx = vw - K - r.left;
-      if (r.bottom < K) dy = K - r.bottom;
-      else if (r.top > vh - K) dy = vh - K - r.top;
-    }
+    if (r.right < MIN) dx = MIN - r.right;
+    else if (r.left > vw - MIN) dx = vw - MIN - r.left;
+    if (r.bottom < MIN) dy = MIN - r.bottom;
+    else if (r.top > vh - MIN) dy = vh - MIN - r.top;
 
-    if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
       pos[key] = [Math.round(pos[key][0] + dx), Math.round(pos[key][1] + dy)];
       c.style.setProperty(`--sao-${key}-x`, `${pos[key][0]}px`);
       c.style.setProperty(`--sao-${key}-y`, `${pos[key][1]}px`);
@@ -4502,10 +4409,10 @@ function renderSaoSkin() {
 
     saoFitName();          // may change the bar width, so run it first
     saoPaintBars();
-    saoEnforceOnScreen();
     saoPlacePanels();
     requestAnimationFrame(() => {
-      saoFitName(); saoPaintBars(); saoEnforceOnScreen(); saoPlacePanels();
+      saoFitName(); saoPaintBars(); saoPlacePanels();
+      saoEnforceOnScreen();
       saoBindDragging(); saoDrawGhosts();
     });
     saoBind();
@@ -4723,7 +4630,7 @@ if (!window.__rpgSaoResizeBound) {
     if ((uiSettings.skin || "classic") !== "sao") return;
     clearTimeout(rt);
     rt = setTimeout(() => {
-      saoFitName(); saoPaintBars(); saoEnforceOnScreen(); saoPlacePanels();
+      saoFitName(); saoPaintBars(); saoPlacePanels(); saoEnforceOnScreen();
     }, 120);
   });
 }
