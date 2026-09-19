@@ -3471,7 +3471,6 @@ const SAO_DRAG_KEYS = ["vitals", "col", "clock", "card", "meters", "party", "npc
 // How much of a piece must stay on screen. The orb column is the way back to
 // settings, so it keeps a whole orb visible — losing it would strand the HUD.
 const SAO_KEEP_VISIBLE = 28;
-const SAO_KEEP_COL = 62;
 
 function saoPos() {
   const p = uiSettings.saoPos || {};
@@ -3504,7 +3503,8 @@ function saoBindDragging() {
   document.querySelectorAll("[data-drag]").forEach((el) => {
     const key = el.dataset.drag;
     if (!SAO_DRAG_KEYS.includes(key)) return;
-    const K = key === "col" ? SAO_KEEP_COL : SAO_KEEP_VISIBLE;
+    const whole = key === "col";     // must stay fully reachable
+    const K = SAO_KEEP_VISIBLE;
     el.classList.add("draggable");
 
     el.addEventListener("pointerdown", (ev) => {
@@ -3512,13 +3512,18 @@ function saoBindDragging() {
       ev.stopPropagation();
       const start = saoPos()[key].slice();
       const x0 = ev.clientX, y0 = ev.clientY;
-      const r = el.getBoundingClientRect();
+      const box = document.querySelector(`[data-drag-box="${key}"]`) || el;
+      const r = box.getBoundingClientRect();
       el.setPointerCapture?.(ev.pointerId);
       el.classList.add("dragging");
 
       // free to go nearly off screen; only a corner has to stay reachable
-      const clampX = (v) => clamp(v, K - r.right, vw - K - r.left);
-      const clampY = (v) => clamp(v, K - r.bottom, vh - K - r.top);
+      const clampX = whole
+        ? (v) => clamp(v, 4 - r.left, vw - 4 - r.right)
+        : (v) => clamp(v, K - r.right, vw - K - r.left);
+      const clampY = whole
+        ? (v) => clamp(v, 4 - r.top, vh - 4 - r.bottom)
+        : (v) => clamp(v, K - r.bottom, vh - K - r.top);
 
       const apply = (m) => {
         const c = document.getElementById("rpg-hud-container");
@@ -4221,7 +4226,8 @@ function renderSaoSkin() {
     // --- vitals ---
     let vitals = "";
     if (showBars) {
-      vitals = `<div class="rpg-sao-vitals${animKind === "restore" && !uiSettings.barsOnMin ? " fadein" : ""}" data-drag="vitals">
+      vitals = `<div class="rpg-sao-vitals${animKind === "restore" && !uiSettings.barsOnMin ? " fadein" : ""}" data-drag-box="vitals">
+        ${saoLayoutMode ? `<div class="rpg-sao-handle" data-drag="vitals">\u283F ALL BARS</div>` : ""}
         <div class="rpg-sao-card" data-drag="card" style="${saoDragStyle("card")}">
           <div class="rpg-sao-block">
             <div class="rpg-sao-name">${escHtml(pName)}</div>
@@ -4902,6 +4908,15 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   cursor:move; touch-action:none; border-radius:3px;
 }
 #rpg-hud-container.layout .draggable.dragging{outline-color:#f2c141}
+.rpg-sao-handle{
+  display:none; font-size:10px; font-weight:700; letter-spacing:1.5px;
+  color:#f2c141; background:rgba(14,16,20,.9);
+  border:1px solid rgba(242,193,65,.5); border-radius:3px;
+  padding:3px 8px; margin-bottom:5px; cursor:move; touch-action:none;
+  width:max-content;
+}
+#rpg-hud-container.layout .rpg-sao-handle{display:block}
+#rpg-hud-container.layout .rpg-sao-handle::before{content:none}
 #rpg-hud-container.layout .draggable::before{
   content:attr(data-drag); position:absolute; top:-8px; left:0; z-index:3;
   font-size:9px; font-weight:700; letter-spacing:1px; text-transform:uppercase;
