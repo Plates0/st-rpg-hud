@@ -3476,7 +3476,12 @@ const SAO_KEEP_VISIBLE = 28;
 function saoPos() {
   const p = uiSettings.saoPos || {};
   const out = {};
-  SAO_DRAG_KEYS.forEach((k) => { out[k] = Array.isArray(p[k]) ? p[k] : [0, 0]; });
+  SAO_DRAG_KEYS.forEach((k) => {
+    const v = p[k];
+    const x = Array.isArray(v) ? Number(v[0]) : 0;
+    const y = Array.isArray(v) ? Number(v[1]) : 0;
+    out[k] = [Number.isFinite(x) ? x : 0, Number.isFinite(y) ? y : 0];
+  });
   return out;
 }
 
@@ -4412,7 +4417,6 @@ function renderSaoSkin() {
     saoPlacePanels();
     requestAnimationFrame(() => {
       saoFitName(); saoPaintBars(); saoPlacePanels();
-      saoEnforceOnScreen();
       saoBindDragging(); saoDrawGhosts();
     });
     saoBind();
@@ -4516,6 +4520,8 @@ function saoBind() {
     saoPanel = null;
     saoMin = false;        // everything has to be on screen to be arranged
     renderRPG();
+    // the one place a rescue is expected, and visible when it happens
+    requestAnimationFrame(() => { saoEnforceOnScreen(); saoDrawGhosts(); });
   });
   bind("rpg-sao-layout-done", () => { saoLayoutMode = false; renderRPG(); });
   bind("rpg-sao-layout-reset", saoResetLayout);
@@ -4630,7 +4636,7 @@ if (!window.__rpgSaoResizeBound) {
     if ((uiSettings.skin || "classic") !== "sao") return;
     clearTimeout(rt);
     rt = setTimeout(() => {
-      saoFitName(); saoPaintBars(); saoPlacePanels(); saoEnforceOnScreen();
+      saoFitName(); saoPaintBars(); saoPlacePanels();
     }, 120);
   });
 }
