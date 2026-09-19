@@ -3488,6 +3488,46 @@ function saoDragStyle(key) {
   return `position:relative; left:var(--sao-${key}-x, 0px); top:var(--sao-${key}-y, 0px);`;
 }
 
+// Offsets saved in an earlier session can leave a piece stranded off screen —
+// and if that piece is the card, its parent still draws as an empty outline,
+// which is exactly what "the box is empty" looks like. Pull everything back.
+function saoRescuePieces() {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  if (!vw || !vh) return false;
+  const pos = saoPos();
+  let changed = false;
+
+  SAO_DRAG_KEYS.forEach((key) => {
+    const el = document.querySelector(`[data-drag-box="${key}"]`)
+            || document.querySelector(`[data-drag="${key}"]`);
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+
+    const M = 8;
+    let dx = 0, dy = 0;
+    if (r.right < M) dx = M - r.right;                  // off the left
+    else if (r.left > vw - M) dx = vw - M - r.left;     // off the right
+    if (r.bottom < M) dy = M - r.bottom;                // off the top
+    else if (r.top > vh - M) dy = vh - M - r.top;       // off the bottom
+
+    // anything sitting fully outside gets pulled flush to that edge
+    if (r.left < 0 && r.right < 120) dx = Math.max(dx, -r.left + 8);
+    if (r.top < 0 && r.bottom < 120) dy = Math.max(dy, -r.top + 8);
+
+    if (dx || dy) {
+      pos[key] = [Math.round(pos[key][0] + dx), Math.round(pos[key][1] + dy)];
+      changed = true;
+    }
+  });
+
+  if (changed) {
+    uiSettings.saoPos = pos;
+    saveUiSettings();
+  }
+  return changed;
+}
+
 function saoResetLayout() {
   uiSettings.saoPos = null;
   saveUiSettings();
@@ -4332,8 +4372,8 @@ function renderSaoSkin() {
 
     if (vitals) vitals += foesHtml + `</div>`;
     const layoutBar = saoLayoutMode
-      ? `<div id="rpg-sao-layout-bar">Drag the pieces
-          <button class="ghost" id="rpg-sao-layout-reset">Reset</button>
+      ? `<div id="rpg-sao-layout-bar">Drag any outlined piece
+          <button class="ghost" id="rpg-sao-layout-reset" title="Put every piece back where it started">Reset all</button>
           <button id="rpg-sao-layout-done">Done</button></div>`
       : "";
 
@@ -4445,6 +4485,8 @@ function saoBind() {
     saoPanel = null;
     saoMin = false;        // everything has to be on screen to be arranged
     renderRPG();
+    // measure once the pieces are laid out, then fix any that are stranded
+    requestAnimationFrame(() => { if (saoRescuePieces()) renderRPG(); });
   });
   bind("rpg-sao-layout-done", () => { saoLayoutMode = false; renderRPG(); });
   bind("rpg-sao-layout-reset", saoResetLayout);
@@ -4937,7 +4979,12 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 /* a group inside the bar stack is itself draggable, so it keeps its events */
 #rpg-hud-container.layout [data-drag]{pointer-events:auto !important; touch-action:none}
 /* let a piece be dragged clear of the stack instead of being clipped by it */
-#rpg-hud-container.layout .rpg-sao-vitals{overflow:visible; max-height:none}
+#rpg-hud-container.layout .rpg-sao-vitals{overflow:visible; max-height:none; width:max-content;
+  min-width:180px; max-width:none}
+#rpg-hud-container.layout .rpg-sao-clockwrap{width:max-content}
+#rpg-hud-container.layout .rpg-sao-colinner{width:max-content}
+/* so an empty-looking piece still reads as a target */
+#rpg-hud-container.layout .draggable{background:rgba(255,255,255,.04); min-height:22px}
 #rpg-sao-layout-bar{
   position:absolute; left:50%; transform:translateX(-50%);
   bottom:calc(env(safe-area-inset-bottom, 0px) + 12px);
