@@ -3493,64 +3493,70 @@ function saoResetLayout() {
 
 // Drag by pointer. Interactive bits are switched off while this is on, so a
 // drag can't fire a button and a tap can't be mistaken for a nudge.
+// Delegated from the container, and bound once. Ghosts are recreated after
+// every drag and every re-render, so per-element listeners went stale the
+// moment you let go.
 function saoBindDragging() {
-  if (!saoLayoutMode) return;
-  const vw = window.innerWidth, vh = window.innerHeight;
-  document.querySelectorAll(".rpg-sao-ghost").forEach((el) => {
+  const c = document.getElementById("rpg-hud-container");
+  if (!c || c.dataset.dragBound === "1") return;
+  c.dataset.dragBound = "1";
+
+  c.addEventListener("pointerdown", (ev) => {
+    if (!saoLayoutMode) return;
+    const el = ev.target?.closest?.(".rpg-sao-ghost");
+    if (!el) return;
     const key = el.dataset.ghost;
     if (!SAO_DRAG_KEYS.includes(key)) return;
-    const whole = key === "col";     // must stay fully reachable
 
-    el.addEventListener("pointerdown", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      const start = saoPos()[key].slice();
-      const x0 = ev.clientX, y0 = ev.clientY;
-      const r = el.getBoundingClientRect();
-      el.setPointerCapture?.(ev.pointerId);
-      el.classList.add("dragging");
+    ev.preventDefault();
+    ev.stopPropagation();
 
-      // free to go nearly off screen; only a corner has to stay reachable
-      // Panels open to the LEFT of the orbs, so the column has to stop short
-      // of the left edge or the settings menu would open off screen.
-      const leftRoom = vw > 720 ? 330 : 120;
-      const clampX = whole
-        ? (v) => clamp(v, leftRoom - r.left, vw - 4 - r.right)
-        : (v) => clamp(v, K - r.right, vw - K - r.left);
-      const clampY = whole
-        ? (v) => clamp(v, 4 - r.top, vh - 4 - r.bottom)
-        : (v) => clamp(v, K - r.bottom, vh - K - r.top);
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const K = SAO_KEEP_VISIBLE;
+    const whole = key === "col";          // the way back to settings
+    const start = saoPos()[key].slice();
+    const x0 = ev.clientX, y0 = ev.clientY;
+    const r = el.getBoundingClientRect();
+    const gx = parseFloat(el.style.left) || 0, gy = parseFloat(el.style.top) || 0;
+    el.classList.add("dragging");
 
-      const gx = parseFloat(el.style.left) || 0, gy = parseFloat(el.style.top) || 0;
-      const apply = (m) => {
-        const dx = clampX(m.clientX - x0), dy = clampY(m.clientY - y0);
-        const c = document.getElementById("rpg-hud-container");
-        c?.style.setProperty(`--sao-${key}-x`, `${Math.round(start[0] + dx)}px`);
-        c?.style.setProperty(`--sao-${key}-y`, `${Math.round(start[1] + dy)}px`);
-        el.style.left = `${Math.round(gx + dx)}px`;   // overlay follows live
-        el.style.top = `${Math.round(gy + dy)}px`;
-      };
-      const move = apply;
+    // Panels open to the LEFT of the orbs, so the column stops short of that
+    // edge; everything else may go nearly off screen.
+    const leftRoom = vw > 720 ? 330 : 120;
+    const clampX = whole
+      ? (v) => clamp(v, leftRoom - r.left, vw - 4 - r.right)
+      : (v) => clamp(v, K - r.right, vw - K - r.left);
+    const clampY = whole
+      ? (v) => clamp(v, 4 - r.top, vh - 4 - r.bottom)
+      : (v) => clamp(v, K - r.bottom, vh - K - r.top);
 
-      const up = (u) => {
-        el.releasePointerCapture?.(ev.pointerId);
-        el.classList.remove("dragging");
-        el.removeEventListener("pointermove", move);
-        el.removeEventListener("pointerup", up);
-        el.removeEventListener("pointercancel", up);
-        const next = { ...saoPos() };
-        next[key] = [Math.round(start[0] + clampX(u.clientX - x0)),
-                     Math.round(start[1] + clampY(u.clientY - y0))];
-        uiSettings.saoPos = next;
-        saveUiSettings();
-        saoPlacePanels();
-        requestAnimationFrame(saoDrawGhosts);
-      };
+    const apply = (m) => {
+      const dx = clampX(m.clientX - x0), dy = clampY(m.clientY - y0);
+      c.style.setProperty(`--sao-${key}-x`, `${Math.round(start[0] + dx)}px`);
+      c.style.setProperty(`--sao-${key}-y`, `${Math.round(start[1] + dy)}px`);
+      el.style.left = `${Math.round(gx + dx)}px`;
+      el.style.top = `${Math.round(gy + dy)}px`;
+      return [dx, dy];
+    };
 
-      el.addEventListener("pointermove", move);
-      el.addEventListener("pointerup", up);
-      el.addEventListener("pointercancel", up);
-    });
+    const up = (u) => {
+      window.removeEventListener("pointermove", apply);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      el.classList.remove("dragging");
+      const [dx, dy] = apply(u);
+      const next = { ...saoPos() };
+      next[key] = [Math.round(start[0] + dx), Math.round(start[1] + dy)];
+      uiSettings.saoPos = next;
+      saveUiSettings();
+      saoPlacePanels();
+      requestAnimationFrame(saoDrawGhosts);
+    };
+
+    // on window, so a fast drag that leaves the overlay still tracks
+    window.addEventListener("pointermove", apply);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   });
 }
 
@@ -4431,7 +4437,7 @@ function renderSaoSkin() {
     saoPlacePanels();
     requestAnimationFrame(() => {
       saoFitName(); saoPaintBars(); saoEnforceOnScreen(); saoPlacePanels();
-      saoDrawGhosts(); saoBindDragging();
+      saoBindDragging(); saoDrawGhosts();
     });
     saoBind();
   } catch (e) {
