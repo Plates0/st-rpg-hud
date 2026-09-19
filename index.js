@@ -4664,7 +4664,7 @@ const SAO_CSS = `<style id="rpg-sao-style">
 
 /* The whole left stack scrolls rather than running off the bottom of the
    screen. The reserved strip matches the clock's, so it clears the chat box. */
-.rpg-sao-vitals{position:absolute; left:8px;
+.rpg-sao-vitals{position:absolute; left:calc(8px + var(--sao-vitals-x, 0px));
   width:min(calc(322px * var(--rpg-sao-ui, 1)), calc(100vw - 130px));
   top:calc(env(safe-area-inset-top, 0px) + 12px + var(--sao-vitals-y, 0px));
   max-height:calc(100svh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)
