@@ -352,7 +352,10 @@ const defaultUiSettings = {
   autoAddBonds: true,     // add party/NPC |Bond:| values to the ledger automatically
   saoPanelLight: 92,      // panel lightness %, lower = dimmer but still solid
   saoCardAlpha: 11,       // % wash behind the player's HP/MP bars; higher = lighter
-  saoFont: "preset",      // "preset" follows the font setting, "sans" uses the skin's own
+  saoFont: "preset",      // "preset" | "sans" | "squarish"
+  saoInk: 70,             // text contrast against the panel, 0 = faint, 100 = maximum
+  saoAnimate: true,       // bar tweening, orb unfold, panel and clock fades
+  saoPos: null,           // {vitals:[x,y], col:[x,y], clock:[x,y]} drag offsets
   saoUiScale: 100,        // % size of the bar cluster; a desktop usually wants ~130
   saoTextShadow: false,   // shadow behind the text that sits straight on the chat
   saoTextBacking: false,  // translucent card behind that text instead        // "classic" | "sao"
@@ -2982,7 +2985,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         ${bondBlocklist.size ? `<button id="rpg-settings-unblock" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px; cursor:pointer;">Unblock ${bondBlocklist.size} bond(s)</button>` : ""}
 
         <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Appearance</div>
-        <button id="rpg-settings-reset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px; cursor:pointer;">↺ Reset settings to defaults</button>
+        <button id="rpg-settings-reset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:6px; cursor:pointer;">↺ Reset settings to defaults</button>
+        <button id="rpg-settings-resetlayout" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px; cursor:pointer;">✥ Reset SAO layout</button>
 
         <div style="background:rgba(255,255,255,0.06); border:1px solid #333; border-radius:4px; padding:8px; margin-bottom:10px;">
         <div style="font-size:0.75em; color:#bbb; margin-bottom:6px;">Skin</div>
@@ -3313,6 +3317,9 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	  const resetEl = document.getElementById("rpg-settings-reset");
 	  if (resetEl) resetEl.onclick = resetUiSettings;
 
+	  const rlEl = document.getElementById("rpg-settings-resetlayout");
+	  if (rlEl) rlEl.onclick = (e) => { e.stopPropagation(); saoResetLayout(); };
+
 	  const skinEl = document.getElementById("rpg-skin-select");
 	  if (skinEl) {
 	    skinEl.value = uiSettings.skin || "classic";
@@ -3399,6 +3406,11 @@ let saoPanel = null;        // null | "status" | "bonds" | "quests" | "place" | 
 let saoMin = true;   // the overlay opens collapsed to its dot
 let saoTimersOpen = false;
 let saoHelpOpen = false;
+let saoLayoutMode = false;   // drag clusters around instead of using them
+let saoAnimKind = "";        // "" | "restore" | "collapse" | "panel"
+let saoAnimUntil = 0;        // animations apply to any render before this time
+let saoLastPct = new Map();  // bar key -> last painted %, so values can tween
+let saoTweens = new Map();   // bar key -> running animation token
 let saoCollapsed = { meters: false, party: false, npcs: false, foes: false };
 let saoSub = "stats";
 let saoSvgUid = 0;
@@ -3413,18 +3425,144 @@ const SAO_WELL = "rgba(36,39,46,0.82)";
 // Below ~50% lightness the panel is dark, so the text has to invert with it.
 // Light text on a dark panel also renders crisper at small sizes than dark
 // text on a light one, which is why the classic HUD always looked sharper.
+const SAO_FONTS = {
+  sans: "'Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif",
+  // Straight vertical stems and squared curves, like the reference. Those need
+  // far less antialiasing than a humanist sans, so they render cleaner small.
+  squarish: "'Rajdhani','Bahnschrift','DIN Alternate','Avenir Next Condensed'," +
+            "'Futura','Century Gothic','Segoe UI',sans-serif",
+};
+
+// Rajdhani isn't installed anywhere by default, so fetch it once when asked.
+// If there's no network the stack above falls through to a local face.
+function saoEnsureWebFont() {
+  if (uiSettings.saoFont !== "squarish") return;
+  if (document.getElementById("rpg-sao-webfont")) return;
+  const link = document.createElement("link");
+  link.id = "rpg-sao-webfont";
+  link.rel = "stylesheet";
+  link.href = "https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap";
+  document.head.appendChild(link);
+}
+
 function saoPanelVars() {
   const l = clamp(uiSettings.saoPanelLight ?? 92, 18, 98);
   const s = clamp(uiSettings.saoPanelSat ?? 10, 0, 40);
   const dark = l < 50;
+  // Antialiasing fringe is most visible at maximum contrast, so backing the
+  // ink off toward the panel visibly softens it on small text.
+  const c = clamp(uiSettings.saoInk ?? 70, 0, 100);
+  const inkL = dark ? 50 + c * 0.45 : 50 - c * 0.42;
+  const dimL = dark ? inkL - 22 : inkL + 22;
   return {
     l,
-    ink: dark ? "#f2f0ea" : "#33312c",
-    inkDim: dark ? "#b7b2a8" : "#6b6760",
+    ink: `hsl(44 6% ${inkL.toFixed(1)}%)`,
+    inkDim: `hsl(44 5% ${dimL.toFixed(1)}%)`,
     rule: `hsl(44 ${s * 0.7}% ${dark ? Math.min(l + 16, 96) : l - 17}%)`,
     chip: `hsl(44 ${s}% ${dark ? Math.min(l + 9, 92) : l - 7}%)`,
     dark,
   };
+}
+
+// vitals/col/clock are anchored to the viewport; the rest sit in the bar
+// stack and shift relative to where they'd normally fall.
+const SAO_DRAG_KEYS = ["vitals", "col", "clock"];
+
+// How much of a piece must stay on screen. The orb column is the way back to
+// settings, so it keeps a whole orb visible — losing it would strand the HUD.
+const SAO_KEEP_VISIBLE = 28;
+
+function saoPos() {
+  const p = uiSettings.saoPos || {};
+  const out = {};
+  SAO_DRAG_KEYS.forEach((k) => { out[k] = Array.isArray(p[k]) ? p[k] : [0, 0]; });
+  return out;
+}
+
+function saoPosCss() {
+  const p = saoPos();
+  return SAO_DRAG_KEYS.map((k) => `--sao-${k}-x:${p[k][0]}px; --sao-${k}-y:${p[k][1]}px;`).join(" ");
+}
+
+function saoResetLayout() {
+  uiSettings.saoPos = null;
+  saveUiSettings();
+  renderRPG();
+  if (window.toastr) window.toastr.info("HUD layout reset.");
+}
+
+// Drag by pointer. Interactive bits are switched off while this is on, so a
+// drag can't fire a button and a tap can't be mistaken for a nudge.
+// Delegated from the container, and bound once. Ghosts are recreated after
+// every drag and every re-render, so per-element listeners went stale the
+// moment you let go.
+function saoBindDragging() {
+  const c = document.getElementById("rpg-hud-container");
+  if (!c || c.dataset.dragBound === "1") return;
+  c.dataset.dragBound = "1";
+
+  c.addEventListener("pointerdown", (ev) => {
+    if (!saoLayoutMode) return;
+    const el = ev.target?.closest?.(".rpg-sao-ghost");
+    if (!el) return;
+    const key = el.dataset.ghost;
+    if (!SAO_DRAG_KEYS.includes(key)) return;
+
+    ev.preventDefault();
+    ev.stopPropagation();
+
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const K = SAO_KEEP_VISIBLE;
+    const whole = key === "col";          // the way back to settings
+    const start = saoPos()[key].slice();
+    const x0 = ev.clientX, y0 = ev.clientY;
+    const r = el.getBoundingClientRect();
+    const gx = parseFloat(el.style.left) || 0, gy = parseFloat(el.style.top) || 0;
+    el.classList.add("dragging");
+
+    // Panels open to the LEFT of the orbs, so the column stops short of that
+    // edge; everything else may go nearly off screen.
+    const leftRoom = vw > 720 ? 330 : 120;
+    const clampX = whole
+      ? (v) => clamp(v, leftRoom - r.left, vw - 4 - r.right)
+      : (v) => clamp(v, K - r.right, vw - K - r.left);
+    const clampY = whole
+      ? (v) => clamp(v, 4 - r.top, vh - 4 - r.bottom)
+      : (v) => clamp(v, K - r.bottom, vh - K - r.top);
+
+    const apply = (m) => {
+      const dx = clampX(m.clientX - x0), dy = clampY(m.clientY - y0);
+      c.style.setProperty(`--sao-${key}-x`, `${Math.round(start[0] + dx)}px`);
+      c.style.setProperty(`--sao-${key}-y`, `${Math.round(start[1] + dy)}px`);
+      el.style.left = `${Math.round(gx + dx)}px`;
+      el.style.top = `${Math.round(gy + dy)}px`;
+      return [dx, dy];
+    };
+
+    const up = (u) => {
+      window.removeEventListener("pointermove", apply);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      el.classList.remove("dragging");
+      const [dx, dy] = apply(u);
+      const next = { ...saoPos() };
+      next[key] = [Math.round(start[0] + dx), Math.round(start[1] + dy)];
+      uiSettings.saoPos = next;
+      saveUiSettings();
+      saoPlacePanels();
+      requestAnimationFrame(saoDrawGhosts);
+    };
+
+    // on window, so a fast drag that leaves the overlay still tracks
+    window.addEventListener("pointermove", apply);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  });
+}
+
+function saoAnim(kind, ms) {
+  saoAnimKind = kind;
+  saoAnimUntil = performance.now() + (ms || 260);
 }
 
 function saoApplyPanelVars() {
@@ -3440,7 +3578,112 @@ function saoApplyPanelVars() {
 
 // Point the notch at the orb that is actually lit, rather than at the middle
 // of the panel. Clamped so it can't slide off the panel's own edges.
+// Applied on every render so a bad saved offset can never survive a reload.
+// union of a piece's visible children, in viewport coordinates
+function saoContentRect(el) {
+  let box = null;
+  const add = (r) => {
+    if (!r || r.width < 1 || r.height < 1) return;
+    box = box ? {
+      left: Math.min(box.left, r.left), top: Math.min(box.top, r.top),
+      right: Math.max(box.right, r.right), bottom: Math.max(box.bottom, r.bottom),
+    } : { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+  };
+  Array.from(el.children).forEach((c) => {
+    if (c.classList?.contains("rpg-sao-ghost")) return;
+    add(c.getBoundingClientRect());
+  });
+  if (!box) add(el.getBoundingClientRect());
+  return box;
+}
+
+// Rebuild the drag overlays so each one sits exactly on what it moves.
+function saoDrawGhosts() {
+  const c = document.getElementById("rpg-hud-container");
+  if (!c) return;
+  c.querySelectorAll(".rpg-sao-ghost").forEach((g) => g.remove());
+  if (!saoLayoutMode) return;
+
+  const cr = c.getBoundingClientRect();
+  SAO_DRAG_KEYS.forEach((key) => {
+    const el = document.querySelector(`[data-drag="${key}"]`);
+    if (!el) return;
+    const b = saoContentRect(el);
+    if (!b) return;
+    const g = document.createElement("div");
+    g.className = "rpg-sao-ghost";
+    g.dataset.ghost = key;
+    g.style.left = `${Math.round(b.left - cr.left) - 3}px`;
+    g.style.top = `${Math.round(b.top - cr.top) - 3}px`;
+    g.style.width = `${Math.round(b.right - b.left) + 6}px`;
+    g.style.height = `${Math.round(b.bottom - b.top) + 6}px`;
+    g.textContent = key === "vitals" ? "BARS" : key === "col" ? "MENU" : "CLOCK";
+    c.appendChild(g);
+  });
+}
+
+function saoEnforceOnScreen() {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const c = document.getElementById("rpg-hud-container");
+  if (!vw || !vh || !c) return;
+
+  const pos = saoPos();
+  let changed = false;
+
+  SAO_DRAG_KEYS.forEach((key) => {
+    const el = document.querySelector(`[data-drag="${key}"]`);
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+
+    let dx = 0, dy = 0;
+    if (key === "col") {
+      // must stay entirely visible, and leave room for the panels it opens
+      const leftRoom = vw > 720 ? 330 : 120;
+      if (r.left < leftRoom) dx = leftRoom - r.left;
+      if (r.right + dx > vw - 4) dx = vw - 4 - r.right;
+      if (r.top < 4) dy = 4 - r.top;
+      if (r.bottom + dy > vh - 4) dy = vh - 4 - r.bottom;
+    } else {
+      const K = SAO_KEEP_VISIBLE;
+      if (r.right < K) dx = K - r.right;
+      else if (r.left > vw - K) dx = vw - K - r.left;
+      if (r.bottom < K) dy = K - r.bottom;
+      else if (r.top > vh - K) dy = vh - K - r.top;
+    }
+
+    if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+      pos[key] = [Math.round(pos[key][0] + dx), Math.round(pos[key][1] + dy)];
+      c.style.setProperty(`--sao-${key}-x`, `${pos[key][0]}px`);
+      c.style.setProperty(`--sao-${key}-y`, `${pos[key][1]}px`);
+      changed = true;
+    }
+  });
+
+  if (changed) {
+    uiSettings.saoPos = pos;
+    saveUiSettings();
+  }
+}
+
 function saoPlacePanels() {
+  // The column is draggable, so anchor the panels to where it actually is
+  // rather than to a fixed inset. On narrow screens they stay left-aligned.
+  const col = document.querySelector(".rpg-sao-col");
+  const vw = window.innerWidth || 0;
+  if (col && vw > 720) {
+    const cr = col.getBoundingClientRect();
+    const base = clamp(vw - cr.left + 14, 12, Math.max(12, vw - 360));
+    const menu = document.querySelector(".rpg-sao-menuwrap");
+    const panel = document.querySelector(".rpg-sao-panelwrap");
+    if (menu) menu.style.right = `${Math.round(base)}px`;
+    if (panel) {
+      const shift = panel.classList.contains("helpshift")
+        ? (menu ? menu.getBoundingClientRect().width + 14 : 220) : 0;
+      panel.style.right = `${Math.round(base + shift)}px`;
+    }
+  }
+
   const lit = document.querySelector(".rpg-sao-orb.on")
            || document.getElementById("rpg-sao-diag");
   const gear = document.querySelector('.rpg-sao-orb[data-tab="gear"]') || lit;
@@ -3493,9 +3736,20 @@ function saoPlacePanels() {
 function saoFitName() {
   const block = document.querySelector(".rpg-sao-block");
   const el = block && block.querySelector(".rpg-sao-name");
-  if (!block || !el) return;
-  block.classList.remove("over");           // measure in the narrow column
-  if (el.scrollWidth > el.clientWidth + 1) block.classList.add("over");
+  if (block && el) {
+    block.classList.remove("over");          // measure in the narrow column
+    if (el.scrollWidth > el.clientWidth + 1) block.classList.add("over");
+  }
+
+  // Same idea for party, NPC and enemy rows, but only the rows that need it.
+  // Stacking every row would double the column's height; leaving them all
+  // ellipsised makes two similarly named enemies indistinguishable.
+  document.querySelectorAll(".rpg-sao-row").forEach((row) => {
+    const tag = row.querySelector(".rpg-sao-tag");
+    if (!tag) return;
+    row.classList.remove("stacked");
+    if (tag.scrollWidth > tag.clientWidth + 1) row.classList.add("stacked");
+  });
 }
 
 // one hue sweep: green at full, yellow at half, red at empty
@@ -3560,32 +3814,63 @@ function saoBarSvg(W, H, pctVal, c1, c2) {
 
 // Bars can only be drawn once they have a real pixel width, so the markup
 // ships empty and this fills every .rpg-sao-bar after layout.
+function saoDrawBar(el, p) {
+  const W = el.clientWidth, H = el.clientHeight;
+  if (!W || !H) return;
+  el.innerHTML = saoBarSvg(W, H, p, el.dataset.c1 || "#b9f56d", el.dataset.c2 || "#63c322");
+}
+
 function saoPaintBars() {
+  const animate = uiSettings.saoAnimate !== false
+    && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
   document.querySelectorAll(".rpg-sao-bar").forEach((el) => {
-    const W = el.clientWidth, H = el.clientHeight;
-    if (!W || !H) return;
-    const p = parseFloat(el.dataset.p || "0");
-    el.innerHTML = saoBarSvg(W, H, p, el.dataset.c1 || "#b9f56d", el.dataset.c2 || "#63c322");
+    const target = clamp(parseFloat(el.dataset.p || "0"), 0, 100);
+    const key = el.dataset.key;
+
+    // A bar keyed to a character keeps its last value across re-renders, so a
+    // hit slides the bar down instead of snapping. Unkeyed bars just draw.
+    if (!animate || !key) { saoDrawBar(el, target); if (key) saoLastPct.set(key, target); return; }
+
+    const from = saoLastPct.has(key) ? saoLastPct.get(key) : target;
+    if (Math.abs(from - target) < 0.4) { saoLastPct.set(key, target); saoDrawBar(el, target); return; }
+
+    const token = (saoTweens.get(key) || 0) + 1;   // supersede any running tween
+    saoTweens.set(key, token);
+    const t0 = performance.now(), dur = 420;
+    const ease = (x) => 1 - Math.pow(1 - x, 3);
+
+    const step = (now) => {
+      if (saoTweens.get(key) !== token || !el.isConnected) return;
+      const k = Math.min(1, (now - t0) / dur);
+      const v = from + (target - from) * ease(k);
+      saoLastPct.set(key, v);
+      saoDrawBar(el, v);
+      if (k < 1) requestAnimationFrame(step);
+      else saoLastPct.set(key, target);
+    };
+    requestAnimationFrame(step);
   });
 }
 
 const SAO_PALETTE = {
   mp: ["#7fd4ff", "#2e8fd6"],
-  foe: ["#ff8a7a", "#d63b28"],
   meter: ["#d9b6f5", "#8d4fd1"],
   vehicle: ["#e0a6f0", "#9b3fbf"],
 };
 
-function saoBarHtml(cls, pctVal, c1, c2) {
-  return `<div class="rpg-sao-bar ${cls}" data-p="${pctVal}" data-c1="${c1}" data-c2="${c2}"></div>`;
+function saoBarHtml(cls, pctVal, c1, c2, key) {
+  return `<div class="rpg-sao-bar ${cls}" data-p="${pctVal}" data-c1="${c1}" data-c2="${c2}"`
+    + `${key ? ` data-key="${escAttr(key)}"` : ""}></div>`;
 }
 
-function saoSlimRow(name, curr, max, stops, jumpIdx) {
+function saoSlimRow(name, curr, max, stops, jumpIdx, foe, key) {
   const p = saoPct(curr, max);
+  const cls = `rpg-sao-tag${foe ? " foe" : ""}`;
   const tag = jumpIdx === null || jumpIdx === undefined
-    ? `<span class="rpg-sao-tag">${escHtml(name)}</span>`
-    : `<button class="rpg-sao-tag rpg-sao-jump" data-idx="${jumpIdx}" title="Open ${escAttr(name)}">${escHtml(name)}</button>`;
-  return `<div class="rpg-sao-row">${tag}${saoBarHtml("slim", p, stops[0], stops[1])}
+    ? `<span class="${cls}">${escHtml(name)}</span>`
+    : `<button class="${cls} rpg-sao-jump" data-idx="${jumpIdx}" title="Open ${escAttr(name)}">${escHtml(name)}</button>`;
+  return `<div class="rpg-sao-row">${tag}${saoBarHtml("slim", p, stops[0], stops[1], key)}
     <span class="rpg-sao-num">${escHtml(curr)}/${escHtml(max)}</span></div>`;
 }
 
@@ -3603,9 +3888,11 @@ function saoUnitView(unit) {
            meters: Array.isArray(unit?.meters) ? unit.meters : [] };
 }
 
-function saoUnitStops(view, foe) {
+// Everyone's HP runs the same green-to-red sweep, enemies included: the bar
+// reports how hurt they are, and hostility is already carried by the ROUND
+// header, the red chips and the fact that they're in the combat group.
+function saoUnitStops(view) {
   if (view.isVeh) return SAO_PALETTE.vehicle;
-  if (foe) return SAO_PALETTE.foe;
   return saoHpStops(saoPct(view.hp_curr, view.hp_max));
 }
 
@@ -3617,13 +3904,13 @@ function saoMeterColor(name) {
 }
 
 // Shields, sanity and the like, tucked under whoever owns them.
-function saoMeterRows(view) {
+function saoMeterRows(view, owner) {
   const ms = Array.isArray(view?.meters) ? view.meters : [];
   if (!ms.length) return "";
   return ms.map((m) => {
     const c = saoMeterColor(m.name);
     return `<div class="rpg-sao-row sub"><span class="rpg-sao-tag">${escHtml(m.name)}</span>`
-      + saoBarHtml("slim", saoPct(m.curr, m.max), c[0], c[1])
+      + saoBarHtml("slim", saoPct(m.curr, m.max), c[0], c[1], `${owner || "?"}/m:${normBondName(m.name)}`)
       + `<span class="rpg-sao-num">${escHtml(m.curr)}/${escHtml(m.max)}</span></div>`;
   }).join("");
 }
@@ -3865,8 +4152,14 @@ function saoHelpPanel() {
           "Dims the panels while they stay solid. Take it below halfway and they go dark, with the text inverting to light \u2014 small light-on-dark text renders crisper than dark-on-light.")
       + item("Reset settings",
           "Puts every slider and toggle back to its default. Your skin choice and chat data stay as they are.")
+      + item("Move HUD pieces",
+          "Drag the bars, the orb column and the clock wherever you like. Buttons stop responding while you're arranging, so a tap can't fire by accident. Reset puts them back.")
+      + item("Animations",
+          "Bars slide to their new value, orbs unfold when you reopen the HUD, and panels fade in. Off means everything snaps.")
+      + item("Text contrast",
+          "How far the text sits from the panel behind it. Maximum contrast also maximises the antialiasing fringe, so backing it off makes small text look cleaner.")
       + item("Font",
-          "The skin follows your font preset by default. The preset is a monospace, whose bold can look heavy in the panels \u2014 Sans is lighter.")
+          "Follows your font preset by default, which is a monospace. Sans is lighter; Squarish uses straight-stemmed letterforms closer to the reference, which need less antialiasing at small sizes.")
       + item("Editor width",
           "How wide Edit state opens. The classic skin sets this by dragging its edge; this is the same number, so you don't have to switch skins to change it.")
       + item("Bar size",
@@ -3905,6 +4198,7 @@ function saoSettingsHtml() {
     + row("rpg-sao-rescan", "&#8635;", "Rescan now")
     + row("rpg-sao-diagnose", "!", "Parse diagnostics")
     + row("rpg-sao-help", "?", saoHelpOpen ? "Hide help" : "What these do")
+    + row("rpg-sao-move", "\u2725", "Move HUD pieces")
     + row("rpg-sao-reset", "\u21BA", "Reset settings")
     + row("rpg-sao-insert", "&#8595;", "Insert state")
     + row("rpg-sao-remind", "&#9993;", "Remind state")
@@ -3913,6 +4207,7 @@ function saoSettingsHtml() {
     + toggle("rpg-sao-sw-bars", "Keep bars when minimised", !!uiSettings.barsOnMin)
     + toggle("rpg-sao-sw-shadow", "Text shadow", !!uiSettings.saoTextShadow)
     + toggle("rpg-sao-sw-backing", "Text backing", !!uiSettings.saoTextBacking)
+    + toggle("rpg-sao-sw-anim", "Animations", uiSettings.saoAnimate !== false)
     + toggle("rpg-sao-sw-autobond", "Auto-add bonds", !!uiSettings.autoAddBonds)
     + (bondBlocklist.size
         ? row("rpg-sao-unblock", "&#8635;", `Unblock ${bondBlocklist.size} bond(s)`) : "")
@@ -3922,6 +4217,9 @@ function saoSettingsHtml() {
     + `<div class="rpg-sao-mrow toggle"><span>Editor width</span>
         <input type="range" id="rpg-sao-edit-w" min="240" max="560" step="10"
                value="${clamp(uiSettings.hudWidth || 280, 240, 560)}"></div>`
+    + `<div class="rpg-sao-mrow toggle"><span>Text contrast</span>
+        <input type="range" id="rpg-sao-ink" min="25" max="100"
+               value="${Math.round(uiSettings.saoInk ?? 70)}"></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Bar size</span>
         <input type="range" id="rpg-sao-ui-scale" min="70" max="300"
                value="${Math.round(uiSettings.saoUiScale ?? 100)}"></div>`
@@ -3930,8 +4228,9 @@ function saoSettingsHtml() {
                value="${Math.round(uiSettings.saoCardAlpha ?? 11)}"></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Font</span>
         <select id="rpg-sao-font">
-          <option value="preset"${uiSettings.saoFont !== "sans" ? " selected" : ""}>Follow preset</option>
+          <option value="preset"${!SAO_FONTS[uiSettings.saoFont] ? " selected" : ""}>Follow preset</option>
           <option value="sans"${uiSettings.saoFont === "sans" ? " selected" : ""}>Sans</option>
+          <option value="squarish"${uiSettings.saoFont === "squarish" ? " selected" : ""}>Squarish</option>
         </select></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Skin</span>
         <select id="rpg-sao-skin">
@@ -3975,23 +4274,28 @@ function renderSaoSkin() {
     document.body.appendChild(container);
   }
 
+  saoEnsureWebFont();
+
   let latest = { status: "nochat", label: "", detail: "" };
   try { latest = updateLatestStatusAndToast(SillyTavern.getContext()?.chat); } catch {}
 
   container.style.cssText = `position:fixed; top:0; left:0; right:0; bottom:auto;
     height:100vh; height:100svh; z-index:9999; pointer-events:none;
     --rpg-sao-ui:${clamp(uiSettings.saoUiScale ?? 100, 70, 300) / 100};
+    ${saoPosCss()}
     ${(() => { const v = saoPanelVars(); return `--rpg-sao-panel-l:${v.l}%;
     --rpg-sao-ink:${v.ink}; --rpg-sao-ink-dim:${v.inkDim};
     --rpg-sao-rule:${v.rule}; --rpg-sao-chip:${v.chip};`; })()}
     --rpg-sao-card-a:${clamp(uiSettings.saoCardAlpha ?? 11, 0, 70)}%;`;
+  const live = uiSettings.saoAnimate !== false && performance.now() < saoAnimUntil;
+  const animKind = live ? saoAnimKind : "";
+  const anim = animKind ? ` anim-${animKind}` : "";
   container.className =
+    (saoLayoutMode ? "layout " : "") +
     (uiSettings.saoTextShadow ? "rpg-sao-sh " : "") +
-    (uiSettings.saoTextBacking ? "rpg-sao-bk" : "");
+    (uiSettings.saoTextBacking ? "rpg-sao-bk" : "") + anim;
   container.style.cssText += `
-    font-family:${uiSettings.saoFont === "sans"
-      ? "'Rajdhani','Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif"
-      : (uiSettings.fontFamily || "'Segoe UI',system-ui,sans-serif")};
+    font-family:${SAO_FONTS[uiSettings.saoFont] || uiSettings.fontFamily || SAO_FONTS.sans};
     font-size:${0.9 * (uiSettings.fontScale || 1)}em;`;
   container.onclick = null;
 
@@ -4002,30 +4306,35 @@ function renderSaoSkin() {
     const pName = pView.name;
     const en = pView.en;
 
-    const hpPct = saoPct(pView.hp_curr, pView.hp_max);
-    const hpStops = saoUnitStops(pView, false);
-    const mpPct = saoPct(en.curr, en.max);
+    // A fresh install or "no chat selected" has 0/0 everywhere, which drew an
+    // empty box in layout mode. Show representative bars so it can be placed.
+    const noData = !toNumberOr(pView.hp_curr, 0) || !toNumberOr(pView.hp_max, 0);
+    const demo = saoLayoutMode && noData;
+
+    const hpPct = demo ? 72 : saoPct(pView.hp_curr, pView.hp_max);
+    const hpStops = saoUnitStops(pView);
+    const mpPct = demo ? 48 : saoPct(en.curr, en.max);
 
     const party = Array.isArray(rpgState.party) ? rpgState.party : [];
     const enemies = Array.isArray(rpgState.enemies) ? rpgState.enemies : [];
     const npcs = Array.isArray(rpgState.npcs) ? rpgState.npcs : [];
     const pMeters = Array.isArray(player.meters) ? player.meters : [];
 
-    const showBars = !saoMin || uiSettings.barsOnMin;
+    const showBars = saoLayoutMode || !saoMin || uiSettings.barsOnMin;
     const inCombat = !!rpgState?.combat?.active;
 
     // --- vitals ---
     let vitals = "";
     if (showBars) {
-      vitals = `<div class="rpg-sao-vitals">
+      vitals = `<div class="rpg-sao-vitals${animKind === "restore" && !uiSettings.barsOnMin ? " fadein" : ""}" data-drag="vitals">
         <div class="rpg-sao-card">
           <div class="rpg-sao-block">
-            <div class="rpg-sao-name">${escHtml(pName)}</div>
+            <div class="rpg-sao-name">${escHtml(demo ? "Name" : pName)}</div>
             <div class="rpg-sao-stack">
-              <div class="rpg-sao-vrow">${saoBarHtml("", hpPct, hpStops[0], hpStops[1])}
-                <span class="rpg-sao-vnum">${escHtml(pView.hp_curr)}/${escHtml(pView.hp_max)}</span></div>
-              <div class="rpg-sao-vrow">${saoBarHtml("mid", mpPct, SAO_PALETTE.mp[0], SAO_PALETTE.mp[1])}
-                <span class="rpg-sao-vnum">${escHtml(en.curr)}/${escHtml(en.max)}</span></div>
+              <div class="rpg-sao-vrow">${saoBarHtml("", hpPct, hpStops[0], hpStops[1], "p:hp")}
+                <span class="rpg-sao-vnum">${demo ? "720/1000" : `${escHtml(pView.hp_curr)}/${escHtml(pView.hp_max)}`}</span></div>
+              <div class="rpg-sao-vrow">${saoBarHtml("mid", mpPct, SAO_PALETTE.mp[0], SAO_PALETTE.mp[1], "p:mp")}
+                <span class="rpg-sao-vnum">${demo ? "240/500" : `${escHtml(en.curr)}/${escHtml(en.max)}`}</span></div>
             </div>
           </div>
         </div>`;
@@ -4033,7 +4342,8 @@ function renderSaoSkin() {
       if (pMeters.length) {
         vitals += `<div class="rpg-sao-group">` + saoDivider("METERS", "meters") +
           `<div class="rpg-sao-slim${saoCollapsed.meters ? " hide" : ""}">` +
-          pMeters.map((m) => saoSlimRow(m.name, m.curr, m.max, saoMeterColor(m.name), null)).join("") +
+          pMeters.map((m) => saoSlimRow(m.name, m.curr, m.max, saoMeterColor(m.name), null, false,
+            `p/m:${normBondName(m.name)}`)).join("") +
           `</div></div>`;
       }
       // party and NPCs get their own sections, each independently collapsible
@@ -4043,8 +4353,9 @@ function renderSaoSkin() {
           `<div class="rpg-sao-slim${saoCollapsed[key] ? " hide" : ""}">` +
           list.map((u, i) => {
             const v = saoUnitView(u);
-            return saoSlimRow(v.name, v.hp_curr, v.hp_max, saoUnitStops(v, false),
-                              charIndexFor(type, i)) + saoMeterRows(v);
+            const k = `${type}:${normBondName(u?.name) || i}`;
+            return saoSlimRow(v.name, v.hp_curr, v.hp_max, saoUnitStops(v),
+                              charIndexFor(type, i), false, k) + saoMeterRows(v, k);
           }).join("") + `</div></div>`;
       };
       vitals += unitGroup("PARTY", "party", party, "party");
@@ -4059,21 +4370,23 @@ function renderSaoSkin() {
         `<div class="rpg-sao-slim${saoCollapsed.foes ? " hide" : ""}">` +
         enemies.map((u, i) => {
           const v = saoUnitView(u);
+          const k = `enemy:${normBondName(u?.name) || ""}:${i}`;
           return saoSlimRow(v.isVeh ? v.name : (u?.name || `Enemy ${i + 1}`),
-            v.hp_curr, v.hp_max, saoUnitStops(v, true), charIndexFor("enemy", i))
-            + saoMeterRows(v);
+            v.hp_curr, v.hp_max, saoUnitStops(v), charIndexFor("enemy", i), true, k)
+            + saoMeterRows(v, k);
         }).join("") + `</div></div></div>`;
     }
 
     // --- orbs ---
-    const orbs = `<div class="rpg-sao-col">` +
-      (saoMin ? "" : SAO_TABS.map((t) =>
-        `<button class="rpg-sao-orb${saoPanel === t.id ? " on" : ""}" data-tab="${t.id}" title="${escAttr(t.label)}">${t.icon}</button>`
-      ).join("") + `<div class="rpg-sao-rule"></div>`) +
+    const orbs = `<div class="rpg-sao-col"><div class="rpg-sao-colinner" data-drag="col" data-drag-box="col">` +
+      (saoMin ? "" : SAO_TABS.map((t, i) =>
+        `<button class="rpg-sao-orb${saoPanel === t.id ? " on" : ""}" data-tab="${t.id}"
+          style="animation-delay:${i * 45}ms" title="${escAttr(t.label)}">${t.icon}</button>`
+      ).join("") + `<div class="rpg-sao-rule" style="animation-delay:${SAO_TABS.length * 45}ms"></div>`) +
       (latest.status === "invalid"
         ? `<button class="rpg-sao-orb diag" id="rpg-sao-diag" title="Show the parse error">!</button>` : "") +
       `<button class="rpg-sao-orb min" id="rpg-sao-min" title="${escAttr(latest.label || "Toggle HUD")}">
-        <span class="rpg-sao-dot ${saoIndicatorClass(latest.status)}"></span></button></div>`;
+        <span class="rpg-sao-dot ${saoIndicatorClass(latest.status)}"></span></button></div></div>`;
 
     // --- panel ---
     let panelHtml = "";
@@ -4099,7 +4412,7 @@ function renderSaoSkin() {
 
     // --- clock ---
     const t = rpgState.world_time || {};
-    const clockHtml = saoMin ? "" : `<div class="rpg-sao-clockwrap">
+    const clockHtml = saoMin ? "" : `<div class="rpg-sao-clockwrap" data-drag="clock">
       ${saoTimersOpen ? `<div class="rpg-sao-timers">${saoTimersHtml()}</div>` : ""}
       <button class="rpg-sao-clock" id="rpg-sao-clock">
         <span class="rpg-sao-dot ${saoIndicatorClass(latest.status)}"></span>
@@ -4110,12 +4423,22 @@ function renderSaoSkin() {
         </span></button></div>`;
 
     if (vitals) vitals += foesHtml + `</div>`;
-    container.innerHTML = SAO_CSS + vitals + orbs + panelHtml + menuHtml + clockHtml;
+    const layoutBar = saoLayoutMode
+      ? `<div id="rpg-sao-layout-bar">Drag any outlined piece
+          <button class="ghost" id="rpg-sao-layout-reset" title="Put every piece back where it started">Reset all</button>
+          <button id="rpg-sao-layout-done">Done</button></div>`
+      : "";
+
+    container.innerHTML = SAO_CSS + vitals + orbs + panelHtml + menuHtml + clockHtml + layoutBar;
 
     saoFitName();          // may change the bar width, so run it first
     saoPaintBars();
+    saoEnforceOnScreen();
     saoPlacePanels();
-    requestAnimationFrame(() => { saoFitName(); saoPaintBars(); saoPlacePanels(); });
+    requestAnimationFrame(() => {
+      saoFitName(); saoPaintBars(); saoEnforceOnScreen(); saoPlacePanels();
+      saoBindDragging(); saoDrawGhosts();
+    });
     saoBind();
   } catch (e) {
     container.innerHTML = `<div style="pointer-events:auto; position:fixed; top:60px; right:20px;
@@ -4136,8 +4459,10 @@ function saoBind() {
   on(".rpg-sao-orb[data-tab]", (el) => {
     flushInlineEdits();
     const tab = el.dataset.tab;
+    const was = saoPanel;
     saoPanel = saoPanel === tab ? null : tab;
     if (saoPanel !== "gear") saoHelpOpen = false;
+    if (saoPanel && saoPanel !== was) saoAnim("panel", 220);
     renderRPG();
   });
 
@@ -4146,7 +4471,7 @@ function saoBind() {
     e.stopPropagation();
     flushInlineEdits();
     saoMin = !saoMin;
-    if (saoMin) saoPanel = null;
+    if (saoMin) { saoPanel = null; saoAnim("collapse", 340); } else saoAnim("restore", 560);
     renderRPG();
   };
 
@@ -4210,6 +4535,14 @@ function saoBind() {
   });
   bind("rpg-sao-diagnose", () => { saoMin = false; saoPanel = "error"; renderRPG(); });
   bind("rpg-sao-help", () => { saoHelpOpen = !saoHelpOpen; renderRPG(); });
+  bind("rpg-sao-move", () => {
+    saoLayoutMode = true;
+    saoPanel = null;
+    saoMin = false;        // everything has to be on screen to be arranged
+    renderRPG();
+  });
+  bind("rpg-sao-layout-done", () => { saoLayoutMode = false; renderRPG(); });
+  bind("rpg-sao-layout-reset", saoResetLayout);
   bind("rpg-sao-reset", resetUiSettings);
   // the embedded error panel closes itself via isErrorOpen, which this skin
   // doesn't use — its visibility is saoPanel, so close that instead
@@ -4233,6 +4566,10 @@ function saoBind() {
   bind("rpg-sao-sw-bars", () => { uiSettings.barsOnMin = !uiSettings.barsOnMin; saveUiSettings(); renderRPG(); });
   bind("rpg-sao-sw-shadow", () => { uiSettings.saoTextShadow = !uiSettings.saoTextShadow; saveUiSettings(); renderRPG(); });
   bind("rpg-sao-sw-backing", () => { uiSettings.saoTextBacking = !uiSettings.saoTextBacking; saveUiSettings(); renderRPG(); });
+  bind("rpg-sao-sw-anim", () => {
+    uiSettings.saoAnimate = uiSettings.saoAnimate === false;
+    saveUiSettings(); renderRPG();
+  });
   bind("rpg-sao-sw-autobond", () => { uiSettings.autoAddBonds = !uiSettings.autoAddBonds; saveUiSettings(); renderRPG(); });
   bind("rpg-sao-unblock", () => {
     clearBondBlocklist();
@@ -4250,6 +4587,16 @@ function saoBind() {
     };
     pa.onchange = () => saveUiSettings();
     pa.onclick = (e) => e.stopPropagation();
+  }
+
+  const ink = document.getElementById("rpg-sao-ink");
+  if (ink) {
+    ink.oninput = () => {
+      uiSettings.saoInk = clamp(parseFloat(ink.value), 25, 100);
+      saoApplyPanelVars();      // never re-render: it would drop the drag
+    };
+    ink.onchange = () => saveUiSettings();
+    ink.onclick = (e) => e.stopPropagation();
   }
 
   const ew = document.getElementById("rpg-sao-edit-w");
@@ -4301,7 +4648,9 @@ if (!window.__rpgSaoResizeBound) {
   window.addEventListener("resize", () => {
     if ((uiSettings.skin || "classic") !== "sao") return;
     clearTimeout(rt);
-    rt = setTimeout(() => { saoFitName(); saoPaintBars(); saoPlacePanels(); }, 120);
+    rt = setTimeout(() => {
+      saoFitName(); saoPaintBars(); saoEnforceOnScreen(); saoPlacePanels();
+    }, 120);
   });
 }
 
@@ -4310,14 +4659,14 @@ const SAO_CSS = `<style id="rpg-sao-style">
 /* the column spans the whole height, so it must stay click-through itself;
    this needs the ID to outrank the blanket rule above. */
 #rpg-hud-container .rpg-sao-col{pointer-events:none}
-#rpg-hud-container .rpg-sao-col > *{pointer-events:auto}
+#rpg-hud-container .rpg-sao-colinner > *{pointer-events:auto}
 #rpg-hud-container button{font-family:inherit}
 
 /* The whole left stack scrolls rather than running off the bottom of the
    screen. The reserved strip matches the clock's, so it clears the chat box. */
-.rpg-sao-vitals{position:absolute; left:8px;
+.rpg-sao-vitals{position:absolute; left:calc(8px + var(--sao-vitals-x, 0px));
   width:min(calc(322px * var(--rpg-sao-ui, 1)), calc(100vw - 130px));
-  top:calc(env(safe-area-inset-top, 0px) + 12px);
+  top:calc(env(safe-area-inset-top, 0px) + 12px + var(--sao-vitals-y, 0px));
   max-height:calc(100svh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)
                   - var(--rpg-sao-clock-lift, 84px) - 24px);
   overflow-y:auto; overflow-x:hidden; padding-right:4px;
@@ -4355,6 +4704,9 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-slim{opacity:.78; margin-right:calc(56px * var(--rpg-sao-ui, 1))}
 .rpg-sao-slim.hide{display:none}
 .rpg-sao-row{display:flex; align-items:center; gap:7px; margin-bottom:3px}
+.rpg-sao-row.stacked{flex-wrap:wrap; margin-bottom:5px}
+.rpg-sao-row.stacked .rpg-sao-tag{flex:0 0 100%; width:100%;
+  white-space:normal; overflow:visible; margin-bottom:1px}
 .rpg-sao-row.sub{margin-left:13px; opacity:.85}
 .rpg-sao-row.sub .rpg-sao-tag{flex:0 0 calc(40px * var(--rpg-sao-ui, 1)); font-size:calc(9.5px * var(--rpg-sao-ui, 1)); text-decoration:none}
 .rpg-sao-row.sub .rpg-sao-bar.slim{height:calc(6px * var(--rpg-sao-ui, 1))}
@@ -4364,6 +4716,9 @@ const SAO_CSS = `<style id="rpg-sao-style">
 button.rpg-sao-tag{cursor:pointer; text-decoration:underline;
   text-decoration-color:rgba(255,255,255,.28); text-underline-offset:2px}
 button.rpg-sao-tag:hover{color:#fff}
+.rpg-sao-tag.foe{color:#f2a99d}
+button.rpg-sao-tag.foe{text-decoration-color:rgba(242,169,157,.4)}
+button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-sao-num{flex:0 0 auto; font-size:calc(9.5px * var(--rpg-sao-ui, 1)); color:#c2beb4; min-width:calc(46px * var(--rpg-sao-ui, 1));
   text-align:right}
 
@@ -4378,12 +4733,15 @@ button.rpg-sao-tag:hover{color:#fff}
 .rpg-sao-foes .rpg-sao-div{color:#f0b6ab}
 .rpg-sao-npcdiv{color:#bcd4e8}
 
-.rpg-sao-col{position:absolute; right:22px; top:0; bottom:0;
+.rpg-sao-col{position:absolute; right:calc(22px - var(--sao-col-x, 0px));
+  top:var(--sao-col-y, 0px); bottom:calc(0px - var(--sao-col-y, 0px));
   padding:calc(env(safe-area-inset-top, 0px) + 12px) 0
           calc(env(safe-area-inset-bottom, 0px) + var(--rpg-sao-clock-lift, 84px) + 58px);
   display:flex; flex-direction:column; justify-content:center; align-items:center;
-  gap:clamp(4px, 1.4svh, 14px); pointer-events:none; overflow:visible}
-.rpg-sao-col > *{pointer-events:auto; flex:0 0 auto}
+  pointer-events:none; overflow:visible}
+.rpg-sao-colinner{position:relative; display:flex; flex-direction:column; align-items:center;
+  gap:clamp(4px, 1.4svh, 14px); pointer-events:none}
+.rpg-sao-colinner > *{pointer-events:auto; flex:0 0 auto}
 .rpg-sao-orb{width:var(--rpg-sao-orb); height:var(--rpg-sao-orb); border-radius:50%;
   background:radial-gradient(circle at 34% 28%, rgba(255,255,255,.26), rgba(255,255,255,.10));
   border:2px solid rgba(255,255,255,.62);
@@ -4566,8 +4924,9 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   /* --rpg-sao-ink, --rpg-sao-ink-dim, --rpg-sao-rule and --rpg-sao-chip are set
      on the container, because they have to flip once the panel goes dark. */
 }
-.rpg-sao-clockwrap{position:absolute; right:22px;
-  bottom:calc(env(safe-area-inset-bottom, 0px) + var(--rpg-sao-clock-lift, 84px));
+.rpg-sao-clockwrap{position:absolute; right:calc(22px - var(--sao-clock-x, 0px));
+  bottom:calc(env(safe-area-inset-bottom, 0px) + var(--rpg-sao-clock-lift, 84px)
+              - var(--sao-clock-y, 0px));
   display:flex; flex-direction:column; align-items:flex-end; gap:8px}
 .rpg-sao-timers{position:relative; width:252px; background:var(--rpg-sao-panel);
   box-sizing:border-box; border:3px solid transparent;
@@ -4634,14 +4993,77 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   .rpg-sao-menu{width:min(206px, calc(100vw - var(--rpg-sao-orb) - 62px))}
   .rpg-sao-menuwrap.hashelp{display:none}
   .rpg-sao-panelwrap.helpshift{right:auto; left:12px}
-  .rpg-sao-col{right:12px}
-  .rpg-sao-clockwrap{right:12px}
+  .rpg-sao-col{right:calc(12px - var(--sao-col-x, 0px))}
+  .rpg-sao-clockwrap{right:calc(12px - var(--sao-clock-x, 0px))}
   .rpg-sao-timers{width:min(74vw,246px)}
   .rpg-sao-cstack .hhmm{font-size:20px; letter-spacing:2px}
   .rpg-sao-cstack .date{font-size:10px}
   .rpg-sao-glyph{font-size:14px}
 }
-@media (prefers-reduced-motion:reduce){ #rpg-hud-container *{transition:none !important} }
+/* Entry animations are opt-in per render: the observer redraws the HUD every
+   couple of seconds, and replaying these each time would be a strobe. */
+@keyframes rpgSaoOrbIn{
+  from{opacity:0; transform:translateX(14px) scale(.72)}
+  to{opacity:1; transform:none}
+}
+#rpg-hud-container.layout .rpg-sao-colinner{pointer-events:auto}
+
+/* The overlay is measured from the content, so it always sits on what you
+   can see, whatever shape the underlying element happens to be. */
+.rpg-sao-ghost{
+  position:absolute; z-index:6; box-sizing:border-box;
+  border:1px dashed rgba(255,255,255,.7); border-radius:3px;
+  background:rgba(120,160,220,.07); cursor:move; touch-action:none;
+  font-size:9px; font-weight:700; letter-spacing:1.2px; color:#f2c141;
+  padding:1px 4px; line-height:1.1; text-align:right;
+}
+.rpg-sao-ghost.dragging{border:2px solid #f2c141; background:rgba(242,193,65,.12)}
+/* nothing underneath responds while arranging; the overlay catches it all */
+#rpg-hud-container.layout [data-drag],
+#rpg-hud-container.layout [data-drag] *{pointer-events:none !important}
+/* only clipping changes, so a group can be pulled clear of the stack */
+#rpg-hud-container.layout .rpg-sao-vitals{overflow:visible}
+#rpg-sao-layout-bar{
+  position:absolute; left:50%; transform:translateX(-50%);
+  bottom:calc(env(safe-area-inset-bottom, 0px) + 12px);
+  display:flex; gap:6px; align-items:center; z-index:5;
+  background:rgba(14,16,20,.92); border:1px solid rgba(255,255,255,.25);
+  border-radius:4px; padding:6px 8px; color:#e8e6e0; font-size:12px; font-weight:600;
+}
+#rpg-sao-layout-bar button{
+  font-family:inherit; font-size:12px; font-weight:700; cursor:pointer;
+  background:#f2c141; color:#2a2209; border:0; padding:4px 12px; border-radius:3px;
+}
+#rpg-sao-layout-bar button.ghost{background:transparent; color:#cfcbc2; border:1px solid #4a4d55}
+
+@keyframes rpgSaoFadeIn{ from{opacity:0} to{opacity:1} }
+@keyframes rpgSaoRise{ from{opacity:0; transform:translateY(8px)} to{opacity:1; transform:none} }
+@keyframes rpgSaoDotIn{
+  0%{transform:scale(.45); opacity:0}
+  62%{transform:scale(1.18); opacity:1}
+  100%{transform:scale(1); opacity:1}
+}
+@keyframes rpgSaoPanelIn{
+  from{opacity:0; transform:translateX(10px)}
+  to{opacity:1; transform:none}
+}
+
+#rpg-hud-container.anim-restore .rpg-sao-colinner > *{
+  animation:rpgSaoOrbIn .26s cubic-bezier(.2,.8,.3,1) backwards;
+}
+#rpg-hud-container.anim-restore .rpg-sao-clockwrap{animation:rpgSaoFadeIn .34s ease-out .12s backwards}
+#rpg-hud-container.anim-restore .rpg-sao-vitals.fadein{animation:rpgSaoRise .42s cubic-bezier(.2,.8,.3,1) backwards}
+#rpg-hud-container.anim-restore #rpg-sao-min{animation:rpgSaoOrbIn .26s cubic-bezier(.2,.8,.3,1) .27s backwards}
+#rpg-hud-container.anim-collapse #rpg-sao-min{animation:rpgSaoDotIn .34s cubic-bezier(.3,1.4,.4,1) backwards}
+#rpg-hud-container.anim-collapse .rpg-sao-dot{animation:rpgSaoFadeIn .3s ease-out .06s backwards}
+#rpg-hud-container.anim-panel .rpg-sao-panelwrap,
+#rpg-hud-container.anim-panel .rpg-sao-menuwrap{
+  animation:rpgSaoPanelIn .2s cubic-bezier(.2,.8,.3,1) backwards;
+}
+
+@media (prefers-reduced-motion:reduce){
+  #rpg-hud-container *{transition:none !important; animation:none !important}
+}
 </style>`;
 
 // --- 5. EDITOR RENDERER ---
