@@ -3466,7 +3466,7 @@ function saoPanelVars() {
 
 // vitals/col/clock are anchored to the viewport; the rest sit in the bar
 // stack and shift relative to where they'd normally fall.
-const SAO_DRAG_KEYS = ["vitals", "col", "clock", "card", "meters", "party", "npcs", "foes"];
+const SAO_DRAG_KEYS = ["vitals", "col", "clock"];
 
 // How much of a piece must stay on screen. The orb column is the way back to
 // settings, so it keeps a whole orb visible — losing it would strand the HUD.
@@ -3482,10 +3482,6 @@ function saoPos() {
 function saoPosCss() {
   const p = saoPos();
   return SAO_DRAG_KEYS.map((k) => `--sao-${k}-x:${p[k][0]}px; --sao-${k}-y:${p[k][1]}px;`).join(" ");
-}
-
-function saoDragStyle(key) {
-  return `position:relative; left:var(--sao-${key}-x, 0px); top:var(--sao-${key}-y, 0px);`;
 }
 
 function saoResetLayout() {
@@ -3574,6 +3570,51 @@ function saoApplyPanelVars() {
 
 // Point the notch at the orb that is actually lit, rather than at the middle
 // of the panel. Clamped so it can't slide off the panel's own edges.
+// Applied on every render so a bad saved offset can never survive a reload.
+function saoEnforceOnScreen() {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const c = document.getElementById("rpg-hud-container");
+  if (!vw || !vh || !c) return;
+
+  const pos = saoPos();
+  let changed = false;
+
+  SAO_DRAG_KEYS.forEach((key) => {
+    const el = document.querySelector(`[data-drag="${key}"]`);
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+
+    let dx = 0, dy = 0;
+    if (key === "col") {
+      // must stay entirely visible, and leave room for the panels it opens
+      const leftRoom = vw > 720 ? 330 : 120;
+      if (r.left < leftRoom) dx = leftRoom - r.left;
+      if (r.right + dx > vw - 4) dx = vw - 4 - r.right;
+      if (r.top < 4) dy = 4 - r.top;
+      if (r.bottom + dy > vh - 4) dy = vh - 4 - r.bottom;
+    } else {
+      const K = SAO_KEEP_VISIBLE;
+      if (r.right < K) dx = K - r.right;
+      else if (r.left > vw - K) dx = vw - K - r.left;
+      if (r.bottom < K) dy = K - r.bottom;
+      else if (r.top > vh - K) dy = vh - K - r.top;
+    }
+
+    if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+      pos[key] = [Math.round(pos[key][0] + dx), Math.round(pos[key][1] + dy)];
+      c.style.setProperty(`--sao-${key}-x`, `${pos[key][0]}px`);
+      c.style.setProperty(`--sao-${key}-y`, `${pos[key][1]}px`);
+      changed = true;
+    }
+  });
+
+  if (changed) {
+    uiSettings.saoPos = pos;
+    saveUiSettings();
+  }
+}
+
 function saoPlacePanels() {
   // The column is draggable, so anchor the panels to where it actually is
   // rather than to a fixed inset. On narrow screens they stay left-aligned.
@@ -4234,9 +4275,8 @@ function renderSaoSkin() {
     // --- vitals ---
     let vitals = "";
     if (showBars) {
-      vitals = `<div class="rpg-sao-vitals${animKind === "restore" && !uiSettings.barsOnMin ? " fadein" : ""}" data-drag-box="vitals">
-        ${saoLayoutMode ? `<div class="rpg-sao-handle" data-drag="vitals">\u283F ALL BARS</div>` : ""}
-        <div class="rpg-sao-card" data-drag="card" style="${saoDragStyle("card")}">
+      vitals = `<div class="rpg-sao-vitals${animKind === "restore" && !uiSettings.barsOnMin ? " fadein" : ""}" data-drag="vitals">
+        <div class="rpg-sao-card">
           <div class="rpg-sao-block">
             <div class="rpg-sao-name">${escHtml(demo ? "Name" : pName)}</div>
             <div class="rpg-sao-stack">
@@ -4249,8 +4289,7 @@ function renderSaoSkin() {
         </div>`;
 
       if (pMeters.length) {
-        vitals += `<div class="rpg-sao-group" data-drag="meters" style="${saoDragStyle("meters")}">`
-          + saoDivider("METERS", "meters") +
+        vitals += `<div class="rpg-sao-group">` + saoDivider("METERS", "meters") +
           `<div class="rpg-sao-slim${saoCollapsed.meters ? " hide" : ""}">` +
           pMeters.map((m) => saoSlimRow(m.name, m.curr, m.max, saoMeterColor(m.name), null, false,
             `p/m:${normBondName(m.name)}`)).join("") +
@@ -4259,8 +4298,7 @@ function renderSaoSkin() {
       // party and NPCs get their own sections, each independently collapsible
       const unitGroup = (label, key, list, type) => {
         if (!list.length) return "";
-        return `<div class="rpg-sao-group" data-drag="${key}" style="${saoDragStyle(key)}">`
-          + saoDivider(label, key) +
+        return `<div class="rpg-sao-group">` + saoDivider(label, key) +
           `<div class="rpg-sao-slim${saoCollapsed[key] ? " hide" : ""}">` +
           list.map((u, i) => {
             const v = saoUnitView(u);
@@ -4276,7 +4314,7 @@ function renderSaoSkin() {
     // --- enemies ---
     let foesHtml = "";
     if (showBars && inCombat && enemies.length) {
-      foesHtml = `<div class="rpg-sao-foes"><div class="rpg-sao-group" data-drag="foes" style="${saoDragStyle("foes")}">` +
+      foesHtml = `<div class="rpg-sao-foes"><div class="rpg-sao-group">` +
         saoDivider(`ROUND ${escHtml(rpgState.combat.round ?? 1)}`, "foes", "#f0b6ab") +
         `<div class="rpg-sao-slim${saoCollapsed.foes ? " hide" : ""}">` +
         enemies.map((u, i) => {
@@ -4344,9 +4382,12 @@ function renderSaoSkin() {
 
     saoFitName();          // may change the bar width, so run it first
     saoPaintBars();
+    saoEnforceOnScreen();
     saoPlacePanels();
     saoBindDragging();
-    requestAnimationFrame(() => { saoFitName(); saoPaintBars(); saoPlacePanels(); });
+    requestAnimationFrame(() => {
+      saoFitName(); saoPaintBars(); saoEnforceOnScreen(); saoPlacePanels();
+    });
     saoBind();
   } catch (e) {
     container.innerHTML = `<div style="pointer-events:auto; position:fixed; top:60px; right:20px;
@@ -4556,7 +4597,9 @@ if (!window.__rpgSaoResizeBound) {
   window.addEventListener("resize", () => {
     if ((uiSettings.skin || "classic") !== "sao") return;
     clearTimeout(rt);
-    rt = setTimeout(() => { saoFitName(); saoPaintBars(); saoPlacePanels(); }, 120);
+    rt = setTimeout(() => {
+      saoFitName(); saoPaintBars(); saoEnforceOnScreen(); saoPlacePanels();
+    }, 120);
   });
 }
 
@@ -4926,18 +4969,6 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   font-size:9px; font-weight:700; letter-spacing:1px; text-transform:uppercase;
   background:rgba(14,16,20,.92); color:#f2c141; padding:1px 5px; border-radius:2px;
 }
-/* the stack's handle is the only thing layout mode adds to the flow, and it
-   only exists while arranging */
-.rpg-sao-handle{
-  display:none; position:absolute; top:-22px; left:0; z-index:4;
-  font-size:10px; font-weight:700; letter-spacing:1.5px;
-  color:#f2c141; background:rgba(14,16,20,.92);
-  border:1px solid rgba(242,193,65,.5); border-radius:3px;
-  padding:3px 8px; cursor:move; touch-action:none; white-space:nowrap;
-}
-#rpg-hud-container.layout .rpg-sao-handle{display:block}
-#rpg-hud-container.layout .rpg-sao-handle::after{content:none}
-
 #rpg-hud-container.layout .draggable button,
 #rpg-hud-container.layout .draggable input,
 #rpg-hud-container.layout .draggable select,
