@@ -356,6 +356,7 @@ const defaultUiSettings = {
   saoInk: 70,             // text contrast against the panel, 0 = faint, 100 = maximum
   saoAnimate: true,       // bar tweening, orb unfold, panel and clock fades
   saoPos: null,           // {vitals:[x,y], col:[x,y], clock:[x,y]} drag offsets
+  saoSnap: true,          // snap a dragged piece to the others' edges and centres
   saoUiScale: 100,        // % size of the bar cluster; a desktop usually wants ~130
   saoTextShadow: false,   // shadow behind the text that sits straight on the chat
   saoTextBacking: false,  // translucent card behind that text instead        // "classic" | "sao"
@@ -3530,8 +3531,23 @@ function saoBindDragging() {
       ? (v) => clamp(v, 4 - r.top, vh - 4 - r.bottom)
       : (v) => clamp(v, K - r.bottom, vh - K - r.top);
 
+    const snapOn = uiSettings.saoSnap !== false;
+    const targets = snapOn ? saoSnapTargets(key) : null;
+    const w = r.width, h = r.height;
+
     const apply = (m) => {
-      const dx = clampX(m.clientX - x0), dy = clampY(m.clientY - y0);
+      let dx = clampX(m.clientX - x0), dy = clampY(m.clientY - y0);
+      let gxLine = null, gyLine = null;
+
+      if (snapOn) {
+        const L = gx + dx, T = gy + dy;
+        const hitX = saoNearest([L, L + w / 2, L + w], targets.xs);
+        const hitY = saoNearest([T, T + h / 2, T + h], targets.ys);
+        if (hitX) { dx = clampX(dx + hitX.d); gxLine = hitX.at; }
+        if (hitY) { dy = clampY(dy + hitY.d); gyLine = hitY.at; }
+        saoDrawGuides(gxLine, gyLine);
+      }
+
       c.style.setProperty(`--sao-${key}-x`, `${Math.round(start[0] + dx)}px`);
       c.style.setProperty(`--sao-${key}-y`, `${Math.round(start[1] + dy)}px`);
       el.style.left = `${Math.round(gx + dx)}px`;
@@ -3545,6 +3561,7 @@ function saoBindDragging() {
       window.removeEventListener("pointercancel", up);
       el.classList.remove("dragging");
       const [dx, dy] = apply(u);
+      c.querySelectorAll(".rpg-sao-guide").forEach((g) => g.remove());
       const next = { ...saoPos() };
       next[key] = [Math.round(start[0] + dx), Math.round(start[1] + dy)];
       uiSettings.saoPos = next;
@@ -3579,6 +3596,56 @@ function saoApplyPanelVars() {
 // Point the notch at the orb that is actually lit, rather than at the middle
 // of the panel. Clamped so it can't slide off the panel's own edges.
 // Applied on every render so a bad saved offset can never survive a reload.
+const SAO_SNAP_PX = 9;
+
+// Edges and centres worth lining up to: the other pieces, and the viewport.
+// All in container coordinates, which start at the top-left of the screen.
+function saoSnapTargets(exceptKey) {
+  const c = document.getElementById("rpg-hud-container");
+  const xs = [], ys = [];
+  if (!c) return { xs, ys };
+
+  const vw = window.innerWidth, vh = window.innerHeight;
+  xs.push(0, vw / 2, vw);
+  ys.push(0, vh / 2, vh);
+
+  c.querySelectorAll(".rpg-sao-ghost").forEach((g) => {
+    if (g.dataset.ghost === exceptKey) return;
+    const l = parseFloat(g.style.left) || 0, t = parseFloat(g.style.top) || 0;
+    const w = g.offsetWidth, h = g.offsetHeight;
+    xs.push(l, l + w / 2, l + w);
+    ys.push(t, t + h / 2, t + h);
+  });
+  return { xs, ys };
+}
+
+// nearest target within the threshold, or null
+function saoNearest(values, targets) {
+  let best = null;
+  targets.forEach((t) => {
+    values.forEach((v) => {
+      const d = t - v;
+      if (Math.abs(d) <= SAO_SNAP_PX && (!best || Math.abs(d) < Math.abs(best.d))) best = { d, at: t };
+    });
+  });
+  return best;
+}
+
+function saoDrawGuides(x, y) {
+  const c = document.getElementById("rpg-hud-container");
+  if (!c) return;
+  c.querySelectorAll(".rpg-sao-guide").forEach((g) => g.remove());
+  const add = (vertical, at) => {
+    const g = document.createElement("div");
+    g.className = "rpg-sao-guide";
+    if (vertical) { g.style.left = `${at}px`; g.style.top = "0"; g.style.width = "1px"; g.style.height = "100%"; }
+    else { g.style.top = `${at}px`; g.style.left = "0"; g.style.height = "1px"; g.style.width = "100%"; }
+    c.appendChild(g);
+  };
+  if (x !== null) add(true, x);
+  if (y !== null) add(false, y);
+}
+
 // union of a piece's visible children, in viewport coordinates
 function saoContentRect(el) {
   let box = null;
@@ -4425,6 +4492,8 @@ function renderSaoSkin() {
     if (vitals) vitals += foesHtml + `</div>`;
     const layoutBar = saoLayoutMode
       ? `<div id="rpg-sao-layout-bar">Drag any outlined piece
+          <button class="ghost${uiSettings.saoSnap !== false ? " on" : ""}" id="rpg-sao-layout-snap"
+            title="Line pieces up with each other and with the screen">Snap ${uiSettings.saoSnap !== false ? "on" : "off"}</button>
           <button class="ghost" id="rpg-sao-layout-reset" title="Put every piece back where it started">Reset all</button>
           <button id="rpg-sao-layout-done">Done</button></div>`
       : "";
@@ -4543,6 +4612,11 @@ function saoBind() {
   });
   bind("rpg-sao-layout-done", () => { saoLayoutMode = false; renderRPG(); });
   bind("rpg-sao-layout-reset", saoResetLayout);
+  bind("rpg-sao-layout-snap", () => {
+    uiSettings.saoSnap = uiSettings.saoSnap === false;
+    saveUiSettings();
+    renderRPG();
+  });
   bind("rpg-sao-reset", resetUiSettings);
   // the embedded error panel closes itself via isErrorOpen, which this skin
   // doesn't use — its visibility is saoPanel, so close that instead
@@ -5018,6 +5092,8 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   padding:1px 4px; line-height:1.1; text-align:right;
 }
 .rpg-sao-ghost.dragging{border:2px solid #f2c141; background:rgba(242,193,65,.12)}
+.rpg-sao-guide{position:absolute; z-index:7; pointer-events:none;
+  background:#4fc3f7; box-shadow:0 0 6px rgba(79,195,247,.8)}
 /* nothing underneath responds while arranging; the overlay catches it all */
 #rpg-hud-container.layout [data-drag],
 #rpg-hud-container.layout [data-drag] *{pointer-events:none !important}
@@ -5035,6 +5111,7 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   background:#f2c141; color:#2a2209; border:0; padding:4px 12px; border-radius:3px;
 }
 #rpg-sao-layout-bar button.ghost{background:transparent; color:#cfcbc2; border:1px solid #4a4d55}
+#rpg-sao-layout-bar button.ghost.on{color:#f2c141; border-color:#f2c141}
 
 @keyframes rpgSaoFadeIn{ from{opacity:0} to{opacity:1} }
 @keyframes rpgSaoRise{ from{opacity:0; transform:translateY(8px)} to{opacity:1; transform:none} }
