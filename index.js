@@ -3488,46 +3488,6 @@ function saoDragStyle(key) {
   return `position:relative; left:var(--sao-${key}-x, 0px); top:var(--sao-${key}-y, 0px);`;
 }
 
-// Offsets saved in an earlier session can leave a piece stranded off screen —
-// and if that piece is the card, its parent still draws as an empty outline,
-// which is exactly what "the box is empty" looks like. Pull everything back.
-function saoRescuePieces() {
-  const vw = window.innerWidth, vh = window.innerHeight;
-  if (!vw || !vh) return false;
-  const pos = saoPos();
-  let changed = false;
-
-  SAO_DRAG_KEYS.forEach((key) => {
-    const el = document.querySelector(`[data-drag-box="${key}"]`)
-            || document.querySelector(`[data-drag="${key}"]`);
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    if (!r.width || !r.height) return;
-
-    const M = 8;
-    let dx = 0, dy = 0;
-    if (r.right < M) dx = M - r.right;                  // off the left
-    else if (r.left > vw - M) dx = vw - M - r.left;     // off the right
-    if (r.bottom < M) dy = M - r.bottom;                // off the top
-    else if (r.top > vh - M) dy = vh - M - r.top;       // off the bottom
-
-    // anything sitting fully outside gets pulled flush to that edge
-    if (r.left < 0 && r.right < 120) dx = Math.max(dx, -r.left + 8);
-    if (r.top < 0 && r.bottom < 120) dy = Math.max(dy, -r.top + 8);
-
-    if (dx || dy) {
-      pos[key] = [Math.round(pos[key][0] + dx), Math.round(pos[key][1] + dy)];
-      changed = true;
-    }
-  });
-
-  if (changed) {
-    uiSettings.saoPos = pos;
-    saveUiSettings();
-  }
-  return changed;
-}
-
 function saoResetLayout() {
   uiSettings.saoPos = null;
   saveUiSettings();
@@ -3558,8 +3518,11 @@ function saoBindDragging() {
       el.classList.add("dragging");
 
       // free to go nearly off screen; only a corner has to stay reachable
+      // Panels open to the LEFT of the orbs, so the column has to stop short
+      // of the left edge or the settings menu would open off screen.
+      const leftRoom = vw > 720 ? 330 : 120;
       const clampX = whole
-        ? (v) => clamp(v, 4 - r.left, vw - 4 - r.right)
+        ? (v) => clamp(v, leftRoom - r.left, vw - 4 - r.right)
         : (v) => clamp(v, K - r.right, vw - K - r.left);
       const clampY = whole
         ? (v) => clamp(v, 4 - r.top, vh - 4 - r.bottom)
@@ -4485,8 +4448,6 @@ function saoBind() {
     saoPanel = null;
     saoMin = false;        // everything has to be on screen to be arranged
     renderRPG();
-    // measure once the pieces are laid out, then fix any that are stranded
-    requestAnimationFrame(() => { if (saoRescuePieces()) renderRPG(); });
   });
   bind("rpg-sao-layout-done", () => { saoLayoutMode = false; renderRPG(); });
   bind("rpg-sao-layout-reset", saoResetLayout);
@@ -4955,10 +4916,10 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 
 /* paint-only: outline sits outside the box and shifts nothing */
 #rpg-hud-container.layout .draggable{
-  outline:2px dashed rgba(255,255,255,.6); outline-offset:2px;
+  outline:1px dashed rgba(255,255,255,.65); outline-offset:0;
   cursor:move; touch-action:none;
 }
-#rpg-hud-container.layout .draggable.dragging{outline-color:#f2c141; outline-style:solid}
+#rpg-hud-container.layout .draggable.dragging{outline:2px solid #f2c141; outline-offset:0}
 #rpg-hud-container.layout .draggable::after{
   content:attr(data-drag); position:absolute; right:0; bottom:100%; z-index:4;
   margin-bottom:3px; pointer-events:none;
