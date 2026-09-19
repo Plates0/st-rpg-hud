@@ -2985,7 +2985,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         ${bondBlocklist.size ? `<button id="rpg-settings-unblock" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px; cursor:pointer;">Unblock ${bondBlocklist.size} bond(s)</button>` : ""}
 
         <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Appearance</div>
-        <button id="rpg-settings-reset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px; cursor:pointer;">↺ Reset settings to defaults</button>
+        <button id="rpg-settings-reset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:6px; cursor:pointer;">↺ Reset settings to defaults</button>
+        <button id="rpg-settings-resetlayout" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px; cursor:pointer;">✥ Reset SAO layout</button>
 
         <div style="background:rgba(255,255,255,0.06); border:1px solid #333; border-radius:4px; padding:8px; margin-bottom:10px;">
         <div style="font-size:0.75em; color:#bbb; margin-bottom:6px;">Skin</div>
@@ -3316,6 +3317,9 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	  const resetEl = document.getElementById("rpg-settings-reset");
 	  if (resetEl) resetEl.onclick = resetUiSettings;
 
+	  const rlEl = document.getElementById("rpg-settings-resetlayout");
+	  if (rlEl) rlEl.onclick = (e) => { e.stopPropagation(); saoResetLayout(); };
+
 	  const skinEl = document.getElementById("rpg-skin-select");
 	  if (skinEl) {
 	    skinEl.value = uiSettings.skin || "classic";
@@ -3464,8 +3468,10 @@ function saoPanelVars() {
 // stack and shift relative to where they'd normally fall.
 const SAO_DRAG_KEYS = ["vitals", "col", "clock", "card", "meters", "party", "npcs", "foes"];
 
-// how much of a piece must stay on screen while dragging
+// How much of a piece must stay on screen. The orb column is the way back to
+// settings, so it keeps a whole orb visible — losing it would strand the HUD.
 const SAO_KEEP_VISIBLE = 28;
+const SAO_KEEP_COL = 62;
 
 function saoPos() {
   const p = uiSettings.saoPos || {};
@@ -3495,11 +3501,10 @@ function saoResetLayout() {
 function saoBindDragging() {
   if (!saoLayoutMode) return;
   const vw = window.innerWidth, vh = window.innerHeight;
-  const K = SAO_KEEP_VISIBLE;
-
   document.querySelectorAll("[data-drag]").forEach((el) => {
     const key = el.dataset.drag;
     if (!SAO_DRAG_KEYS.includes(key)) return;
+    const K = key === "col" ? SAO_KEEP_COL : SAO_KEEP_VISIBLE;
     el.classList.add("draggable");
 
     el.addEventListener("pointerdown", (ev) => {
@@ -4210,7 +4215,7 @@ function renderSaoSkin() {
     const npcs = Array.isArray(rpgState.npcs) ? rpgState.npcs : [];
     const pMeters = Array.isArray(player.meters) ? player.meters : [];
 
-    const showBars = !saoMin || uiSettings.barsOnMin;
+    const showBars = saoLayoutMode || !saoMin || uiSettings.barsOnMin;
     const inCombat = !!rpgState?.combat?.active;
 
     // --- vitals ---
@@ -4424,7 +4429,12 @@ function saoBind() {
   });
   bind("rpg-sao-diagnose", () => { saoMin = false; saoPanel = "error"; renderRPG(); });
   bind("rpg-sao-help", () => { saoHelpOpen = !saoHelpOpen; renderRPG(); });
-  bind("rpg-sao-move", () => { saoLayoutMode = true; saoPanel = null; renderRPG(); });
+  bind("rpg-sao-move", () => {
+    saoLayoutMode = true;
+    saoPanel = null;
+    saoMin = false;        // everything has to be on screen to be arranged
+    renderRPG();
+  });
   bind("rpg-sao-layout-done", () => { saoLayoutMode = false; renderRPG(); });
   bind("rpg-sao-layout-reset", saoResetLayout);
   bind("rpg-sao-reset", resetUiSettings);
@@ -4892,6 +4902,12 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
   cursor:move; touch-action:none; border-radius:3px;
 }
 #rpg-hud-container.layout .draggable.dragging{outline-color:#f2c141}
+#rpg-hud-container.layout .draggable::before{
+  content:attr(data-drag); position:absolute; top:-8px; left:0; z-index:3;
+  font-size:9px; font-weight:700; letter-spacing:1px; text-transform:uppercase;
+  background:rgba(14,16,20,.9); color:#f2c141; padding:1px 5px; border-radius:2px;
+  pointer-events:none;
+}
 #rpg-hud-container.layout .draggable button,
 #rpg-hud-container.layout .draggable input,
 #rpg-hud-container.layout .draggable select,
