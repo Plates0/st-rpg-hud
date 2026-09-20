@@ -4783,15 +4783,26 @@ const SAO_CSS = `<style id="rpg-sao-style">
 
 .rpg-sao-slim{opacity:.78; margin-right:calc(56px * var(--rpg-sao-ui, 1))}
 .rpg-sao-slim.hide{display:none}
-.rpg-sao-row{display:flex; align-items:center; gap:7px; margin-bottom:3px}
-.rpg-sao-row.stacked{flex-wrap:wrap; margin-bottom:5px}
-.rpg-sao-row.stacked .rpg-sao-tag{flex:0 0 100%; width:100%;
+.rpg-sao-row{
+  --tagw:calc(50px * var(--rpg-sao-ui, 1)); --numw:calc(58px * var(--rpg-sao-ui, 1));
+  display:grid; grid-template-columns:var(--tagw) 1fr var(--numw);
+  gap:7px; align-items:center; margin-bottom:3px;
+}
+.rpg-sao-row > .rpg-sao-tag{grid-column:1}
+.rpg-sao-row > .rpg-sao-bar{grid-column:2}
+.rpg-sao-row > .rpg-sao-num{grid-column:3}
+/* a long name takes its own row, but the bar keeps the same column */
+.rpg-sao-row.stacked{margin-bottom:5px}
+.rpg-sao-row.stacked > .rpg-sao-tag{grid-column:1 / -1; grid-row:1;
   white-space:normal; overflow:visible; margin-bottom:1px}
+.rpg-sao-row.stacked > .rpg-sao-bar{grid-column:2; grid-row:2}
+.rpg-sao-row.stacked > .rpg-sao-num{grid-column:3; grid-row:2}
 .rpg-sao-row.sub{margin-left:13px; opacity:.85}
-.rpg-sao-row.sub .rpg-sao-tag{flex:0 0 calc(40px * var(--rpg-sao-ui, 1)); font-size:calc(9.5px * var(--rpg-sao-ui, 1)); text-decoration:none}
+.rpg-sao-row.sub{--tagw:calc(40px * var(--rpg-sao-ui, 1)); --numw:calc(50px * var(--rpg-sao-ui, 1))}
+.rpg-sao-row.sub .rpg-sao-tag{font-size:calc(9.5px * var(--rpg-sao-ui, 1)); text-decoration:none}
 .rpg-sao-row.sub .rpg-sao-bar.slim{height:calc(6px * var(--rpg-sao-ui, 1))}
-.rpg-sao-row.sub .rpg-sao-num{font-size:calc(9px * var(--rpg-sao-ui, 1)); min-width:calc(42px * var(--rpg-sao-ui, 1))}
-.rpg-sao-tag{flex:0 0 calc(50px * var(--rpg-sao-ui, 1)); font-size:calc(10.5px * var(--rpg-sao-ui, 1)); font-weight:600; color:#ddd9ce; overflow:hidden; text-overflow:ellipsis;
+.rpg-sao-row.sub .rpg-sao-num{font-size:calc(9px * var(--rpg-sao-ui, 1))}
+.rpg-sao-tag{min-width:0; font-size:calc(10.5px * var(--rpg-sao-ui, 1)); font-weight:600; color:#ddd9ce; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; background:none; border:0; padding:0; text-align:left}
 button.rpg-sao-tag{cursor:pointer; text-decoration:underline;
   text-decoration-color:rgba(255,255,255,.28); text-underline-offset:2px}
@@ -4799,7 +4810,7 @@ button.rpg-sao-tag:hover{color:#fff}
 .rpg-sao-tag.foe{color:#f2a99d}
 button.rpg-sao-tag.foe{text-decoration-color:rgba(242,169,157,.4)}
 button.rpg-sao-tag.foe:hover{color:#ffd0c7}
-.rpg-sao-num{flex:0 0 auto; font-size:calc(9.5px * var(--rpg-sao-ui, 1)); color:#c2beb4; min-width:calc(46px * var(--rpg-sao-ui, 1));
+.rpg-sao-num{font-size:calc(9.5px * var(--rpg-sao-ui, 1)); color:#c2beb4; min-width:0; overflow:hidden;
   text-align:right}
 
 .rpg-sao-div{margin:9px 0 5px; font-size:calc(10px * var(--rpg-sao-ui, 1)); font-weight:700; letter-spacing:2px;
