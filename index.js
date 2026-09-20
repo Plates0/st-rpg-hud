@@ -2240,14 +2240,17 @@ function flushInlineEdits() {
 }
 
 // Strips bond after deleting
+// Strips a name from the |Bonds:| ledger AND from any live |Bond:| value on
+// that character's own line. bondMemoryFromHistory reads both, so clearing
+// only the ledger left the bond recoverable from history and it would return.
 function stripBondsFromText(text, keys) {
   return String(text).replace(
     /(<rpg_state\b[^>]*>)([\s\S]*?)(<\/rpg_state>)/gi,
     (full, open, body, close) => {
-      const newBody = body.replace(/\|Bonds:([^|]*)\|/gi, (m, val) => {
+      let newBody = body.replace(/\|Bonds:([^|]*)\|/gi, (m, val) => {
         const kept = String(val)
           .split(";")
-          .map((s) => s.trim())
+          .map((x) => x.trim())
           .filter(Boolean)
           .filter((chunk) => {
             const i = chunk.lastIndexOf(":");
@@ -2256,6 +2259,23 @@ function stripBondsFromText(text, keys) {
           });
         return `|Bonds:${kept.join(";")}|`;
       });
+
+      // now the per-entity values, walking statefully because Name and Bond
+      // may sit on different lines
+      let curName = "";
+      let inPlayer = false;
+      newBody = newBody.split("\n").map((raw) => {
+        const line = raw.trim();
+        if (!line) return raw;
+        if (line.startsWith("[")) { inPlayer = /player/i.test(line); curName = ""; return raw; }
+        if (line.startsWith(">")) return raw;
+        const nm = line.match(/\|Name:\s*([^|]*)/i);
+        if (nm) curName = nm[1].trim();
+        if (inPlayer || !curName) return raw;
+        if (!keys.has(normBondName(curName))) return raw;
+        return raw.replace(/\|Bond:\s*[^|]*\|/gi, "");
+      }).join("\n");
+
       return open + newBody + close;
     }
   );
@@ -4798,7 +4818,11 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-row.stacked > .rpg-sao-bar{grid-column:2; grid-row:2}
 .rpg-sao-row.stacked > .rpg-sao-num{grid-column:3; grid-row:2}
 .rpg-sao-row.sub{margin-left:13px; opacity:.85}
-.rpg-sao-row.sub{--tagw:calc(40px * var(--rpg-sao-ui, 1)); --numw:calc(50px * var(--rpg-sao-ui, 1))}
+.rpg-sao-row.sub{
+  --tagw:calc(40px * var(--rpg-sao-ui, 1)); --numw:calc(50px * var(--rpg-sao-ui, 1));
+  /* a meter belongs to the bar above it, so it never runs as long */
+  grid-template-columns:var(--tagw) minmax(0, 42%) var(--numw) 1fr;
+}
 .rpg-sao-row.sub .rpg-sao-tag{font-size:calc(9.5px * var(--rpg-sao-ui, 1)); text-decoration:none}
 .rpg-sao-row.sub .rpg-sao-bar.slim{height:calc(6px * var(--rpg-sao-ui, 1))}
 .rpg-sao-row.sub .rpg-sao-num{font-size:calc(9px * var(--rpg-sao-ui, 1))}
