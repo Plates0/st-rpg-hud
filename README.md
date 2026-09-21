@@ -27,21 +27,20 @@ Go into the regex folder → install it → go back to SillyTavern → Extension
 <RPG Guidelines>
 
 I. STATE & PIPE FORMAT (MANDATORY)
-At the very end of every response, you must output exactly one <rpg_state> block containing the valid Pipe format.
-CRITICAL: Do not use Markdown code blocks. Just the raw tag and text.
-UNKNOWN VALUES: Use "???" for unknown numbers or hidden stats.
+At the very end of every response, output exactly one <rpg_state> block in valid Pipe format.
+CRITICAL: No Markdown code blocks. Just the raw tag and text.
+UNKNOWN VALUES: Use "???" exactly; never summarize with ellipses.
 SCHEMA RULES:
-- Separate lists (like inventory, skills, masteries, quests, status, env) using semicolons (;).
-- Time must be formatted as Month Day,Clock
+- Separate lists (inventory, skills, masteries, quests, status, env) with semicolons (;).
 - Stats can contain equations (e.g., `ATK:210 (160+50+0)`) or raw integers (e.g., `ATK:10`).
-- Meters (Dynamic Stats): Store shields, Sanity, Hunger, etc., using the format `Name:Curr/Max` inside a `|Meters:...|` pipe (e.g., `|Meters:Shield:30/80;Sanity:90/100|`). (Max is not capped at 100; add/remove as narrative dictates).
-- Add [NPCs], [Party], [Enemies], as narrative dictates. ALWAYS add characters into [NPCs] if they appear, but aren't a party member or ally.
+- Meters (Dynamic Stats): Shields, Sanity, Hunger, etc. as `Name:Curr/Max` in `|Meters:...|` (e.g., `|Meters:Shield:30/80;Sanity:90/100|`). Max isn't capped at 100; add/remove as narrative dictates.
+- Add [NPCs], [Party], [Enemies] as narrative dictates. ALWAYS add characters to [NPCs] if they appear but aren't a party member or ally.
+- Loc: Include the country when inside one. Independent entities (DH Academy, hidden islands, dungeons) don't.
 
-When updating the Time, do NOT default to 1-minute increments unless it makes sense. 
-Advance the clock dynamically based on the narrative events of your response:
-- Short Travel/Exploration: Advance 30–60 minutes.
-- Significant Events/Dungeons: Advance 1–3 hours.
-- Rest/Sleep: Advance 8 hours, or however long {{user}} states.
+Time: |Time:| is the roleplay's true datetime. Only change it via time manipulation, natural time passing, or in-game events; never match system time or prompt timestamps. Advance dynamically, not in 1-minute steps:
+- Short Travel/Exploration: 30–60 min.
+- Significant Events/Dungeons: 1–3 hours.
+- Rest/Sleep: 8 hours, or however long {{user}} states.
 
 Timers (Global): `|Timers:[Owner/]Name:Value:KIND|`, `;` separated. Owner/ if not {{user}}'s.
 KIND: CD cooldowns · BUFF/DEBUFF temporary effects · EVENT anything on a calendar
@@ -53,14 +52,8 @@ moving the deadline, never by recomputing a countdown.
 Drop resolved CD/BUFF/DEBUFF. Keep EVENT/DOOM listed until narrated, fired or not.
 Ex: |Timers:Heavy Strike:2/3:CD;Kira/Regen:3/5:BUFF;Dentist:Jan 6 1023,14:00:EVENT;Plague:Jan 9 1023,06:00:DOOM|
 
-Calendar Logic
-Month Rollover: If day exceeds the max for the current month, reset day to 1 and advance month to the next one.
-Max Days:
-- 30 Days: Apr, Jun, Sep, Nov
-- 31 Days: Jan, Mar, May, Jul, Aug, Oct, Dec
-- 28 Days: Feb
-- Time must be formatted as Month Day Year,Clock — e.g. `Jan 5 1023,14:30`.
-Year: If Dec 31 rolls over, advance to Jan 1 of the NEXT year.
+Calendar: Format `Month Day Year,Clock` (e.g. `Jan 5 1023,14:30`). If day exceeds the month's max, roll to day 1 of next month; Dec 31 rolls to Jan 1 of next year.
+- 30: Apr, Jun, Sep, Nov | 31: Jan, Mar, May, Jul, Aug, Oct, Dec | 28: Feb
 
 |Bonds:| Format: |Bonds:Name:X/100;|
 
@@ -77,97 +70,90 @@ TEMPLATE:
 </rpg_state>
 
 II. VISIBILITY & PERSISTENCE
-[NPCs]: Default to "???" stats (Rules do NOT apply to [Enemies] & [Party].) unless they:
+[NPCs]: Default to "???" stats (doesn't apply to [Enemies] & [Party]) unless they:
 1. Enter combat.
 2. Receive damage, healing, or buffs.
 3. Are narratively revealed.
 4. Join the [Party].
-5. Always keep party members unless they decide to leave the party permanently.
-Coin is not shared. [Party] & [Enemies] share same keys as [Player]
-
-Bond: Always display the |Bond:| stat in the entity's pipe if active.
-
-Persistence: Once revealed, stats are locked/persistent. Remove NPCs from the <rpg_state> block if they are not present in the current scene.
+Keep party members unless they permanently leave. Coin is not shared. [Party] & [Enemies] share [Player]'s keys.
+Bond: Always display |Bond:| in the entity's pipe if active.
+Persistence: Revealed stats are locked. Remove NPCs not present in the current scene.
+Hidden Traits: Stay hidden; only describe/list them when active.
 
 III. STRING FORMATTING (STRICT)
-Constraint: Entries in inventory, skills, passives, masteries, quests, and Env MUST be single-line strings separated by semicolons (;).
-
-NEVER HIDE, COLLAPSE, REORDER, or MERGE lines.
-
-FORBIDDEN: Do NOT use nested objects or JSON syntax.
-
+Inventory, skills, passives, masteries, quests, and Env entries MUST be single-line strings separated by semicolons.
+NEVER HIDE, COLLAPSE, REORDER, or MERGE lines. No nested objects or JSON.
 Format: "Name (Cost) Effect [Status]"
-- Use [X] to denote equipped items and [] for unequipped items.
-
-Env: Track active environmental pressures (sanity, hunger, weather, oxygen).
-- Format: "Name - Effect Per Turn"
-- Example: "Dungeon Corruption -4 Sanity/Hunger Per Turn" or "Sandstorm -10 HP Per Turn"
-
-Examples (Inventory/Skills):
+- [X] = equipped, [] = unequipped. Only equippable items get brackets; other items list quantity if >1 (e.g., "Health Potion x3").
+- Always keep stats on each equipment entry so the math is checkable.
+Env Format: "Name - Effect Per Turn" (e.g., "Sandstorm -10 HP Per Turn")
+Examples:
 - "Heavy Strike (MP-20) ATK*1.5, A Powerful Strike."
 - "Iron Sword +10 ATK [X]"
 - "Healing Whispers (MP-15) Heal target MATK*1, recovers 15 Sanity"
 
 IV. MECHANICS & MATH
-Definitions: M.HP = Max HP; M.MP = Max MP.
-Progression: No Levels/EXP. Stats increase only via [X] gear or permanent buffs.
-Authority: No auto-regen. HP/MP only change via explicit events, items, skills or passives that grant regeneration.
+M.HP/M.MP = Max HP/MP; gear with these raises the wearer's max.
+Progression: No Levels/EXP. Stats rise only via [X] gear or permanent buffs; merge permanent gains directly into Base.
+Authority: No auto-regen. HP/MP change only via explicit events, items, skills, or regen passives.
+Aptitude: Base ATK/MATK = innate physical/magical aptitude; Total = combat power. (Base 10 + 150 weapon is deadly but not physically strong; Base 100 is physically superior to Base 50 regardless of gear.)
 
 States:
-- Critical Condition: If HP Curr < 25, add "Critical Condition" to Status.
-- Purgatory/Death: If HP Curr <= 0, {{user}} is sent to  Purgatory. Status: "Dead"
+- Critical Condition: HP Curr < 25 OR < 25% Max → add "Critical Condition" to Status.
+- Death: HP Curr <= 0 (in combat or anywhere) → {{user}} wakes in Purgatory, a seemingly empty, endless, gloomy land. Status: "Dead".
 
-Stat Calc: Scope HP Max, MP Max, and Stats.
-Format Logic: If a modifier exists, convert the value to a String: "TOTAL ((Base+Mod+Buff)*Multi)".
-Mod = Equipment, put all equipment stats here.
-Base Logic: (Base = Total - Mod - Buff).
-Use Multi only if applicable.
-
-Example:
-`ATK:210 (160+50+0)` (where 50 is from +50 ATK [X]).
-`HP:300 ((100+100+0)*1.5)/300 ((100+100+0)*1.5)`
+Stat Calc (HP Max, MP Max, Stats): With a modifier, format as "TOTAL ((Base+Mod+Buff)*Multi)".
+Mod = all equipment. Buff = skills, temporary buffs, passives. Base = Total - Mod - Buff. Multi only if applicable. Never drop components after totaling.
+Current Only: Damage, poison, and MP/EN costs subtract from Current; never from Base/Max, never shown in the equation.
+- `HP:90/100 (75+25+0)` after 10 DMG to 100/100.
+- Doubling TOTAL ATK (10 base, +5 weapon) → `ATK:30 (10+5+15)`; doubling BASE → `ATK:25 (10+5+10)`
+Example: `HP:300 ((100+100+0)*1.5)/300 ((100+100+0)*1.5)`
 
 V. COMBAT & OVERLAYS
-Pacing: Exactly ONE ROUND per response (one action per combatant).
-Engagement: If combat starts, change Global Combat to `Round [N]`.
+Pacing: Exactly ONE ROUND per response (one action per combatant), unless a skill says otherwise.
+Engagement: Make entering combat very clear. Set Global Combat to `Round [N]`.
+Narration: Describe actions thematically in smaller font, with damage dealt. Show each attack's math on a new line via the Hit Div.
 
-Vehicle (Ship/Mecha/Car/Transport):
-- Add ONE line starting with `>` directly beneath the entity's lines, using the same keys:
+Vehicle (Ship/Mecha/Car/Transport): Add ONE `>` line beneath the entity, same keys:
   >Vehicle|Type:Mecha||Name:||HP:0/0||MP:0/0||Coin:0||Stats:ATK:0,MATK:0,DEF:0,SATK:0,SDEF:0||Meters:||INV:||Skills:||Passives:||Status:|
-- Use `EN:` instead of `MP:` for Ship and Car.
-- Focus: Disable (don't remove) pilot stats. Use Vehicle stats/skills only for calculations.
+- Ship/Car use `EN:` instead of `MP:` (EN maps to MP).
+- Outside vehicle combat, compact Ship/Car/Transport to Name, HP, EN.
+- Disable (don't remove) pilot stats; use vehicle stats for calculations. Revert if the pilot exits mid-combat.
 
-Map: Energy (EN) maps to MP.
+Damage Engine: ((ATK or MATK)*Skill Multi)*(Crit Multi) - DEF*(True DMG Mod) = DMG*(Final DMG Multi) = DMG Dealt
+- True DMG: Mod = 0 (ignores DEF). Can crit.
+- Crit: *2, before DEF. Guaranteed on a Weak Spot.
+- Parry: DEF becomes DEF+ATK. A manual parry (uses the action) also reduces True DMG; auto-parry passives cannot.
+- Boss: M.HP = Base * PartySize. Immune to Blind/Bind/Stun.
+- Multi-Hit: DEF applies to EACH hit; ((ATK*1)*8) = eight ATK*1 hits.
 
-Damage Engine: ((ATK or MATK)*Skill Multiplier)*(Crit Multiplier) - DEF*(True DMG Modifier) = DMG*(Final DMG Multiplier) = DMG Dealt
-- True DMG: TrueDMGMod = 0.
-- Parry: Treat DEF as (DEF + ATK). Can parry True DMG.
-- When Entering Combat with a Boss, Boss HP: M.HP = Base * PartySize. Immune to Blind/Bind/Stun.
-- Critical Hits: *2 Multi. Guaranteed when hitting a Weak Spot. Calculated before DEF.
+Combat Rules:
+1. Math is absolute: no rounding, no plot armor. Overkill drops a target straight to 0.
+2. Enemies are defeated ONLY at 0 HP or below. They may surrender earlier, or the party may end combat via roleplay.
+3. Escape/survival roleplay only works if explicitly attempted AND plausible; against overwhelming power it fails.
+4. Everyone has (don't list unless already present): Basic Attack (MP-0) ATK*1 or MATK*1; Parry (MP-0) DEF = DEF + ATK.
+5. No cooldown unless stated. Track CDs in |Timers:|. CDs reset out of combat unless daily/otherwise specified.
+6. DEF is mostly gear, sometimes innate. Poison and similar effects deal True DMG.
+7. Generate skills/multipliers for enemies without predefined ones.
+8. AoE caps: Small 3 · AoE 5 (default) · Big 15 · True unlimited.
+9. Barriers block most debuffs incl. DoT and tank True DMG. High-tier magic debuffs (e.g., timestop) bypass them.
 
 VI. LIVING WEAPON OVERRIDE
-Trigger: If {{user}} is a sentient weapon/item.
-
-Display Logic (Swap):
-1. The [Player] block MUST represent the Wielder (the person holding {{user}}).
-2. Put Wielder's stats in the primary [Player] section.
-
-Identity Logic:
-1. Put {{user}} (the weapon) into the [Party] section.
-2. Weapon Stats: Set Weapon HP to 1/1 inside their entry.
-3. Weapon Skills: List Weapon-specific skills (Phantom Hit, etc.) inside the weapon's `|Skills:...|` pipe.
-
-Shared Skills: List skills granted to the wielder by the weapon inside the [Player] block's skills pipe.
-Inventory: Add "Living Weapon ({{user}}) [X]" to the Wielder's inventory pipe.
+Trigger: {{user}} is a sentient weapon/item.
+- [Player] block = the Wielder, with their stats.
+- {{user}} goes in [Party] with HP 1/1 and weapon-specific skills (Phantom Hit, etc.) in its own Skills pipe.
+- Skills the weapon grants the wielder go in [Player] Skills.
+- Wielder INV includes "Living Weapon ({{user}}) [X]".
 
 VII. UI COMPONENTS (HTML IN NARRATIVE)
-Output these HTML blocks in the main response text (NOT inside the <rpg_state> block) when relevant. ALWAYS show math.
+Output in the main text (NOT in <rpg_state>). ALWAYS show math. Combat UI should be specialized for the scene.
 
-Hit Div:
+Hit Div (replace "DEEP CUT" with a context-fitting line):
 <div style="border:1px solid #FFD700; padding:10px; border-radius:8px; margin:10px 0; text-align:center;">⚔️ <strong>DEEP CUT!</strong> [A] dealt [N] DMG to [B]! <em>([X ATK] vs [X DEF] → [N] dmg!)</em></div>
 
-Combat Header:
-<div style="border:3px solid #FF0000; padding:15px; background:#ffebee; border-radius:10px; text-align:center; margin-bottom:20px; box-shadow:0 0 15px rgba(255,0,0,0.5);"><strong style="color:#d50000; font-size:1.2em;">⚠️ COMBAT ENGAGED ⚠️</strong></div>
+Combat Header (start ALL combat with it; edit names; BOSS ONLY: add `animation: pulse 2s infinite` to the div style):
+<div style="border:3px solid #FF0000; padding:15px; background:#ffebee; border-radius:10px; font-family:'Courier New'; text-align:center; margin-bottom:20px; box-shadow:0 0 15px rgba(255,0,0,0.5);"><strong style="color:#d50000; font-size:1.2em;">⚠️ COMBAT ENGAGED, {{USER}}'s PARTY VS OPPONENT ⚠️</strong></div>
+**ROUND 1**
 
 </RPG Guidelines>
 ```
