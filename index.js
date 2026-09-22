@@ -1978,7 +1978,18 @@ function commitBondsEdit() {
   });
 
   const nowKeys = new Set(cleaned.map((b) => normBondName(b.name)));
-  const removed = bondsSnapshot.filter((n) => !nowKeys.has(normBondName(n)));
+  let removed = bondsSnapshot.filter((b) => !nowKeys.has(normBondName(b.name)));
+
+  // Ask BEFORE anything is written. Cancel puts them back; the rest of the
+  // edit (renames, new values) still applies.
+  if (removed.length) {
+    const label = removed.map((b) => b.name).join(", ");
+    const sure = confirm(`Remove ${removed.length === 1 ? "this bond" : "these bonds"}?\n\n${label}\n\nCancel keeps them.`);
+    if (!sure) {
+      removed.forEach((b) => upsertBond(cleaned, b.name, b.bond));
+      removed = [];
+    }
+  }
 
   rpgState.bonds = cleaned;
   bondsEditMode = false;
@@ -1987,21 +1998,20 @@ function commitBondsEdit() {
 
   const ok = writeStateBackToChatMessage(rpgState);
   if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after bond edit");
+  if (!removed.length) return;
 
-  if (removed.length) {
-    const label = removed.join(", ");
-    const yes = confirm(
-      `Scrub from |Bonds:| in ALL earlier messages?\n\n${label}\n\n` +
-      `If you skip this, the AI can still see them in older blocks and may add them back.\n\n` +
-      `This edits your chat history and cannot be undone.`
-    );
-    blockBonds(removed);   // stop the next scan re-adding them from live |Bond:| values
-    if (yes) {
-      const n = purgeBondsFromHistory(removed);
-      if (window.toastr) window.toastr.info(`Scrubbed ${removed.length} name(s) from ${n} message(s).`);
-    } else if (window.toastr) {
-      window.toastr.info(`${removed.length} bond(s) removed and blocked from returning.`);
-    }
+  const names = removed.map((b) => b.name);
+  blockBonds(names);   // stop the next scan re-adding them from live |Bond:| values
+  const scrub = confirm(
+    `Also remove ${names.length === 1 ? "it" : "them"} from ALL earlier messages?\n\n` +
+    `If you skip this, the AI can still see them in older blocks. They stay blocked either way.\n\n` +
+    `This edits your chat history and cannot be undone.`
+  );
+  if (scrub) {
+    const n = purgeBondsFromHistory(names);
+    if (window.toastr) window.toastr.info(`Scrubbed ${names.length} name(s) from ${n} message(s).`);
+  } else if (window.toastr) {
+    window.toastr.info(`${names.length} bond(s) removed and blocked from returning.`);
   }
 }
 
@@ -2018,7 +2028,7 @@ function bindBondsTab() {
         commitBondsEdit();
       } else {
         bondsEditMode = true;
-		bondsSnapshot = (rpgState.bonds || []).map((b) => b?.name).filter(Boolean);
+		bondsSnapshot = (rpgState.bonds || []).filter((b) => b && b.name).map((b) => ({ ...b }));
         renderRPG();
       }
     };
@@ -2163,7 +2173,16 @@ function commitTimersEdit() {
 
   const cleaned = (rpgState.timers || []).filter((t) => t && String(t.name || "").trim());
   const nowKeys = new Set(cleaned.map(timerKey));
-  const removed = timersSnapshot.filter((t) => !nowKeys.has(timerKey(t)));
+  let removed = timersSnapshot.filter((t) => !nowKeys.has(timerKey(t)));
+
+  if (removed.length) {
+    const label = removed.map((t) => (t.owner ? `${t.owner}/${t.name}` : t.name)).join(", ");
+    const sure = confirm(`Remove ${removed.length === 1 ? "this timer" : "these timers"}?\n\n${label}\n\nCancel keeps them.`);
+    if (!sure) {
+      removed.forEach((t) => cleaned.push({ ...t }));
+      removed = [];
+    }
+  }
 
   rpgState.timers = cleaned;
   timersEditMode = false;
@@ -2172,18 +2191,16 @@ function commitTimersEdit() {
 
   const ok = writeStateBackToChatMessage(rpgState);
   if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after timer edit");
+  if (!removed.length) return;
 
-  if (removed.length) {
-    const label = removed.map((t) => (t.owner ? `${t.owner}/${t.name}` : t.name)).join(", ");
-    const yes = confirm(
-      `Scrub from |Timers:| in ALL earlier messages?\n\n${label}\n\n` +
-      `If you skip this, the AI can still see them in older blocks and may add them back.\n\n` +
-      `This edits your chat history and cannot be undone.`
-    );
-    if (yes) {
-      const n = purgeTimersFromHistory(removed);
-      if (window.toastr) window.toastr.info(`Scrubbed ${removed.length} timer(s) from ${n} message(s).`);
-    }
+  const scrub = confirm(
+    `Also remove ${removed.length === 1 ? "it" : "them"} from ALL earlier messages?\n\n` +
+    `If you skip this, the AI can still see them in older blocks and may add them back.\n\n` +
+    `This edits your chat history and cannot be undone.`
+  );
+  if (scrub) {
+    const n = purgeTimersFromHistory(removed);
+    if (window.toastr) window.toastr.info(`Scrubbed ${removed.length} timer(s) from ${n} message(s).`);
   }
 }
 
@@ -2196,7 +2213,7 @@ function bindTimersTab() {
       else {
         timersSnapshot = (rpgState.timers || [])
           .filter((t) => t && String(t.name || "").trim())
-          .map((t) => ({ owner: t.owner || "", name: t.name, kind: t.kind }));
+          .map((t) => ({ ...t }));
         timersEditMode = true;
         renderRPG();
       }
@@ -4601,7 +4618,7 @@ function saoBind() {
   if (bondEdit) bondEdit.onclick = (e) => {
     e.stopPropagation();
     bondsEditMode = true;
-    bondsSnapshot = (rpgState.bonds || []).map((b) => b?.name).filter(Boolean);
+    bondsSnapshot = (rpgState.bonds || []).filter((b) => b && b.name).map((b) => ({ ...b }));
     renderRPG();
   };
   const timerEdit = document.getElementById("rpg-sao-timer-edit");
@@ -4610,7 +4627,7 @@ function saoBind() {
     timersEditMode = true;
     timersSnapshot = (rpgState.timers || [])
       .filter((t) => t && String(t.name || "").trim())
-      .map((t) => ({ owner: t.owner || "", name: t.name, kind: t.kind }));
+      .map((t) => ({ ...t }));
     renderRPG();
   };
   const timerTurn = document.getElementById("rpg-sao-timer-turn");
