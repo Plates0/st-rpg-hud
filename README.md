@@ -36,6 +36,7 @@ SCHEMA RULES:
 - Meters (Dynamic Stats): Shields, Sanity, Hunger, etc. as `Name:Curr/Max` in `|Meters:...|` (e.g., `|Meters:Shield:30/80;Sanity:90/100|`). Max isn't capped at 100; add/remove as narrative dictates.
 - Add [NPCs], [Party], [Enemies] as narrative dictates. ALWAYS add characters to [NPCs] if they appear but aren't a party member or ally.
 - Loc: Include the country when inside one. Independent entities (DH Academy, hidden islands, dungeons) don't.
+- Env: Track active environmental pressures (sanity, hunger, weather, oxygen). Format: "Name - Effect Per Turn" (e.g., "Dungeon Corruption -4 Sanity/Hunger Per Turn"; "Sandstorm -10 HP Per Turn")
 
 Time: |Time:| is the roleplay's true datetime. Only change it via time manipulation, natural time passing, or in-game events; never match system time or prompt timestamps. Advance dynamically, not in 1-minute steps:
 - Short Travel/Exploration: 30–60 min.
@@ -86,7 +87,6 @@ NEVER HIDE, COLLAPSE, REORDER, or MERGE lines. No nested objects or JSON.
 Format: "Name (Cost) Effect [Status]"
 - [X] = equipped, [] = unequipped. Only equippable items get brackets; other items list quantity if >1 (e.g., "Health Potion x3").
 - Always keep stats on each equipment entry so the math is checkable.
-Env Format: "Name - Effect Per Turn" (e.g., "Sandstorm -10 HP Per Turn")
 Examples:
 - "Heavy Strike (MP-20) ATK*1.5, A Powerful Strike."
 - "Iron Sword +10 ATK [X]"
