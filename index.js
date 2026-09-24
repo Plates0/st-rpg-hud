@@ -4395,7 +4395,24 @@ function aloPlateGeom(H, nameW, barLen, bare, barH) {
   return { L, R, div, bx, bEnd, W, bare: false, bh: barH || 0, nameLeft: L + 5 };
 }
 
+// A notch darker for the ALfheim bars, without touching the colour sweep the
+// Aincrad bars share. Handles the hsl() the sweep produces and plain hex.
+function aloDarken(c, amt) {
+  const str = String(c || "").trim();
+  let m = str.match(/^hsl\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%\s*\)$/i);
+  if (m) return `hsl(${m[1]},${m[2]}%,${Math.max(0, parseFloat(m[3]) - amt).toFixed(1)}%)`;
+  m = str.match(/^#([0-9a-f]{6})$/i);
+  if (m) {
+    const n = parseInt(m[1], 16), k = 1 - amt / 70;
+    const ch = (v) => Math.round(v * k).toString(16).padStart(2, "0");
+    return `#${ch((n >> 16) & 255)}${ch((n >> 8) & 255)}${ch(n & 255)}`;
+  }
+  return str;
+}
+
 function aloPlateSvg(W, H, geo, hp, mp, hpc, mpc) {
+  hpc = hpc.map((c) => aloDarken(c, 9));
+  mpc = mpc.map((c) => aloDarken(c, 9));
   const { L, R, div, bx, bEnd } = geo;
   const mid = H / 2;
   const plate = `M${L} 1H${W - R}L${W - 1} ${mid}L${W - R} ${H - 1}H${L}L1 ${mid}Z`;
@@ -4429,15 +4446,18 @@ function aloPlateSvg(W, H, geo, hp, mp, hpc, mpc) {
       <linearGradient id="v${id}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="rgba(255,255,255,.10)"/><stop offset=".5" stop-color="rgba(255,255,255,0)"/>
         <stop offset="1" stop-color="rgba(0,0,0,.14)"/></linearGradient>
+      <linearGradient id="d${id}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="rgba(0,0,0,.55)"/><stop offset="1" stop-color="rgba(0,0,0,0)"/></linearGradient>
       <clipPath id="c${id}"><path d="${frame}"/></clipPath>
     </defs>
     ${geo.bare ? "" : `<path d="${plate}" fill="url(#b${id})"/>
     <path d="${plate}" fill="url(#v${id})"/>
     <line x1="${div}" y1="${Math.round(H * 0.16)}" x2="${div}" y2="${H - Math.round(H * 0.16)}" stroke="rgba(228,230,236,.85)" stroke-width="1.2"/>`}
     <g clip-path="url(#c${id})">
-      <rect x="${bx}" y="${by}" width="${bw}" height="${hpH}" fill="rgba(225,228,236,.26)"/>
       <rect x="${bx}" y="${seam}" width="${bw}" height="${mpH}" fill="rgba(225,228,236,.2)"/>
       ${mp > 0 ? `<rect x="${bx}" y="${seam}" width="${w(mp)}" height="${mpH}" fill="url(#m${id})"/>` : ""}
+      <rect x="${bx}" y="${seam}" width="${bw}" height="${Math.max(2, Math.round(mpH * 0.45))}" fill="url(#d${id})"/>
+      <rect x="${bx}" y="${by}" width="${bw}" height="${hpH}" fill="rgba(225,228,236,.26)"/>
       ${hp > 0 ? `<rect x="${bx}" y="${by}" width="${w(hp)}" height="${hpH}" fill="url(#h${id})"/>` : ""}
       <line x1="${bx}" y1="${seam}" x2="${bEnd}" y2="${seam}" stroke="rgba(214,218,226,.9)" stroke-width="1"/>
     </g>
