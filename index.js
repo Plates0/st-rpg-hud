@@ -357,6 +357,7 @@ const defaultUiSettings = {
   saoAnimate: true,       // bar tweening, orb unfold, panel and clock fades
   saoPos: null,           // {vitals:[x,y], col:[x,y], clock:[x,y]} drag offsets
   saoSnap: true,          // snap a dragged piece to the others' edges and centres
+  meterColors: {},        // meter name (lowercase) -> "#rrggbb", overrides the auto colour
   saoUiScale: 100,        // % size of the bar cluster; a desktop usually wants ~130
   saoTextShadow: false,   // shadow behind the text that sits straight on the chat
   saoTextBacking: false,  // translucent card behind that text instead        // "classic" | "sao"
@@ -2378,7 +2379,18 @@ function purgeTimersFromHistory(list) {
 }
 
 // --- METERS (generic bar stats) ---
+function meterKey(name) {
+  return String(name || "").trim().toLowerCase();
+}
+
 function meterColorByName(name) {
+  const custom = uiSettings?.meterColors?.[meterKey(name)];
+  if (custom && /^#[0-9a-f]{6}$/i.test(custom)) return custom;
+  return meterAutoColor(name);
+}
+
+// the name-guessing fallback, kept separate so "reset colour" has a target
+function meterAutoColor(name) {
   const k = String(name || "").toLowerCase();
   if (k.includes("shield") || k.includes("barrier")) return "#00bcd4";
   if (k.includes("temp") && k.includes("hp")) return "#ff9800";
@@ -3444,6 +3456,7 @@ let saoPanel = null;        // null | "status" | "bonds" | "quests" | "place" | 
 let saoMin = true;   // the overlay opens collapsed to its dot
 let saoTimersOpen = false;
 let saoHelpOpen = false;
+let saoMeterEdit = null;     // null, or a draft: [{name, curr, max, color, custom}]
 let saoLayoutMode = false;   // drag clusters around instead of using them
 let saoAnimKind = "";        // "" | "restore" | "collapse" | "panel"
 let saoAnimUntil = 0;        // animations apply to any render before this time
@@ -4061,12 +4074,7 @@ function saoStatusPanel() {
     const coin = toNumberOr(display.dankcoin ?? root?.dankcoin ?? 0, 0);
     h += `<div class="rpg-sao-vline" style="margin-top:8px;"><span>Coin</span><b>${escHtml(coin)}</b></div>`;
 
-    const meters = Array.isArray(display.meters) ? display.meters : [];
-    if (meters.length) {
-      h += `<div class="rpg-sao-sub">Meters</div>` + meters.map((m) =>
-        `<div class="rpg-sao-vline"><span>${escHtml(m.name)}</span><b>${escHtml(m.curr)} / ${escHtml(m.max)}</b></div>`
-      ).join("");
-    }
+    h += saoMetersSection(display);
 
     const st = Array.isArray(display.status_effects) ? display.status_effects : [];
     h += `<div class="rpg-sao-status">Status: ` +
@@ -4104,6 +4112,148 @@ function saoRosterGroups() {
 
 // Two rows instead of one long scroll: pick the group, then the character.
 // The second row is dropped when the group holds only one of them.
+// ---- meters: read view, or an inline editor for whoever is on the sheet ----
+function saoMetersSection(display) {
+  const meters = Array.isArray(display.meters) ? display.meters : [];
+
+  if (saoMeterEdit) {
+    const rows = saoMeterEdit.map((m, i) => `
+      <div class="rpg-sao-mrow-edit" data-i="${i}">
+        <input type="color" class="rpg-sao-m-color" data-i="${i}" value="${escAttr(m.color)}"
+          title="Colour${m.custom ? "" : " (automatic)"}">
+        <input type="text" class="rpg-sao-m-name" data-i="${i}" value="${escAttr(m.name)}" placeholder="Name">
+        <input type="text" class="rpg-sao-m-curr" data-i="${i}" value="${escAttr(m.curr)}" inputmode="decimal">
+        <span class="rpg-sao-m-slash">/</span>
+        <input type="text" class="rpg-sao-m-max" data-i="${i}" value="${escAttr(m.max)}" inputmode="decimal">
+        <button class="rpg-sao-m-auto${m.custom ? "" : " off"}" data-i="${i}" title="Back to automatic colour">&#8634;</button>
+        <button class="rpg-sao-m-del" data-i="${i}" title="Remove">&#10005;</button>
+      </div>`).join("");
+
+    return `<div class="rpg-sao-subhead"><span class="rpg-sao-sub">Meters</span></div>
+      <div class="rpg-sao-meditor">
+        ${rows || `<p class="rpg-sao-empty">No meters. Add one below.</p>`}
+        <button class="rpg-sao-mini" id="rpg-sao-m-add">+ Add meter</button>
+        <div class="rpg-sao-medit-actions">
+          <button class="rpg-sao-mini" id="rpg-sao-m-cancel">Cancel</button>
+          <button class="rpg-sao-mini primary" id="rpg-sao-m-save">Save</button>
+        </div>
+      </div>`;
+  }
+
+  const list = meters.length
+    ? meters.map((m) => {
+        const c = meterColorByName(m.name);
+        return `<div class="rpg-sao-vline"><span><i class="rpg-sao-swatch" style="background:${c}"></i>${escHtml(m.name)}</span>
+          <b>${escHtml(m.curr)} / ${escHtml(m.max)}</b></div>`;
+      }).join("")
+    : `<p class="rpg-sao-empty">No meters.</p>`;
+
+  return `<div class="rpg-sao-subhead"><span class="rpg-sao-sub">Meters</span>
+      <button class="rpg-sao-mini" id="rpg-sao-m-edit">&#9998; Edit</button></div>${list}`;
+}
+
+function saoStartMeterEdit() {
+  const { display } = getActiveData();
+  const meters = Array.isArray(display.meters) ? display.meters : [];
+  saoMeterEdit = meters.map((m) => ({
+    name: m.name ?? "",
+    curr: m.curr ?? 0,
+    max: m.max ?? 100,
+    color: meterColorByName(m.name),
+    custom: !!uiSettings.meterColors?.[meterKey(m.name)],
+    orig: m.name ?? "",
+  }));
+}
+
+function saoSaveMeterEdit() {
+  const { display } = getActiveData();
+  const before = Array.isArray(display.meters) ? display.meters : [];
+  let draft = saoMeterEdit.filter((m) => String(m.name).trim());
+
+  // Deleting asks first, and Cancel keeps them — same as bonds and timers.
+  const kept = new Set(draft.map((m) => meterKey(m.orig || m.name)));
+  const removed = before.filter((m) => !kept.has(meterKey(m.name)));
+  if (removed.length) {
+    const sure = confirm(`Remove ${removed.length === 1 ? "this meter" : "these meters"}?\n\n` +
+      `${removed.map((m) => m.name).join(", ")}\n\nCancel keeps them.`);
+    if (!sure) {
+      draft = draft.concat(removed.map((m) => ({
+        name: m.name, curr: m.curr, max: m.max, color: meterColorByName(m.name), custom: false,
+      })));
+    }
+  }
+
+  display.meters = draft.map((m) => ({
+    name: String(m.name).trim(),
+    curr: String(m.curr).trim() || "0",
+    max: String(m.max).trim() || "100",
+  }));
+
+  // colours are keyed by name, so they carry across every character with
+  // that meter and survive the model rewriting the block
+  const colors = { ...(uiSettings.meterColors || {}) };
+  draft.forEach((m) => {
+    const k = meterKey(m.name);
+    if (m.custom) colors[k] = m.color;
+    else delete colors[k];
+    if (m.orig && meterKey(m.orig) !== k) delete colors[meterKey(m.orig)];   // renamed
+  });
+  uiSettings.meterColors = colors;
+  saveUiSettings();
+
+  saoMeterEdit = null;
+  const ok = writeStateBackToChatMessage(rpgState);
+  if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after meter edit");
+  renderRPG();
+}
+
+function saoBindMeterEditor() {
+  const body = document.querySelector(".rpg-sao-meditor");
+  const edit = document.getElementById("rpg-sao-m-edit");
+  if (edit) edit.onclick = (e) => { e.stopPropagation(); saoStartMeterEdit(); renderRPG(); };
+  if (!body || !saoMeterEdit) return;
+
+  // typing updates the draft in place; re-rendering would steal focus
+  const field = (cls, key) => body.querySelectorAll(cls).forEach((el) => {
+    el.oninput = () => { const m = saoMeterEdit[+el.dataset.i]; if (m) m[key] = el.value; };
+    el.onclick = (e) => e.stopPropagation();
+  });
+  field(".rpg-sao-m-name", "name");
+  field(".rpg-sao-m-curr", "curr");
+  field(".rpg-sao-m-max", "max");
+
+  body.querySelectorAll(".rpg-sao-m-color").forEach((el) => {
+    el.oninput = () => {
+      const m = saoMeterEdit[+el.dataset.i];
+      if (!m) return;
+      m.color = el.value; m.custom = true;
+      el.closest(".rpg-sao-mrow-edit")?.querySelector(".rpg-sao-m-auto")?.classList.remove("off");
+    };
+    el.onclick = (e) => e.stopPropagation();
+  });
+
+  const btn = (sel, fn) => body.querySelectorAll(sel).forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); fn(+el.dataset.i); };
+  });
+  btn(".rpg-sao-m-del", (i) => { saoMeterEdit.splice(i, 1); renderRPG(); });
+  btn(".rpg-sao-m-auto", (i) => {
+    const m = saoMeterEdit[i]; if (!m) return;
+    m.custom = false; m.color = meterAutoColor(m.name); renderRPG();
+  });
+
+  const one = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
+  one("rpg-sao-m-add", () => {
+    saoMeterEdit.push({ name: "", curr: "0", max: "100", color: "#26a69a", custom: false, orig: "" });
+    renderRPG();
+    requestAnimationFrame(() => {
+      const names = document.querySelectorAll(".rpg-sao-m-name");
+      names[names.length - 1]?.focus();
+    });
+  });
+  one("rpg-sao-m-cancel", () => { saoMeterEdit = null; renderRPG(); });
+  one("rpg-sao-m-save", saoSaveMeterEdit);
+}
+
 function saoWhoStrip() {
   const groups = saoRosterGroups();
   if (!groups.length) return "";
@@ -4263,6 +4413,8 @@ function saoHelpPanel() {
           "Puts every slider and toggle back to its default. Your skin choice and chat data stay as they are.")
       + item("Move HUD pieces",
           "Drag the bars, the orb column and the clock wherever you like. Buttons stop responding while you're arranging, so a tap can't fire by accident. Reset puts them back.")
+      + item("Meters",
+          "Open a character in Status and use Edit under Meters to add, rename, change or remove them. The swatch sets a colour; \u21BA puts it back to automatic. Colours follow the meter's name, so every character's Shield matches.")
       + item("Animations",
           "Bars slide to their new value, orbs unfold when you reopen the HUD, and panels fade in. Off means everything snaps.")
       + item("Text contrast",
@@ -4570,6 +4722,7 @@ function saoBind() {
     flushInlineEdits();
     const tab = el.dataset.tab;
     const was = saoPanel;
+    saoMeterEdit = null;
     saoPanel = saoPanel === tab ? null : tab;
     if (saoPanel !== "gear") saoHelpOpen = false;
     if (saoPanel && saoPanel !== was) saoAnim("panel", 220);
@@ -4594,6 +4747,7 @@ function saoBind() {
   on(".rpg-sao-jump, .rpg-sao-chip", (el) => {
     const idx = parseInt(el.dataset.idx, 10);
     if (!Number.isFinite(idx)) return;
+    saoMeterEdit = null;
     charIndex = idx;
     saoSub = "stats";
     saoPanel = "status";
@@ -4601,6 +4755,7 @@ function saoBind() {
   });
 
   on(".rpg-sao-cat", (el) => {
+    saoMeterEdit = null;
     const g = saoRosterGroups().filter((x) => x.key === el.dataset.cat)[0];
     if (!g) return;
     charIndex = charIndexFor(g.type, 0);
@@ -4633,6 +4788,7 @@ function saoBind() {
   const timerTurn = document.getElementById("rpg-sao-timer-turn");
   if (timerTurn) timerTurn.onclick = (e) => { e.stopPropagation(); advanceTimerTurn(); };
 
+  saoBindMeterEditor();
   if (bondsEditMode) bindBondsTab();
   if (timersEditMode) bindTimersTab();
 
@@ -4988,6 +5144,28 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
   padding-bottom:3px}
 
 .rpg-sao-panelhead{display:flex; justify-content:flex-end; margin-bottom:6px}
+
+.rpg-sao-subhead{display:flex; align-items:center; justify-content:space-between;
+  margin-top:9px; border-bottom:1px solid var(--rpg-sao-rule); padding-bottom:3px}
+.rpg-sao-subhead .rpg-sao-sub{margin:0}
+.rpg-sao-swatch{display:inline-block; width:9px; height:9px; border-radius:2px;
+  margin-right:6px; vertical-align:0; box-shadow:inset 0 0 0 1px rgba(0,0,0,.25)}
+
+.rpg-sao-meditor{padding-top:6px}
+.rpg-sao-mrow-edit{display:grid; align-items:center; gap:4px; margin-bottom:5px;
+  grid-template-columns:26px minmax(0,1fr) 44px 8px 44px 22px 22px}
+.rpg-sao-mrow-edit input[type=text]{min-width:0; width:100%; box-sizing:border-box;
+  font:inherit; font-size:12px; padding:3px 5px; color:var(--rpg-sao-ink);
+  background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
+.rpg-sao-mrow-edit input[type=color]{width:26px; height:24px; padding:0; border:1px solid var(--rpg-sao-rule);
+  border-radius:3px; background:none; cursor:pointer}
+.rpg-sao-m-slash{text-align:center; color:var(--rpg-sao-ink-dim)}
+.rpg-sao-m-auto, .rpg-sao-m-del{width:22px; height:22px; padding:0; cursor:pointer; font-size:12px;
+  background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink); border-radius:2px}
+.rpg-sao-m-auto.off{visibility:hidden}
+.rpg-sao-m-del:hover{color:#c0392b; border-color:#c0392b}
+.rpg-sao-medit-actions{display:flex; justify-content:flex-end; gap:6px; margin-top:8px}
+.rpg-sao-mini.primary{background:#4e9c3f; border-color:#4e9c3f; color:#fff}
 .rpg-sao-mini{background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink);
   font-size:11px; font-weight:600; padding:2px 8px; cursor:pointer}
 .rpg-sao-mini:hover{filter:brightness(1.06)}
