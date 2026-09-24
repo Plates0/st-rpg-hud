@@ -5664,7 +5664,7 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 /* quiet until you reach for them */
 .rpg-sao-jumpto{width:24px; height:24px; border-radius:50%; padding:0; cursor:pointer;
   display:grid; place-items:center; color:#fff;
-  background:rgba(40,40,44,.22); border:1px solid rgba(255,255,255,.78);
+  background:rgba(40,40,44,.22); border:1px solid var(--rpg-sao-ink-dim, #6b6760);
   box-shadow:none; backdrop-filter:blur(1px);
   opacity:0; transform:scale(.8); pointer-events:none;
   transition:opacity .2s, transform .2s, background .2s}
