@@ -529,36 +529,61 @@ function currentChatKey(context) {
   return [context?.chatId, context?.characterId, context?.groupId].map((v) => String(v ?? "")).join("|");
 }
 
+// Compares the latest block with the block from the turn before it, not with
+// whatever the last scan happened to see. Scans repeat constantly, and a
+// swipe, a deletion or a reload would otherwise be read as the model editing
+// descriptions. Fires at most once per message version.
+let alertKey = null;
+let alertSig = "";
+let alertIdx = -1;
+
 function maybeReportListChanges() {
-  const next = snapshotLists(rpgState);
-  const prev = lastListSnapshot;
-  lastListSnapshot = next;
+  let ctx = null;
+  try { ctx = SillyTavern.getContext(); } catch {}
+  const chat = ctx?.chat;
+  if (!Array.isArray(chat)) return;
 
-  if (!prev) return;                    // first scan is baseline only
-  if (!uiSettings.changeAlerts) return;
+  const key = currentChatKey(ctx);
+  const idx = lastRpgMsgIndex;
+  const inner = rpgInnerFromMessage(chat[idx]?.mes);
+  if (!inner) return;
+  const sig = `${idx}|${inner}`;
 
-  const diffs = diffLists(prev, next);
+  if (key !== alertKey) { alertKey = key; alertSig = sig; alertIdx = idx; return; }  // baseline
+  if (sig === alertSig) return;                                                     // same message
+  const wentBack = idx < alertIdx;                                                  // a deletion
+  alertSig = sig; alertIdx = idx;
+  if (wentBack || !uiSettings.changeAlerts) return;
+
+  let prevInner = null;
+  for (let i = idx - 1; i >= 0 && !prevInner; i--) {
+    const m = chat[i];
+    if (m && !m.is_user) prevInner = rpgInnerFromMessage(m.mes);
+  }
+  if (!prevInner) return;
+
+  const a = coreStateOf(prevInner), b = coreStateOf(inner);
+  if (!a || !b) return;
+
+  const diffs = diffLists(snapshotLists(a), snapshotLists(b));
   if (!diffs.length) return;
   console.log("RPG HUD: list changes", diffs);
 
-  const lost = diffs.filter((d) => d.type === "lost");
-  if (!lost.length) return;
+  // a description that got noticeably shorter is the one worth a heads-up —
+  // it may have been trimmed, or it may just be a rewrite, so say "changed"
+  const shrunk = diffs.filter((d) => d.type === "lost");
+  if (!shrunk.length) return;
 
-  const shown = lost.slice(0, 4);
+  const shown = shrunk.slice(0, 4);
   const body =
-    shown
-      .map((d) =>
-        `${escHtml(d.label)}: <b>${escHtml(d.name)}</b>` +
-        `<br><span style="opacity:0.7;">was: ${escHtml(d.before)}</span>`
-      )
-      .join("<br><br>") +
-    (lost.length > 4 ? `<br><br>(+${lost.length - 4} more)` : "") +
-    (diffs.length > lost.length
-      ? `<br><br><span style="opacity:0.6;">${diffs.length - lost.length} other change(s) — see console</span>`
-      : "");
+    shown.map((d) =>
+      `${escHtml(d.label)}: <b>${escHtml(d.name)}</b>` +
+      `<br><span style="opacity:0.7;">was: ${escHtml(d.before)}</span>`
+    ).join("<br><br>") +
+    (shrunk.length > 4 ? `<br><br>(+${shrunk.length - 4} more)` : "");
 
-  if (window.toastr?.warning) {
-    window.toastr.warning(body, "⚠️ Description dropped", { escapeHtml: false });
+  if (window.toastr?.info) {
+    window.toastr.info(body, "\u{1F4DD} Description changed", { escapeHtml: false });
   }
 }
 
@@ -839,53 +864,77 @@ function renderIndicatorDotHtml(status, title) {
   `;
 }
 
+// Closing or switching a chat changes what "latest message" means, so the
+// first reading in any chat is a baseline, never an alert. A missing block is
+// only worth announcing when a new message just arrived in this same chat.
+let lastIndicatorKey = null;
+let lastIndicatorLen = 0;
+// A streaming reply has no block until the end, so "missing" is only real once
+// the message has stopped changing for a moment.
+let notagWatch = null;          // { key, idx, len, since, done }
+const NOTAG_SETTLE_MS = 2500;
+
+function rpgToast(kind, msg) {
+  if (!window.toastr) return;
+  window.toastr.options = {
+    ...window.toastr.options,
+    timeOut: 0, extendedTimeOut: 0, tapToDismiss: true, closeButton: true, preventDuplicates: true,
+  };
+  (window.toastr[kind] || window.toastr.info)(msg);
+}
+
+setInterval(() => {
+  if (!notagWatch || notagWatch.done) return;
+  try { updateLatestStatusAndToast(SillyTavern.getContext()?.chat); } catch {}
+}, 1000);
+
 function updateLatestStatusAndToast(chat) {
   const latest = getLatestRpgValidity(chat);
 
-  if (lastIndicatorStatus !== latest.status) {
-    const prev = lastIndicatorStatus;
+  let key = "";
+  try { key = currentChatKey(SillyTavern.getContext()); } catch {}
+  const len = Array.isArray(chat) ? chat.length : 0;
+
+  if (key !== lastIndicatorKey) {
+    lastIndicatorKey = key;
+    lastIndicatorLen = len;
     lastIndicatorStatus = latest.status;
+    return latest;
+  }
+  const grew = len > lastIndicatorLen;
+  lastIndicatorLen = len;
 
-    const enteredBad =
-      (latest.status === "invalid" || latest.status === "notag") &&
-      prev !== latest.status;
+  const prev = lastIndicatorStatus;
+  const changed = prev !== latest.status;
+  lastIndicatorStatus = latest.status;
 
-    const shouldToast =
-      enteredBad &&
-      (
-        latest.status === "invalid" ||
-        (
-          latest.status === "notag" &&
-          hudToastArmed &&
-          (prev === "valid" || prev === "invalid")
-        )
-      );
-
-    if (shouldToast) {
-      const msg =
-        latest.status === "invalid"
-          ? "RPG Pipe format is broken (🟡). Tap the dot for details."
-          : "No <rpg_state> found in the latest AI message (⚪).";
-
-      if (window.toastr) {
-        window.toastr.options = {
-          ...window.toastr.options,
-          timeOut: 0,
-          extendedTimeOut: 0,
-          tapToDismiss: true,
-          closeButton: true,
-          preventDuplicates: true,
-        };
-
-        if (latest.status === "invalid" && window.toastr.warning) window.toastr.warning(msg);
-        else if (window.toastr.info) window.toastr.info(msg);
-        else window.toastr.warning?.(msg);
-      } else {
-        alert(msg);
-      }
-    }
+  // a broken block is complete by definition, so it can be reported at once
+  if (changed && latest.status === "invalid") {
+    rpgToast("warning", "RPG Pipe format is broken (\u{1F7E1}). Tap the dot for details.");
   }
 
+  // a missing block: start watching when a new AI message shows up without one
+  if (latest.status === "notag") {
+    const last = chat[len - 1];
+    const textLen = String(last?.mes || "").length;
+    // only something that just happened: a new reply, or a block that was
+    // there a moment ago going missing (a swipe or regenerate without one).
+    // Simply opening a chat whose last message lacks a block is neither.
+    const fresh = grew || (changed && prev === "valid");
+    if (fresh) {
+      notagWatch = { key, idx: len - 1, len: textLen, since: Date.now(), done: false };
+    } else if (!notagWatch || notagWatch.key !== key || notagWatch.idx !== len - 1) {
+      // nothing being watched
+    } else if (notagWatch.len !== textLen) {
+      notagWatch.len = textLen;          // still streaming
+      notagWatch.since = Date.now();
+    } else if (!notagWatch.done && hudToastArmed && Date.now() - notagWatch.since >= NOTAG_SETTLE_MS) {
+      notagWatch.done = true;
+      rpgToast("info", "No <rpg_state> found in the latest AI message (\u26AA).");
+    }
+  } else {
+    notagWatch = null;
+  }
   return latest;
 }
 
@@ -3451,6 +3500,227 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 }
 
 
+
+// =====================================================================
+// TURN LOG
+// Nothing is stored. Every AI message already carries a complete
+// <rpg_state>, so a turn's changes are the difference between one block
+// and the block before it. Rebuilt from history on demand, which means it
+// follows swipes, edits and deletions for free and works on old chats.
+// =====================================================================
+
+// same rule the scanner uses: the first block in the message
+function rpgInnerFromMessage(mes) {
+  const m = String(mes || "").match(/<rpg_state\b[^>]*>([\s\S]*?)<\/rpg_state>/i);
+  if (!m) return null;
+  return m[1].replace(/```[a-z]*\n?/g, "").replace(/```/g, "").trim();
+}
+
+// parsed blocks, keyed by their exact text, so a long chat parses once
+const turnParseCache = new Map();
+function coreStateOf(inner) {
+  if (turnParseCache.has(inner)) return turnParseCache.get(inner);
+  let st = null;
+  try { st = parseBlockCore(inner); } catch (e) { st = null; }
+  if (turnParseCache.size > 600) turnParseCache.clear();
+  turnParseCache.set(inner, st);
+  return st;
+}
+
+// every AI message with a parseable block, oldest first
+function rpgTurnsOf(chat) {
+  const out = [];
+  if (!Array.isArray(chat)) return out;
+  chat.forEach((msg, i) => {
+    if (!msg || msg.is_user || typeof msg.mes !== "string") return;
+    const inner = rpgInnerFromMessage(msg.mes);
+    if (!inner) return;
+    const st = coreStateOf(inner);
+    if (st) out.push({ idx: i, inner, state: st });
+  });
+  return out;
+}
+
+const tNum = (v) => { const n = parseFloat(String(v ?? "").replace(/[^\d.\-]/g, "")); return Number.isFinite(n) ? n : null; };
+const tSigned = (n) => (n > 0 ? `+${n}` : `${n}`);
+const tNameKey = (u) => normBondName(u?.name);
+
+// Keyed by name with any trailing modifier dropped, so "Iron Sword +10 ATK"
+// and "Iron Sword +15 ATK" are the same item upgraded, not a swap.
+function tItemKey(text) {
+  return entryBaseName(text).replace(/\s[+\-\u2212]\s?\d.*$/, "").trim().toLowerCase();
+}
+
+function tListMap(list) {
+  const m = new Map();
+  (Array.isArray(list) ? list : []).forEach((i) => {
+    const text = String(typeof i === "object" ? (i?.name ?? "") : (i ?? "")).trim();
+    const key = tItemKey(text);
+    if (key && !m.has(key)) m.set(key, text);
+  });
+  return m;
+}
+
+function tBondMap(st) {
+  const m = new Map();
+  (Array.isArray(st?.bonds) ? st.bonds : []).forEach((b) => {
+    if (b?.name) m.set(normBondName(b.name), { name: b.name, v: parseBondValue(b.bond) });
+  });
+  // live values on characters win, same as the live pipeline
+  [...(st?.party || []), ...(st?.npcs || [])].forEach((u) => {
+    if (u?.name && u.bond !== undefined && u.bond !== "") {
+      m.set(normBondName(u.name), { name: u.name, v: parseBondValue(u.bond) });
+    }
+  });
+  return m;
+}
+
+function tDiffVitals(out, who, a, b, isPlayer) {
+  const pairs = [["HP", a?.hp_curr, b?.hp_curr, b?.hp_max]];
+  const ea = getEnergy(a || {}, false), eb = getEnergy(b || {}, false);
+  pairs.push([eb.label || "MP", ea.curr, eb.curr, eb.max]);
+  pairs.forEach(([label, x, y, max]) => {
+    const n0 = tNum(x), n1 = tNum(y);
+    if (n0 === null || n1 === null || n0 === n1) return;
+    const d = n1 - n0;
+    out.push({
+      tone: label === "HP" ? (d < 0 ? "bad" : "good") : "neutral",
+      text: `${who ? who + " " : ""}${label} ${n0} \u2192 ${n1}${max ? "/" + max : ""} (${tSigned(d)})`,
+    });
+  });
+
+  const sa = new Set((a?.status_effects || []).map((x) => String(x).trim()).filter(Boolean));
+  const sb = new Set((b?.status_effects || []).map((x) => String(x).trim()).filter(Boolean));
+  sb.forEach((x) => { if (!sa.has(x)) out.push({ tone: "bad", text: `${who ? who + " " : ""}+ ${x}` }); });
+  sa.forEach((x) => { if (!sb.has(x)) out.push({ tone: "good", text: `${who ? who + " " : ""}\u2212 ${x}` }); });
+
+  const ma = new Map((a?.meters || []).map((m) => [meterKey(m.name), m]));
+  (b?.meters || []).forEach((m) => {
+    const before = ma.get(meterKey(m.name));
+    if (!before) { out.push({ tone: "neutral", text: `${who ? who + " " : ""}+ ${m.name} ${m.curr}/${m.max}` }); return; }
+    const n0 = tNum(before.curr), n1 = tNum(m.curr);
+    if (n0 !== null && n1 !== null && n0 !== n1) {
+      out.push({ tone: "neutral", text: `${who ? who + " " : ""}${m.name} ${n0} \u2192 ${n1} (${tSigned(n1 - n0)})` });
+    }
+  });
+  (a?.meters || []).forEach((m) => {
+    if (!(b?.meters || []).some((x) => meterKey(x.name) === meterKey(m.name))) {
+      out.push({ tone: "neutral", text: `${who ? who + " " : ""}\u2212 ${m.name}` });
+    }
+  });
+}
+
+function tDiffLists(out, a, b) {
+  WATCHED_LISTS.forEach(({ key, label }) => {
+    const A = tListMap(a?.[key]), B = tListMap(b?.[key]);
+    B.forEach((text, k) => {
+      if (!A.has(k)) { out.push({ tone: "good", text: `+ ${label}: ${text}` }); return; }
+      const before = A.get(k);
+      if (before === text || stripStatusTags(before) === stripStatusTags(text)) return;
+      out.push({ tone: "neutral", text: `~ ${label}: ${stripStatusTags(before)} \u2192 ${stripStatusTags(text)}`, detail: true });
+    });
+    A.forEach((text, k) => { if (!B.has(k)) out.push({ tone: "bad", text: `\u2212 ${label}: ${text}` }); });
+  });
+}
+
+// everything that changed between two consecutive states
+function diffTurn(a, b) {
+  const out = [];
+
+  // where and when
+  if (String(a.location || "") !== String(b.location || "") && b.location) {
+    out.push({ tone: "neutral", text: `Moved to ${b.location}` });
+  }
+  const ta = a.world_time || {}, tb = b.world_time || {};
+  try {
+    const m0 = worldMinutes(ta.month, ta.day, ta.clock, ta.year);
+    const m1 = worldMinutes(tb.month, tb.day, tb.clock, tb.year);
+    if (Number.isFinite(m0) && Number.isFinite(m1) && m1 !== m0) {
+      out.push({ tone: "neutral", text: `Time ${m1 > m0 ? "+" : "\u2212"}${formatMinutes(Math.abs(m1 - m0))}` });
+    }
+  } catch {}
+  if (!a.combat?.active && b.combat?.active) out.push({ tone: "bad", text: "Combat started" });
+  if (a.combat?.active && !b.combat?.active) out.push({ tone: "good", text: "Combat ended" });
+
+  // the player
+  tDiffVitals(out, "", a, b, true);
+  const c0 = tNum(a.dankcoin), c1 = tNum(b.dankcoin);
+  if (c0 !== null && c1 !== null && c0 !== c1) {
+    out.push({ tone: c1 > c0 ? "good" : "bad", text: `Coin ${tSigned(c1 - c0)} (${c1})` });
+  }
+  tDiffLists(out, a, b);
+
+  // everyone else
+  const groups = [["party", "joined the party", "left the party"],
+                  ["npcs", "appeared", "left"],
+                  ["enemies", "appeared", "is gone"]];
+  groups.forEach(([k, joined, left]) => {
+    const A = new Map((a[k] || []).map((u) => [tNameKey(u), u]));
+    const B = new Map((b[k] || []).map((u) => [tNameKey(u), u]));
+    B.forEach((u, key) => {
+      const name = displayName(u.name, "?");
+      if (!A.has(key)) {
+        out.push({ tone: k === "enemies" ? "bad" : "good", text: `${name} ${joined}` });
+        return;
+      }
+      tDiffVitals(out, name, A.get(key), u, false);
+    });
+    A.forEach((u, key) => {
+      if (!B.has(key)) out.push({ tone: k === "enemies" ? "good" : "neutral", text: `${displayName(u.name, "?")} ${left}` });
+    });
+  });
+
+  // bonds
+  const ba = tBondMap(a), bb = tBondMap(b);
+  bb.forEach((x, key) => {
+    const before = ba.get(key);
+    if (!before) { out.push({ tone: "good", text: `New bond: ${displayName(x.name)} (${x.v >= 101 ? "\u221E" : x.v})` }); return; }
+    if (before.v !== x.v) {
+      const d = x.v - before.v;
+      out.push({ tone: d > 0 ? "good" : "bad",
+        text: `${displayName(x.name)} bond ${before.v} \u2192 ${x.v} (${d > 0 ? "\u25B2" : "\u25BC"}${Math.abs(d)})` });
+    }
+  });
+
+  // quests and timers
+  const qa = new Set((a.quests || []).map((q) => String(q).trim()));
+  const qb = new Set((b.quests || []).map((q) => String(q).trim()));
+  qb.forEach((q) => { if (q && !qa.has(q)) out.push({ tone: "good", text: `+ Quest: ${q}` }); });
+  qa.forEach((q) => { if (q && !qb.has(q)) out.push({ tone: "neutral", text: `Quest closed: ${q}` }); });
+
+  const tk = (t) => `${(t.owner || "").toLowerCase()}|${String(t.name || "").toLowerCase()}`;
+  const tma = new Map((a.timers || []).map((t) => [tk(t), t]));
+  const tmb = new Map((b.timers || []).map((t) => [tk(t), t]));
+  tmb.forEach((t, key) => { if (!tma.has(key)) out.push({ tone: "neutral", text: `+ Timer: ${t.name} (${t.value})` }); });
+  tma.forEach((t, key) => { if (!tmb.has(key)) out.push({ tone: "neutral", text: `Timer ended: ${t.name}` }); });
+
+  return out;
+}
+
+// newest first; each entry is one AI message that had a block
+let turnLogCache = { sig: "", turns: [] };
+function buildTurnLog(chat) {
+  const turns = rpgTurnsOf(chat);
+  const sig = `${currentChatKey(SillyTavern.getContext())}|${turns.length}|${turns.map((t) => t.inner.length).join(",")}`;
+  if (sig === turnLogCache.sig) return turnLogCache.turns;
+
+  const out = [];
+  for (let i = 1; i < turns.length; i++) {
+    const changes = diffTurn(turns[i - 1].state, turns[i].state);
+    const wt = turns[i].state.world_time || {};
+    out.push({
+      idx: turns[i].idx,
+      n: i,
+      when: `${wt.month || "?"} ${wt.day ?? "?"} ${wt.clock || ""}`.trim(),
+      where: turns[i].state.location || "",
+      changes,
+    });
+  }
+  out.reverse();
+  turnLogCache = { sig, turns: out };
+  return out;
+}
+
 // =====================================================================
 // SKIN SYSTEM
 // renderRPG() picks a skin. Each skin owns #rpg-hud-container completely:
@@ -3480,6 +3750,8 @@ let saoPanel = null;        // null | "status" | "bonds" | "quests" | "place" | 
 let saoMin = true;   // the overlay opens collapsed to its dot
 let saoTimersOpen = false;
 let saoHelpOpen = false;
+let saoQuestTab = "quests";   // "quests" | "log"
+let saoLogShown = 20;         // turns rendered before "show older"
 let saoMeterEdit = null;     // null, or a draft: [{name, curr, max, color, custom}]
 let saoLayoutMode = false;   // drag clusters around instead of using them
 let saoAnimKind = "";        // "" | "restore" | "collapse" | "panel"
@@ -4358,12 +4630,44 @@ function saoBondsPanel() {
 }
 
 function saoQuestsPanel() {
+  const tabs = `<div class="rpg-sao-subtabs">
+    <button class="rpg-sao-qtab${saoQuestTab === "quests" ? " on" : ""}" data-qtab="quests">Quests</button>
+    <button class="rpg-sao-qtab${saoQuestTab === "log" ? " on" : ""}" data-qtab="log">Log</button></div>`;
+
+  if (saoQuestTab === "log") return { title: "Turn log", body: tabs + saoLogHtml() };
+
   const quests = Array.isArray(rpgState.quests) ? rpgState.quests : [];
-  if (!quests.length) return { title: "Quests", body: `<p class="rpg-sao-empty">No active quests.</p>` };
   return {
     title: "Quests",
-    body: quests.map((q) => `<div class="rpg-sao-quest">${escHtml(q)}</div>`).join(""),
+    body: tabs + (quests.length
+      ? quests.map((q) => `<div class="rpg-sao-quest">${escHtml(q)}</div>`).join("")
+      : `<p class="rpg-sao-empty">No active quests.</p>`),
   };
+}
+
+function saoLogHtml() {
+  let chat = [];
+  try { chat = SillyTavern.getContext()?.chat || []; } catch {}
+  const turns = buildTurnLog(chat);
+  if (!turns.length) {
+    return `<p class="rpg-sao-empty">Nothing yet. Each reply that carries an rpg_state adds a turn here.</p>`;
+  }
+
+  const html = turns.slice(0, saoLogShown).map((t) => `
+    <div class="rpg-sao-turn">
+      <button class="rpg-sao-turnhead" data-mes="${t.idx}" title="Jump to this message">
+        <span class="n">Turn ${t.n}</span>
+        <span class="w">${escHtml(t.when)}${t.where ? " \u00B7 " + escHtml(t.where) : ""}</span>
+      </button>
+      ${t.changes.length
+        ? `<ul class="rpg-sao-changes">${t.changes.map((c) => `<li class="${c.tone}">${escHtml(c.text)}</li>`).join("")}</ul>`
+        : `<p class="rpg-sao-empty small">No changes.</p>`}
+    </div>`).join("");
+
+  const more = turns.length > saoLogShown
+    ? `<button class="rpg-sao-mini" id="rpg-sao-log-more">Show older (${turns.length - saoLogShown})</button>`
+    : "";
+  return html + more;
 }
 
 function saoPlacePanel() {
@@ -4439,6 +4743,8 @@ function saoHelpPanel() {
           "Puts every slider and toggle back to its default. Your skin choice and chat data stay as they are.")
       + item("Move HUD pieces",
           "Drag the bars, the orb column and the clock wherever you like. Buttons stop responding while you're arranging, so a tap can't fire by accident. Reset puts them back.")
+      + item("Turn log",
+          "In the Quests orb, the Log tab lists what changed each turn \u2014 HP, items, bonds, where you went, how much time passed. It's worked out from your chat history rather than stored, so it follows swipes and edits and covers old chats too. Tap a turn to jump to its message.")
       + item("Meters",
           "Open a character in Status and use Edit under Meters to add, rename, change or remove them. The swatch sets a colour; \u21BA puts it back to automatic. Colours follow the meter's name, so every character's Shield matches.")
       + item("Animations",
@@ -4790,6 +5096,12 @@ function saoBind() {
   });
 
   on(".rpg-sao-subtab", (el) => { saoSub = el.dataset.sub; renderRPG(); });
+  on(".rpg-sao-qtab", (el) => { saoQuestTab = el.dataset.qtab; saoLogShown = 20; renderRPG(); });
+  on(".rpg-sao-turnhead", (el) => {
+    const mes = document.querySelector(`#chat .mes[mesid="${el.dataset.mes}"]`);
+    if (mes) mes.scrollIntoView({ behavior: "smooth", block: "center" });
+    else if (window.toastr) window.toastr.info("That message isn't loaded in the chat view.");
+  });
 
   const clock = document.getElementById("rpg-sao-clock");
   if (clock) clock.onclick = (e) => { e.stopPropagation(); saoTimersOpen = !saoTimersOpen; renderRPG(); };
@@ -4827,6 +5139,7 @@ function saoBind() {
   });
   bind("rpg-sao-diagnose", () => { saoMin = false; saoPanel = "error"; renderRPG(); });
   bind("rpg-sao-help", () => { saoHelpOpen = !saoHelpOpen; renderRPG(); });
+  bind("rpg-sao-log-more", () => { saoLogShown += 20; renderRPG(); });
   bind("rpg-sao-move", () => {
     saoLayoutMode = true;
     saoPanel = null;
@@ -5137,6 +5450,27 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-sao-subtab{flex:1; padding:5px 2px; text-align:center; font-size:11px; font-weight:600;
   color:var(--rpg-sao-ink-dim); cursor:pointer; border:0; border-bottom:2px solid transparent; background:none}
 .rpg-sao-subtab.on{color:var(--rpg-sao-ink); border-bottom-color:#b3903f}
+.rpg-sao-qtab{flex:1; padding:5px 2px; text-align:center; font-size:11px; font-weight:600;
+  color:var(--rpg-sao-ink-dim); cursor:pointer; border:0; border-bottom:2px solid transparent; background:none}
+.rpg-sao-qtab.on{color:var(--rpg-sao-ink); border-bottom-color:#b3903f}
+
+.rpg-sao-turn{padding:6px 0 7px; border-bottom:1px solid var(--rpg-sao-rule)}
+.rpg-sao-turn:last-of-type{border-bottom:0}
+.rpg-sao-turnhead{display:flex; justify-content:space-between; align-items:baseline; gap:8px;
+  width:100%; padding:0; margin:0 0 3px; background:none; border:0; cursor:pointer;
+  color:var(--rpg-sao-ink); text-align:left}
+.rpg-sao-turnhead .n{font-size:12px; font-weight:700; letter-spacing:.6px}
+.rpg-sao-turnhead .w{font-size:10.5px; color:var(--rpg-sao-ink-dim); white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; min-width:0}
+.rpg-sao-turnhead:hover .n{text-decoration:underline}
+.rpg-sao-changes{list-style:none; margin:0; padding:0; font-size:12px; line-height:1.35}
+.rpg-sao-changes li{padding:1px 0 1px 9px; position:relative}
+.rpg-sao-changes li::before{content:""; position:absolute; left:0; top:.55em;
+  width:4px; height:4px; border-radius:50%; background:var(--rpg-sao-ink-dim)}
+.rpg-sao-changes li.good::before{background:#4e9c3f}
+.rpg-sao-changes li.bad::before{background:#c0392b}
+.rpg-sao-empty.small{font-size:11.5px; margin:2px 0 0}
+#rpg-sao-log-more{margin-top:8px; width:100%}
 .rpg-sao-vline{display:flex; justify-content:space-between; font-size:13px;
   padding:3px 0; border-bottom:1px solid var(--rpg-sao-rule)}
 .rpg-sao-sub{margin-top:9px; font-size:10px; font-weight:700; letter-spacing:1.4px; color:var(--rpg-sao-ink-dim)}
@@ -5690,7 +6024,9 @@ function applyRpgState(nextState) {
   rpgState = nextState;
 }
 
-function parsePipeFormat(text) {
+// Pure: text in, state out. No globals read or written, so it can parse any
+// message in history (the turn log does) without disturbing the live HUD.
+function parseBlockCore(text) {
   let newState = JSON.parse(JSON.stringify(defaultState));
   newState.party = [];
   newState.enemies = [];
@@ -5881,6 +6217,14 @@ function parsePipeFormat(text) {
       }).filter(m => m.name);
     }
   }
+
+  return newState;
+}
+
+// The live parse: the pure core, then the steps that depend on history and
+// on the previous state (bond ledger, timer carry-over, year inheritance).
+function parsePipeFormat(text) {
+  const newState = parseBlockCore(text);
 
   newState.bonds = mergeBondLedger(bondMemory, newState.bonds);
 
