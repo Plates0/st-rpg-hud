@@ -2600,7 +2600,11 @@ function buildPipeString(stateObj) {
 
   const buildEntity = (ent, isPlayer = false, isPartyOrNPC = false) => {
     let coinStr = (isPlayer || (ent.dankcoin !== undefined && ent.dankcoin !== null)) ? `||Coin:${ent.dankcoin ?? 0}` : "";
-    let bondStr = isPartyOrNPC ? `||Bond:${ent.bond ?? 0}` : "";
+    // Only write a bond the character actually has. Writing "Bond:0" for
+    // everyone else gave them a bond on every edit, which auto-add then
+    // folded into the ledger as a character you'd never bonded with.
+    const hasBond = ent.bond !== undefined && ent.bond !== null && String(ent.bond).trim() !== "";
+    let bondStr = isPartyOrNPC && hasBond ? `||Bond:${ent.bond}` : "";
     
     let block = [`|Name:${ent.name || "Unknown"}||HP:${ent.hp_curr ?? 0}/${ent.hp_max ?? 0}||MP:${ent.mp_curr ?? 0}/${ent.mp_max ?? 0}${coinStr}${bondStr}|`];
     block.push(`|Stats:${formatStats(ent.stats)}|`);
@@ -3549,7 +3553,10 @@ const tNameKey = (u) => normBondName(u?.name);
 // Keyed by name with any trailing modifier dropped, so "Iron Sword +10 ATK"
 // and "Iron Sword +15 ATK" are the same item upgraded, not a swap.
 function tItemKey(text) {
-  return entryBaseName(text).replace(/\s[+\-\u2212]\s?\d.*$/, "").trim().toLowerCase();
+  return entryBaseName(text)
+    .replace(/:\s*-?\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?.*$/, "")   // "Sword: 45/100"
+    .replace(/\s[+\-\u2212]\s?\d.*$/, "")                              // "Sword +10 ATK"
+    .trim().toLowerCase();
 }
 
 function tListMap(list) {
@@ -3576,126 +3583,203 @@ function tBondMap(st) {
   return m;
 }
 
-function tDiffVitals(out, who, a, b, isPlayer) {
-  const pairs = [["HP", a?.hp_curr, b?.hp_curr, b?.hp_max]];
+// Every change carries `u`, a note of exactly what it touched, so it can be
+// reverted on its own. `who` is null for the player, else {group, key}.
+function tDiffVitals(out, label, a, b, who) {
+  const pre = label ? label + " " : "";
+  const hp0 = tNum(a?.hp_curr), hp1 = tNum(b?.hp_curr);
+  if (hp0 !== null && hp1 !== null && hp0 !== hp1) {
+    out.push({ tone: hp1 < hp0 ? "bad" : "good", u: { f: "hp", who },
+      text: `${pre}HP ${hp0} \u2192 ${hp1}${b?.hp_max ? "/" + b.hp_max : ""} (${tSigned(hp1 - hp0)})` });
+  }
   const ea = getEnergy(a || {}, false), eb = getEnergy(b || {}, false);
-  pairs.push([eb.label || "MP", ea.curr, eb.curr, eb.max]);
-  pairs.forEach(([label, x, y, max]) => {
-    const n0 = tNum(x), n1 = tNum(y);
-    if (n0 === null || n1 === null || n0 === n1) return;
-    const d = n1 - n0;
-    out.push({
-      tone: label === "HP" ? (d < 0 ? "bad" : "good") : "neutral",
-      text: `${who ? who + " " : ""}${label} ${n0} \u2192 ${n1}${max ? "/" + max : ""} (${tSigned(d)})`,
-    });
-  });
+  const e0 = tNum(ea.curr), e1 = tNum(eb.curr);
+  if (e0 !== null && e1 !== null && e0 !== e1) {
+    out.push({ tone: "neutral", u: { f: "mp", who },
+      text: `${pre}${eb.label || "MP"} ${e0} \u2192 ${e1}${eb.max ? "/" + eb.max : ""} (${tSigned(e1 - e0)})` });
+  }
 
   const sa = new Set((a?.status_effects || []).map((x) => String(x).trim()).filter(Boolean));
   const sb = new Set((b?.status_effects || []).map((x) => String(x).trim()).filter(Boolean));
-  sb.forEach((x) => { if (!sa.has(x)) out.push({ tone: "bad", text: `${who ? who + " " : ""}+ ${x}` }); });
-  sa.forEach((x) => { if (!sb.has(x)) out.push({ tone: "good", text: `${who ? who + " " : ""}\u2212 ${x}` }); });
+  sb.forEach((x) => { if (!sa.has(x)) out.push({ tone: "bad", text: `${pre}+ ${x}`, u: { f: "status", who, item: x, added: true } }); });
+  sa.forEach((x) => { if (!sb.has(x)) out.push({ tone: "good", text: `${pre}\u2212 ${x}`, u: { f: "status", who, item: x, added: false } }); });
 
   const ma = new Map((a?.meters || []).map((m) => [meterKey(m.name), m]));
+  const mbKeys = new Set();
   (b?.meters || []).forEach((m) => {
-    const before = ma.get(meterKey(m.name));
-    if (!before) { out.push({ tone: "neutral", text: `${who ? who + " " : ""}+ ${m.name} ${m.curr}/${m.max}` }); return; }
+    const key = meterKey(m.name); mbKeys.add(key);
+    const before = ma.get(key);
+    if (!before) { out.push({ tone: "neutral", text: `${pre}+ ${m.name} ${m.curr}/${m.max}`, u: { f: "meter", who, key } }); return; }
     const n0 = tNum(before.curr), n1 = tNum(m.curr);
     if (n0 !== null && n1 !== null && n0 !== n1) {
-      out.push({ tone: "neutral", text: `${who ? who + " " : ""}${m.name} ${n0} \u2192 ${n1} (${tSigned(n1 - n0)})` });
+      out.push({ tone: "neutral", text: `${pre}${m.name} ${n0} \u2192 ${n1} (${tSigned(n1 - n0)})`, u: { f: "meter", who, key } });
     }
   });
-  (a?.meters || []).forEach((m) => {
-    if (!(b?.meters || []).some((x) => meterKey(x.name) === meterKey(m.name))) {
-      out.push({ tone: "neutral", text: `${who ? who + " " : ""}\u2212 ${m.name}` });
-    }
-  });
+  ma.forEach((m, key) => { if (!mbKeys.has(key)) out.push({ tone: "neutral", text: `${pre}\u2212 ${m.name}`, u: { f: "meter", who, key } }); });
 }
 
 function tDiffLists(out, a, b) {
   WATCHED_LISTS.forEach(({ key, label }) => {
     const A = tListMap(a?.[key]), B = tListMap(b?.[key]);
     B.forEach((text, k) => {
-      if (!A.has(k)) { out.push({ tone: "good", text: `+ ${label}: ${text}` }); return; }
+      if (!A.has(k)) { out.push({ tone: "good", text: `+ ${label}: ${text}`, u: { f: "list", key, k } }); return; }
       const before = A.get(k);
       if (before === text || stripStatusTags(before) === stripStatusTags(text)) return;
-      out.push({ tone: "neutral", text: `~ ${label}: ${stripStatusTags(before)} \u2192 ${stripStatusTags(text)}`, detail: true });
+      out.push({ tone: "neutral", text: `~ ${label}: ${stripStatusTags(before)} \u2192 ${stripStatusTags(text)}`, u: { f: "list", key, k } });
     });
-    A.forEach((text, k) => { if (!B.has(k)) out.push({ tone: "bad", text: `\u2212 ${label}: ${text}` }); });
+    A.forEach((text, k) => { if (!B.has(k)) out.push({ tone: "bad", text: `\u2212 ${label}: ${text}`, u: { f: "list", key, k } }); });
   });
 }
+
+const tTimerKey = (t) => `${String(t?.owner || "").toLowerCase()}|${String(t?.name || "").toLowerCase()}`;
 
 // everything that changed between two consecutive states
 function diffTurn(a, b) {
   const out = [];
 
-  // where and when
   if (String(a.location || "") !== String(b.location || "") && b.location) {
-    out.push({ tone: "neutral", text: `Moved to ${b.location}` });
+    out.push({ tone: "neutral", text: `Moved to ${b.location}`, u: { f: "location" } });
   }
   const ta = a.world_time || {}, tb = b.world_time || {};
   try {
     const m0 = worldMinutes(ta.month, ta.day, ta.clock, ta.year);
     const m1 = worldMinutes(tb.month, tb.day, tb.clock, tb.year);
     if (Number.isFinite(m0) && Number.isFinite(m1) && m1 !== m0) {
-      out.push({ tone: "neutral", text: `Time ${m1 > m0 ? "+" : "\u2212"}${formatMinutes(Math.abs(m1 - m0))}` });
+      out.push({ tone: "neutral", text: `Time ${m1 > m0 ? "+" : "\u2212"}${formatMinutes(Math.abs(m1 - m0))}`, u: { f: "time" } });
     }
   } catch {}
-  if (!a.combat?.active && b.combat?.active) out.push({ tone: "bad", text: "Combat started" });
-  if (a.combat?.active && !b.combat?.active) out.push({ tone: "good", text: "Combat ended" });
+  if (!a.combat?.active && b.combat?.active) out.push({ tone: "bad", text: "Combat started", u: { f: "combat" } });
+  if (a.combat?.active && !b.combat?.active) out.push({ tone: "good", text: "Combat ended", u: { f: "combat" } });
 
-  // the player
-  tDiffVitals(out, "", a, b, true);
+  tDiffVitals(out, "", a, b, null);
   const c0 = tNum(a.dankcoin), c1 = tNum(b.dankcoin);
   if (c0 !== null && c1 !== null && c0 !== c1) {
-    out.push({ tone: c1 > c0 ? "good" : "bad", text: `Coin ${tSigned(c1 - c0)} (${c1})` });
+    out.push({ tone: c1 > c0 ? "good" : "bad", text: `Coin ${tSigned(c1 - c0)} (${c1})`, u: { f: "coin" } });
   }
   tDiffLists(out, a, b);
 
-  // everyone else
-  const groups = [["party", "joined the party", "left the party"],
-                  ["npcs", "appeared", "left"],
-                  ["enemies", "appeared", "is gone"]];
-  groups.forEach(([k, joined, left]) => {
-    const A = new Map((a[k] || []).map((u) => [tNameKey(u), u]));
-    const B = new Map((b[k] || []).map((u) => [tNameKey(u), u]));
+  [["party", "joined the party", "left the party"],
+   ["npcs", "appeared", "left"],
+   ["enemies", "appeared", "is gone"]].forEach(([group, joined, left]) => {
+    const A = new Map((a[group] || []).map((u) => [tNameKey(u), u]));
+    const B = new Map((b[group] || []).map((u) => [tNameKey(u), u]));
     B.forEach((u, key) => {
       const name = displayName(u.name, "?");
       if (!A.has(key)) {
-        out.push({ tone: k === "enemies" ? "bad" : "good", text: `${name} ${joined}` });
+        out.push({ tone: group === "enemies" ? "bad" : "good", text: `${name} ${joined}`, u: { f: "unit", group, key } });
         return;
       }
-      tDiffVitals(out, name, A.get(key), u, false);
+      tDiffVitals(out, name, A.get(key), u, { group, key });
     });
     A.forEach((u, key) => {
-      if (!B.has(key)) out.push({ tone: k === "enemies" ? "good" : "neutral", text: `${displayName(u.name, "?")} ${left}` });
+      if (!B.has(key)) out.push({ tone: group === "enemies" ? "good" : "neutral",
+        text: `${displayName(u.name, "?")} ${left}`, u: { f: "unit", group, key } });
     });
   });
 
-  // bonds
   const ba = tBondMap(a), bb = tBondMap(b);
   bb.forEach((x, key) => {
     const before = ba.get(key);
-    if (!before) { out.push({ tone: "good", text: `New bond: ${displayName(x.name)} (${x.v >= 101 ? "\u221E" : x.v})` }); return; }
+    if (!before) { out.push({ tone: "good", text: `New bond: ${displayName(x.name)} (${x.v >= 101 ? "\u221E" : x.v})`, u: { f: "bond", key } }); return; }
     if (before.v !== x.v) {
       const d = x.v - before.v;
-      out.push({ tone: d > 0 ? "good" : "bad",
+      out.push({ tone: d > 0 ? "good" : "bad", u: { f: "bond", key },
         text: `${displayName(x.name)} bond ${before.v} \u2192 ${x.v} (${d > 0 ? "\u25B2" : "\u25BC"}${Math.abs(d)})` });
     }
   });
 
-  // quests and timers
   const qa = new Set((a.quests || []).map((q) => String(q).trim()));
   const qb = new Set((b.quests || []).map((q) => String(q).trim()));
-  qb.forEach((q) => { if (q && !qa.has(q)) out.push({ tone: "good", text: `+ Quest: ${q}` }); });
-  qa.forEach((q) => { if (q && !qb.has(q)) out.push({ tone: "neutral", text: `Quest closed: ${q}` }); });
+  qb.forEach((q) => { if (q && !qa.has(q)) out.push({ tone: "good", text: `+ Quest: ${q}`, u: { f: "quest", q, added: true } }); });
+  qa.forEach((q) => { if (q && !qb.has(q)) out.push({ tone: "neutral", text: `Quest closed: ${q}`, u: { f: "quest", q, added: false } }); });
 
-  const tk = (t) => `${(t.owner || "").toLowerCase()}|${String(t.name || "").toLowerCase()}`;
-  const tma = new Map((a.timers || []).map((t) => [tk(t), t]));
-  const tmb = new Map((b.timers || []).map((t) => [tk(t), t]));
-  tmb.forEach((t, key) => { if (!tma.has(key)) out.push({ tone: "neutral", text: `+ Timer: ${t.name} (${t.value})` }); });
-  tma.forEach((t, key) => { if (!tmb.has(key)) out.push({ tone: "neutral", text: `Timer ended: ${t.name}` }); });
+  const tma = new Map((a.timers || []).map((t) => [tTimerKey(t), t]));
+  const tmb = new Map((b.timers || []).map((t) => [tTimerKey(t), t]));
+  tmb.forEach((t, key) => { if (!tma.has(key)) out.push({ tone: "neutral", text: `+ Timer: ${t.name} (${t.value})`, u: { f: "timer", key } }); });
+  tma.forEach((t, key) => { if (!tmb.has(key)) out.push({ tone: "neutral", text: `Timer ended: ${t.name}`, u: { f: "timer", key } }); });
 
   return out;
+}
+
+// ---- reverting one change ----
+const tClone = (v) => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
+const tItemText = (x) => String(typeof x === "object" ? (x?.name ?? "") : (x ?? "")).trim();
+
+function tTarget(state, who) {
+  if (!who) return state;
+  return (state?.[who.group] || []).find((x) => normBondName(x?.name) === who.key) || null;
+}
+
+// b is the latest block (a clone we may change), a the block before it
+function applyTurnUndo(b, a, u) {
+  const tb = tTarget(b, u.who), ta = tTarget(a, u.who);
+  const putBack = (list, match, source) => {
+    const i = list.findIndex(match);
+    if (source !== undefined) { if (i >= 0) list[i] = tClone(source); else list.push(tClone(source)); }
+    else if (i >= 0) list.splice(i, 1);
+  };
+
+  switch (u.f) {
+    case "location": b.location = a.location; break;
+    case "time": b.world_time = tClone(a.world_time); break;
+    case "combat": b.combat = tClone(a.combat); break;
+    case "coin": b.dankcoin = a.dankcoin; break;
+    case "hp":
+      if (tb && ta) { tb.hp_curr = ta.hp_curr; tb.hp_max = ta.hp_max; }
+      break;
+    case "mp":
+      if (tb && ta) ["mp_curr", "mp_max", "mp", "en_curr", "en_max", "en"].forEach((k) => {
+        if (k in ta) tb[k] = ta[k]; else delete tb[k];
+      });
+      break;
+    case "status": {
+      if (!tb) break;
+      const list = Array.isArray(tb.status_effects) ? tb.status_effects : (tb.status_effects = []);
+      if (u.added) tb.status_effects = list.filter((x) => String(x).trim() !== u.item);
+      else if (!list.some((x) => String(x).trim() === u.item)) list.push(u.item);
+      break;
+    }
+    case "meter": {
+      if (!tb) break;
+      const list = Array.isArray(tb.meters) ? tb.meters : (tb.meters = []);
+      putBack(list, (m) => meterKey(m.name) === u.key, (ta?.meters || []).find((m) => meterKey(m.name) === u.key));
+      break;
+    }
+    case "list": {
+      const list = Array.isArray(b[u.key]) ? b[u.key] : (b[u.key] = []);
+      putBack(list, (x) => tItemKey(tItemText(x)) === u.k, (a[u.key] || []).find((x) => tItemKey(tItemText(x)) === u.k));
+      break;
+    }
+    case "unit": {
+      const list = Array.isArray(b[u.group]) ? b[u.group] : (b[u.group] = []);
+      putBack(list, (x) => normBondName(x?.name) === u.key, (a[u.group] || []).find((x) => normBondName(x?.name) === u.key));
+      break;
+    }
+    case "bond": {
+      const before = tBondMap(a).get(u.key);
+      const led = Array.isArray(b.bonds) ? b.bonds : (b.bonds = []);
+      const li = led.findIndex((x) => normBondName(x?.name) === u.key);
+      if (before) { if (li >= 0) led[li].bond = before.v; else led.push({ name: before.name, bond: before.v }); }
+      else if (li >= 0) led.splice(li, 1);
+      // live values win over the ledger, so they have to follow too
+      [...(b.party || []), ...(b.npcs || [])].forEach((x) => {
+        if (normBondName(x?.name) !== u.key) return;
+        if (before) x.bond = before.v; else delete x.bond;
+      });
+      break;
+    }
+    case "quest": {
+      const list = Array.isArray(b.quests) ? b.quests : (b.quests = []);
+      if (u.added) b.quests = list.filter((x) => String(x).trim() !== u.q);
+      else if (!list.some((x) => String(x).trim() === u.q)) list.push(u.q);
+      break;
+    }
+    case "timer": {
+      const list = Array.isArray(b.timers) ? b.timers : (b.timers = []);
+      putBack(list, (t) => tTimerKey(t) === u.key, (a.timers || []).find((t) => tTimerKey(t) === u.key));
+      break;
+    }
+  }
 }
 
 // newest first; each entry is one AI message that had a block
@@ -4338,7 +4422,9 @@ function aloPlateSvg(W, H, geo, hp, mp, hpc, mpc) {
         <stop offset="0" stop-color="${mpc[0]}"/><stop offset="1" stop-color="${mpc[1]}"/></linearGradient>
       <linearGradient id="b${id}" x1="0" y1="0" x2="1" y2="0">
         <stop offset="0" stop-color="rgba(58,62,70,.78)"/>
-        <stop offset="${(div / W).toFixed(3)}" stop-color="rgba(58,62,70,.66)"/>
+        <stop offset="${(div / W).toFixed(3)}" stop-color="rgba(58,62,70,.62)"/>
+        <stop offset="${((bx + (bEnd - bx) * 0.5) / W).toFixed(3)}" stop-color="rgba(58,62,70,.22)"/>
+        <stop offset="${(Math.min(0.98, (bEnd - tipIn) / W)).toFixed(3)}" stop-color="rgba(58,62,70,.03)"/>
         <stop offset="1" stop-color="rgba(58,62,70,0)"/></linearGradient>
       <linearGradient id="v${id}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="rgba(255,255,255,.10)"/><stop offset=".5" stop-color="rgba(255,255,255,0)"/>
@@ -4380,10 +4466,13 @@ function saoPaintAloPlates() {
 
   // Everyone in a group shares the widest name's compartment, so their bars
   // start and end in the same place. The player's plate is its own group.
+  // Party, NPCs and enemies all share one name column, so every character's
+  // bars start at the same x. The player's plate is sized on its own.
+  const groupOf = (el) => (el.classList.contains("small") ? "units" : el);
   const widest = new Map();
   plates.forEach((el) => {
-    const g = el.closest(".rpg-alo-group") || el;
     const n = el.querySelector(".rpg-alo-name");
+    const g = groupOf(el);
     widest.set(g, Math.max(widest.get(g) || 0, n ? n.scrollWidth : 0));
   });
 
@@ -4391,12 +4480,12 @@ function saoPaintAloPlates() {
     const small = el.classList.contains("small");
     const H = el.clientHeight;
     if (!H) return;
-    const g = el.closest(".rpg-alo-group") || el;
-    const nameW = Math.min(widest.get(g) || 0, ALO_NAME_CAP[small ? "small" : "big"] * ui);
+    const nameW = Math.min(widest.get(groupOf(el)) || 0, ALO_NAME_CAP[small ? "small" : "big"] * ui);
     const geo = aloPlateGeom(H, nameW, Math.round(ALO_BAR_LEN[small ? "small" : "big"] * ui),
                              small, Math.round(ALO_PLAYER_BAR_H * ui));
 
     el.style.width = `${geo.W}px`;
+    if (small) el.closest(".rpg-sao-vitals")?.style.setProperty("--alo-bx", `${geo.bx}px`);
     const nameEl = el.querySelector(".rpg-alo-name");
     if (nameEl) { nameEl.style.left = `${geo.nameLeft}px`; nameEl.style.width = `${Math.ceil(nameW)}px`; }
 
@@ -5078,6 +5167,39 @@ function saoUndoLastTurn() {
   if (window.toastr) window.toastr.info("Latest turn undone.");
 }
 
+// Revert one change from the newest turn: reparse that turn's block, put the
+// one thing back the way the turn before had it, and write the block out.
+// The write goes through the same builder as every other edit, and
+// parse -> build -> parse is lossless, so nothing else in the block moves.
+function saoUndoChange(ci, expectText) {
+  let ctx;
+  try { ctx = SillyTavern.getContext(); } catch { return; }
+  const turns = rpgTurnsOf(ctx?.chat);
+  if (turns.length < 2) return;
+  const last = turns[turns.length - 1], prev = turns[turns.length - 2];
+
+  // the chat may have moved on since the log was drawn
+  const change = diffTurn(prev.state, last.state)[ci];
+  if (!change || !change.u || change.text !== expectText) {
+    if (window.toastr) window.toastr.info("That change has already moved on. The log has been refreshed.");
+    renderRPG();
+    return;
+  }
+
+  const next = tClone(last.state);
+  applyTurnUndo(next, prev.state, change.u);
+
+  const msg = ctx.chat[last.idx];
+  const before = msg.mes;
+  const after = before.replace(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i, buildPipeString(next));
+  if (after === before) return;
+
+  setMessageText(msg, after);
+  turnUndo = { key: currentChatKey(ctx), idx: last.idx, before, after };
+  afterTurnEdit(ctx, last.idx);
+  if (window.toastr) window.toastr.info(`Reverted: ${change.text}`);
+}
+
 function saoCanRedo(ctx) {
   if (!turnUndo || !ctx?.chat) return false;
   return currentChatKey(ctx) === turnUndo.key && ctx.chat[turnUndo.idx]?.mes === turnUndo.after;
@@ -5111,14 +5233,17 @@ function saoLogHtml() {
     return tools + `<p class="rpg-sao-empty">Nothing yet. Each reply that carries an rpg_state adds a turn here.</p>`;
   }
 
-  const html = turns.slice(0, saoLogShown).map((t) => `
-    <div class="rpg-sao-turn">
+  const html = turns.slice(0, saoLogShown).map((t, ti) => `
+    <div class="rpg-sao-turn${ti === 0 ? " newest" : ""}">
       <button class="rpg-sao-turnhead" data-mes="${t.idx}" title="Jump to this message">
         <span class="n">Turn ${t.n}</span>
         <span class="w">${escHtml(t.when)}${t.where ? " \u00B7 " + escHtml(t.where) : ""}</span>
       </button>
       ${t.changes.length
-        ? `<ul class="rpg-sao-changes">${t.changes.map((c) => `<li class="${c.tone}">${escHtml(c.text)}</li>`).join("")}</ul>`
+        ? `<ul class="rpg-sao-changes">${t.changes.map((c, ci) => `<li class="${c.tone}">
+            <span>${escHtml(c.text)}</span>${ti === 0 && c.u
+              ? `<button class="rpg-sao-revert" data-ci="${ci}" data-text="${escAttr(c.text)}" title="Undo just this change">\u21B6</button>`
+              : ""}</li>`).join("")}</ul>`
         : `<p class="rpg-sao-empty small">No changes.</p>`}
     </div>`).join("");
 
@@ -5202,7 +5327,7 @@ function saoHelpPanel() {
       + item("Move HUD pieces",
           "Drag the bars, the orb column and the clock wherever you like. Buttons stop responding while you're arranging, so a tap can't fire by accident. Reset puts them back.")
       + item("Turn log",
-          "In the Quests orb, the Log tab lists what changed each turn \u2014 HP, items, bonds, where you went, how much time passed. It's worked out from your chat history rather than stored, so it follows swipes and edits and covers old chats too. Tap a turn to jump to its message. Undo last turn reverts everything the newest turn changed; Redo puts it back.")
+          "In the Quests orb, the Log tab lists what changed each turn \u2014 HP, items, bonds, where you went, how much time passed. It's worked out from your chat history rather than stored, so it follows swipes and edits and covers old chats too. Tap a turn to jump to its message. Undo last turn reverts everything the newest turn changed; the \u21B6 beside a single change in the newest turn reverts just that one. Redo puts either back.")
       + item("Meters",
           "Open a character in Status and use Edit under Meters to add, rename, change or remove them. The swatch sets a colour; \u21BA puts it back to automatic. Colours follow the meter's name, so every character's Shield matches.")
       + item("Animations",
@@ -5640,6 +5765,7 @@ function saoBind() {
   bind("rpg-sao-help", () => { saoHelpOpen = !saoHelpOpen; renderRPG(); });
   bind("rpg-sao-log-more", () => { saoLogShown += 20; renderRPG(); });
   bind("rpg-sao-undo", saoUndoLastTurn);
+  on(".rpg-sao-revert", (el) => saoUndoChange(parseInt(el.dataset.ci, 10), el.dataset.text));
   bind("rpg-sao-redo", saoRedoLastTurn);
   bind("rpg-sao-move", () => {
     saoLayoutMode = true;
@@ -5846,7 +5972,12 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-vitals.alo{width:max-content; max-width:calc(100vw - 130px)}
 .rpg-sao-vitals.alo .rpg-sao-slim{margin-right:0}
 .rpg-sao-vitals.alo .rpg-sao-row{grid-template-columns:var(--tagw) calc(150px * var(--rpg-sao-ui, 1)) var(--numw)}
-.rpg-sao-vitals.alo .rpg-sao-row.sub{grid-template-columns:var(--tagw) calc(80px * var(--rpg-sao-ui, 1)) var(--numw) 0}
+/* tag column sized so the meter's bar starts under its owner's bars
+   (row indent 13px + grid gap 7px) */
+.rpg-sao-vitals.alo .rpg-sao-row.sub{
+  grid-template-columns:max(calc(20px * var(--rpg-sao-ui, 1)), calc(var(--alo-bx, 70px) - 20px)) calc(80px * var(--rpg-sao-ui, 1)) var(--numw);
+  text-align:right}
+.rpg-sao-vitals.alo .rpg-sao-row.sub .rpg-sao-tag{text-align:right; padding-right:2px}
 .rpg-sao-bar{position:relative; flex:1 1 auto; min-width:0; width:100%; height:calc(15px * var(--rpg-sao-ui, 1))}
 .rpg-sao-bar.mid{height:calc(11px * var(--rpg-sao-ui, 1))}
 .rpg-sao-bar.slim{height:calc(9px * var(--rpg-sao-ui, 1)); width:auto}
@@ -6013,6 +6144,12 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-sao-empty.small{font-size:11.5px; margin:2px 0 0}
 #rpg-sao-log-more{margin-top:8px; width:100%}
 .rpg-sao-logtools{display:flex; gap:6px; justify-content:flex-end; margin:-2px 0 6px}
+.rpg-sao-changes li{display:flex; align-items:flex-start; justify-content:space-between; gap:6px}
+.rpg-sao-changes li > span{min-width:0; overflow-wrap:anywhere}
+.rpg-sao-revert{flex:0 0 auto; width:20px; height:18px; padding:0; margin-top:-1px; cursor:pointer;
+  font-size:11px; line-height:1; border-radius:2px; color:var(--rpg-sao-ink-dim);
+  background:transparent; border:1px solid var(--rpg-sao-rule); opacity:.55}
+.rpg-sao-revert:hover, .rpg-sao-revert:focus-visible{opacity:1; color:var(--rpg-sao-ink)}
 
 /* jump-to-top / bottom, floating over the panel's lower right */
 .rpg-sao-jumps{position:absolute; right:10px; bottom:10px; z-index:2;
