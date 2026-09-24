@@ -4380,9 +4380,9 @@ const ALO_MP = ["#7fb3e8", "#2d65a8"];
 // plate longer instead of making the bars shorter.
 function aloPlateGeom(H, nameW, barLen, bare, barH) {
   if (bare) {
-    // characters: just the name and the bars, no plate and no divider
-    const div = Math.round(nameW + 8);
-    const bx = div + 2;
+    // characters: just the bars, their name sits on the line above
+    const div = nameW > 0 ? Math.round(nameW + 8) : 0;
+    const bx = nameW > 0 ? div + 2 : 1;
     const bEnd = bx + barLen;
     return { L: 0, R: 0, div, bx, bEnd, W: Math.round(bEnd + 2), bare: true, bh: H - 2, nameLeft: 0 };
   }
@@ -4466,26 +4466,19 @@ function saoPaintAloPlates() {
 
   // Everyone in a group shares the widest name's compartment, so their bars
   // start and end in the same place. The player's plate is its own group.
-  // Party, NPCs and enemies all share one name column, so every character's
-  // bars start at the same x. The player's plate is sized on its own.
-  const groupOf = (el) => (el.classList.contains("small") ? "units" : el);
-  const widest = new Map();
-  plates.forEach((el) => {
-    const n = el.querySelector(".rpg-alo-name");
-    const g = groupOf(el);
-    widest.set(g, Math.max(widest.get(g) || 0, n ? n.scrollWidth : 0));
-  });
+  // Characters carry their name above the bars, so only the player's plate
+  // has a name compartment to size.
 
   plates.forEach((el) => {
     const small = el.classList.contains("small");
     const H = el.clientHeight;
     if (!H) return;
-    const nameW = Math.min(widest.get(groupOf(el)) || 0, ALO_NAME_CAP[small ? "small" : "big"] * ui);
+    const nameEl0 = el.querySelector(".rpg-alo-name");
+    const nameW = small ? 0 : Math.min(nameEl0 ? nameEl0.scrollWidth : 0, ALO_NAME_CAP.big * ui);
     const geo = aloPlateGeom(H, nameW, Math.round(ALO_BAR_LEN[small ? "small" : "big"] * ui),
                              small, Math.round(ALO_PLAYER_BAR_H * ui));
 
     el.style.width = `${geo.W}px`;
-    if (small) el.closest(".rpg-sao-vitals")?.style.setProperty("--alo-bx", `${geo.bx}px`);
     const nameEl = el.querySelector(".rpg-alo-name");
     if (nameEl) { nameEl.style.left = `${geo.nameLeft}px`; nameEl.style.width = `${Math.ceil(nameW)}px`; }
 
@@ -4515,14 +4508,17 @@ function aloUnitRow(view, idx, key, foe) {
   const num = (a, b) => (a === undefined || a === null || a === "") ? "\u2013" : `${escHtml(a)}/${escHtml(b)}`;
   return `<div class="rpg-alo-row">
     <div class="rpg-alo-unit rpg-sao-jump${foe ? " foe" : ""}" data-idx="${idx}" title="${escAttr(view.name)}">
-      ${title ? `<div class="rpg-alo-title">${escHtml(title)}</div>` : ""}
-      <div class="rpg-alo-plate small" data-key="${escAttr(key)}" data-hp="${hp}" data-mp="${mp}"
-        data-hp1="${hs[0]}" data-hp2="${hs[1]}" data-mp1="${ALO_MP[0]}" data-mp2="${ALO_MP[1]}">
-        <div class="rpg-alo-svg"></div><span class="rpg-alo-name">${escHtml(name)}</span>
+      <div class="rpg-alo-label"><span class="rpg-alo-uname">${escHtml(name)}</span>${
+        title ? `<span class="rpg-alo-utitle">${escHtml(title)}</span>` : ""}</div>
+      <div class="rpg-alo-barline">
+        <div class="rpg-alo-plate small" data-key="${escAttr(key)}" data-hp="${hp}" data-mp="${mp}"
+          data-hp1="${hs[0]}" data-hp2="${hs[1]}" data-mp1="${ALO_MP[0]}" data-mp2="${ALO_MP[1]}">
+          <div class="rpg-alo-svg"></div>
+        </div>
+        <div class="rpg-alo-unitnums"><span>${num(view.hp_curr, view.hp_max)}</span>
+          <span>${num(view.en?.curr, view.en?.max)}</span></div>
       </div>
     </div>
-    <div class="rpg-alo-unitnums"><span>${num(view.hp_curr, view.hp_max)}</span>
-      <span>${num(view.en?.curr, view.en?.max)}</span></div>
   </div>`;
 }
 
@@ -5959,10 +5955,19 @@ const SAO_CSS = `<style id="rpg-sao-style">
   margin:calc(3px * var(--rpg-sao-ui, 1)) calc(8px * var(--rpg-sao-ui, 1)) 0 0; font-size:calc(10px * var(--rpg-sao-ui, 1)); font-weight:600; color:#d3cfc4}
 .rpg-alo-nums i{font-style:normal; opacity:.6; margin-right:2px}
 
-.rpg-alo-row{display:flex; align-items:flex-end; gap:calc(6px * var(--rpg-sao-ui, 1)); margin-bottom:calc(4px * var(--rpg-sao-ui, 1))}
-.rpg-alo-unit{cursor:pointer; flex:0 0 auto}
-.rpg-alo-unit:hover .rpg-alo-name{text-decoration:underline; text-underline-offset:2px}
-.rpg-alo-unit.foe .rpg-alo-name{color:#f2a99d}
+.rpg-alo-row{margin-bottom:calc(5px * var(--rpg-sao-ui, 1))}
+.rpg-alo-unit{cursor:pointer; display:block}
+/* width:0 + min-width:100% lets the label fill the row without widening it,
+   so a long name is cut off at the bars' width instead of stretching them */
+.rpg-alo-label{width:0; min-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  margin:0 0 calc(1px * var(--rpg-sao-ui, 1)) calc(1px * var(--rpg-sao-ui, 1)); line-height:1.15}
+.rpg-alo-uname{font-size:calc(10.5px * var(--rpg-sao-ui, 1)); font-weight:600; letter-spacing:.3px; color:#f0eee8;
+  text-shadow:0 1px 2px rgba(0,0,0,.7)}
+.rpg-alo-utitle{font-size:calc(9px * var(--rpg-sao-ui, 1)); color:#bdb9af; margin-left:calc(6px * var(--rpg-sao-ui, 1)); letter-spacing:.4px;
+  text-shadow:0 1px 2px rgba(0,0,0,.7)}
+.rpg-alo-unit:hover .rpg-alo-uname{text-decoration:underline; text-underline-offset:2px}
+.rpg-alo-unit.foe .rpg-alo-uname{color:#f2a99d}
+.rpg-alo-barline{display:flex; align-items:center; gap:calc(6px * var(--rpg-sao-ui, 1))}
 .rpg-alo-unitnums{display:flex; flex-direction:column; justify-content:center;
   height:calc(18px * var(--rpg-sao-ui, 1)); font-size:calc(9px * var(--rpg-sao-ui, 1)); line-height:1.15; color:#c8c4ba; white-space:nowrap}
 .rpg-alo-unitnums span:first-child{color:#dcd8cf; font-weight:600}
@@ -5971,13 +5976,15 @@ const SAO_CSS = `<style id="rpg-sao-style">
    other grid rows need explicit bar lengths to keep from collapsing */
 .rpg-sao-vitals.alo{width:max-content; max-width:calc(100vw - 130px)}
 .rpg-sao-vitals.alo .rpg-sao-slim{margin-right:0}
-.rpg-sao-vitals.alo .rpg-sao-row{grid-template-columns:var(--tagw) calc(150px * var(--rpg-sao-ui, 1)) var(--numw)}
-/* tag column sized so the meter's bar starts under its owner's bars
-   (row indent 13px + grid gap 7px) */
-.rpg-sao-vitals.alo .rpg-sao-row.sub{
-  grid-template-columns:max(calc(20px * var(--rpg-sao-ui, 1)), calc(var(--alo-bx, 70px) - 20px)) calc(80px * var(--rpg-sao-ui, 1)) var(--numw);
-  text-align:right}
-.rpg-sao-vitals.alo .rpg-sao-row.sub .rpg-sao-tag{text-align:right; padding-right:2px}
+/* in ALfheim every bar row puts its label above, so all bars share one left edge */
+.rpg-sao-vitals.alo .rpg-sao-row{
+  grid-template-columns:calc(150px * var(--rpg-sao-ui, 1)) var(--numw); row-gap:0; margin-left:0}
+.rpg-sao-vitals.alo .rpg-sao-row.sub{grid-template-columns:calc(90px * var(--rpg-sao-ui, 1)) var(--numw); opacity:.82}
+.rpg-sao-vitals.alo .rpg-sao-row > .rpg-sao-tag{grid-column:1 / -1; grid-row:1;
+  width:0; min-width:100%; text-align:left; margin-bottom:1px}
+.rpg-sao-vitals.alo .rpg-sao-row > .rpg-sao-bar{grid-column:1; grid-row:2}
+.rpg-sao-vitals.alo .rpg-sao-row > .rpg-sao-num{grid-column:2; grid-row:2}
+.rpg-sao-vitals.alo .rpg-sao-row.sub > .rpg-sao-tag{font-size:calc(9px * var(--rpg-sao-ui, 1))}
 .rpg-sao-bar{position:relative; flex:1 1 auto; min-width:0; width:100%; height:calc(15px * var(--rpg-sao-ui, 1))}
 .rpg-sao-bar.mid{height:calc(11px * var(--rpg-sao-ui, 1))}
 .rpg-sao-bar.slim{height:calc(9px * var(--rpg-sao-ui, 1)); width:auto}
