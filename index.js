@@ -3751,6 +3751,7 @@ let saoMin = true;   // the overlay opens collapsed to its dot
 let saoTimersOpen = false;
 let saoHelpOpen = false;
 let saoQuestTab = "quests";   // "quests" | "log"
+const saoScroll = new Map();  // scroll key -> {top, left}
 let saoLogShown = 20;         // turns rendered before "show older"
 let saoMeterEdit = null;     // null, or a draft: [{name, curr, max, color, custom}]
 let saoLayoutMode = false;   // drag clusters around instead of using them
@@ -4565,7 +4566,7 @@ function saoWhoStrip() {
 
   if (active.list.length < 2) return cats;
 
-  const chips = `<div class="rpg-sao-who">` + active.list.map((u, i) => {
+  const chips = `<div class="rpg-sao-who" data-scroll-key="who:${active.key}">` + active.list.map((u, i) => {
     const idx = charIndexFor(active.type, i);
     return `<button class="rpg-sao-chip${idx === charIndex ? " on" : ""}${active.key === "enemy" ? " foe" : ""}"
       data-idx="${idx}">${escHtml(saoUnitView(u).name)}</button>`;
@@ -4643,6 +4644,58 @@ function saoQuestsPanel() {
       ? quests.map((q) => `<div class="rpg-sao-quest">${escHtml(q)}</div>`).join("")
       : `<p class="rpg-sao-empty">No active quests.</p>`),
   };
+}
+
+// identifies what's in the panel, so switching tab or character starts at the
+// top while a re-render of the same view keeps your place
+function saoPanelScrollKey() {
+  if (saoPanel === "status") return `status:${charIndex}:${saoSub}`;
+  if (saoPanel === "quests") return `quests:${saoQuestTab}`;
+  if (saoPanel === "gear" && saoHelpOpen) return "help";
+  return `panel:${saoPanel}`;
+}
+
+function saoSaveScroll(root) {
+  root.querySelectorAll("[data-scroll-key]").forEach((el) => {
+    saoScroll.set(el.dataset.scrollKey, { top: el.scrollTop, left: el.scrollLeft });
+  });
+}
+
+function saoRestoreScroll(root) {
+  root.querySelectorAll("[data-scroll-key]").forEach((el) => {
+    const p = saoScroll.get(el.dataset.scrollKey);
+    if (!p) return;
+    if (p.top) el.scrollTop = p.top;
+    if (p.left) el.scrollLeft = p.left;
+  });
+}
+
+// Jump-to-top / jump-to-bottom, shown only when there's somewhere to jump to.
+function saoBindJumps() {
+  document.querySelectorAll(".rpg-sao-panel").forEach((panel) => {
+    const body = panel.querySelector(".rpg-sao-body");
+    const up = panel.querySelector(".rpg-sao-jumpto.up");
+    const down = panel.querySelector(".rpg-sao-jumpto.down");
+    if (!body || !up || !down) return;
+
+    const update = () => {
+      const room = body.scrollHeight - body.clientHeight;
+      up.classList.toggle("show", room > 24 && body.scrollTop > 40);
+      down.classList.toggle("show", room > 24 && body.scrollTop < room - 40);
+    };
+    if (body.dataset.jumpBound !== "1") {        // bound once per element
+      body.dataset.jumpBound = "1";
+      body.addEventListener("scroll", update, { passive: true });
+    }
+    update();
+
+    const go = (top) => (e) => {
+      e.stopPropagation();
+      body.scrollTo({ top, behavior: uiSettings.saoAnimate === false ? "auto" : "smooth" });
+    };
+    up.onclick = go(0);
+    down.onclick = go(body.scrollHeight);
+  });
 }
 
 function saoLogHtml() {
@@ -4987,7 +5040,7 @@ function renderSaoSkin() {
       const help = saoHelpPanel();
       panelHtml = `<div class="rpg-sao-panelwrap helpshift"><div class="rpg-sao-panel">
         <h2>${escHtml(help.title)}</h2>
-        <div class="rpg-sao-body">${help.body}</div></div><div class="rpg-sao-notch"></div></div>`;
+        <div class="rpg-sao-body" data-scroll-key="help">${help.body}</div><div class="rpg-sao-jumps"><button class="rpg-sao-jumpto up" title="Back to the top">\u25B2</button><button class="rpg-sao-jumpto down" title="To the bottom">\u25BC</button></div></div><div class="rpg-sao-notch"></div></div>`;
     } else if (!saoMin && saoPanel && saoPanel !== "gear") {
       const built = saoPanel === "status" ? saoStatusPanel()
                   : saoPanel === "bonds" ? saoBondsPanel()
@@ -4997,16 +5050,16 @@ function renderSaoSkin() {
       panelHtml = `<div class="rpg-sao-panelwrap"><div class="rpg-sao-panel">
         <h2>${escHtml(built.title)}</h2>
         ${saoPanel === "status" ? saoWhoStrip() : ""}
-        <div class="rpg-sao-body">${built.body}</div></div><div class="rpg-sao-notch"></div></div>`;
+        <div class="rpg-sao-body" data-scroll-key="${escAttr(saoPanelScrollKey())}">${built.body}</div><div class="rpg-sao-jumps"><button class="rpg-sao-jumpto up" title="Back to the top">\u25B2</button><button class="rpg-sao-jumpto down" title="To the bottom">\u25BC</button></div></div><div class="rpg-sao-notch"></div></div>`;
     }
 
     const menuHtml = (!saoMin && saoPanel === "gear")
-      ? `<div class="rpg-sao-menuwrap${saoHelpOpen ? " hashelp" : ""}"><div class="rpg-sao-menu">${saoSettingsHtml()}</div><div class="rpg-sao-notch"></div></div>` : "";
+      ? `<div class="rpg-sao-menuwrap${saoHelpOpen ? " hashelp" : ""}"><div class="rpg-sao-menu" data-scroll-key="menu">${saoSettingsHtml()}</div><div class="rpg-sao-notch"></div></div>` : "";
 
     // --- clock ---
     const t = rpgState.world_time || {};
     const clockHtml = saoMin ? "" : `<div class="rpg-sao-clockwrap" data-drag="clock">
-      ${saoTimersOpen ? `<div class="rpg-sao-timers">${saoTimersHtml()}</div>` : ""}
+      ${saoTimersOpen ? `<div class="rpg-sao-timers" data-scroll-key="timers">${saoTimersHtml()}</div>` : ""}
       <button class="rpg-sao-clock" id="rpg-sao-clock">
         <span class="rpg-sao-dot ${saoIndicatorClass(latest.status)}"></span>
         <span class="rpg-sao-glyph">${getWeatherEmoji(t.weather)}</span>
@@ -5024,13 +5077,18 @@ function renderSaoSkin() {
           <button id="rpg-sao-layout-done">Done</button></div>`
       : "";
 
+    saoSaveScroll(container);
     container.innerHTML = SAO_CSS + vitals + orbs + panelHtml + menuHtml + clockHtml + layoutBar;
+    saoRestoreScroll(container);
 
     saoFitName();          // may change the bar width, so run it first
     saoPaintBars();
     saoPlacePanels();
+    saoBindJumps();
     requestAnimationFrame(() => {
       saoFitName(); saoPaintBars(); saoPlacePanels();
+      saoRestoreScroll(container);
+      saoBindJumps();
       saoBindDragging(); saoDrawGhosts();
     });
     saoBind();
@@ -5471,6 +5529,18 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-sao-changes li.bad::before{background:#c0392b}
 .rpg-sao-empty.small{font-size:11.5px; margin:2px 0 0}
 #rpg-sao-log-more{margin-top:8px; width:100%}
+
+/* jump-to-top / bottom, floating over the panel's lower right */
+.rpg-sao-jumps{position:absolute; right:10px; bottom:10px; z-index:2;
+  display:flex; flex-direction:column; gap:5px; pointer-events:none}
+.rpg-sao-jumpto{width:28px; height:28px; border-radius:50%; padding:0; cursor:pointer;
+  font-size:10px; line-height:1; color:#fff;
+  background:radial-gradient(circle at 34% 28%, rgba(120,120,120,.85), rgba(40,40,44,.88));
+  border:1.5px solid rgba(255,255,255,.7); box-shadow:0 2px 6px rgba(0,0,0,.4);
+  opacity:0; transform:scale(.7); pointer-events:none;
+  transition:opacity .18s, transform .18s}
+.rpg-sao-jumpto.show{opacity:.92; transform:none; pointer-events:auto}
+.rpg-sao-jumpto:hover{opacity:1}
 .rpg-sao-vline{display:flex; justify-content:space-between; font-size:13px;
   padding:3px 0; border-bottom:1px solid var(--rpg-sao-rule)}
 .rpg-sao-sub{margin-top:9px; font-size:10px; font-weight:700; letter-spacing:1.4px; color:var(--rpg-sao-ink-dim)}
