@@ -4294,22 +4294,30 @@ const ALO_MP = ["#7fb3e8", "#2d65a8"];
 // The bars are a fixed length; the name compartment takes what the name
 // needs (up to a cap) and the plate grows to fit, so a long name makes the
 // plate longer instead of making the bars shorter.
-function aloPlateGeom(H, nameW, barLen) {
+function aloPlateGeom(H, nameW, barLen, bare, barH) {
+  if (bare) {
+    // characters: just the name and the bars, no plate and no divider
+    const div = Math.round(nameW + 8);
+    const bx = div + 2;
+    const bEnd = bx + barLen;
+    return { L: 0, R: 0, div, bx, bEnd, W: Math.round(bEnd + 2), bare: true, bh: H - 2, nameLeft: 0 };
+  }
   const L = Math.max(5, Math.round(H * 0.42));     // left point depth
   const R = Math.max(5, Math.round(H * 0.5));      // right point depth
   const div = Math.round(L + 5 + nameW + 8);       // divider after the name
   const bx = div + 5;
   const bEnd = bx + barLen;
   const W = Math.round(bEnd + R * 0.45 + 3);
-  return { L, R, div, bx, bEnd, W };
+  return { L, R, div, bx, bEnd, W, bare: false, bh: barH || 0, nameLeft: L + 5 };
 }
 
 function aloPlateSvg(W, H, geo, hp, mp, hpc, mpc) {
   const { L, R, div, bx, bEnd } = geo;
   const mid = H / 2;
   const plate = `M${L} 1H${W - R}L${W - 1} ${mid}L${W - R} ${H - 1}H${L}L1 ${mid}Z`;
-  const pad = Math.max(2, Math.round(H * 0.17));
-  const by = pad, bh = H - pad * 2;
+  const bh = geo.bh ? Math.min(geo.bh, H - 2) : H - Math.max(2, Math.round(H * 0.17)) * 2;
+  const by = Math.round((H - bh) / 2);
+  const pad = by;
   const tipIn = Math.max(3, bh * 0.6);
   const bw = Math.max(4, bEnd - bx);
   const frame = `M${bx} ${by}H${bEnd - tipIn}L${bEnd} ${mid}L${bEnd - tipIn} ${by + bh}H${bx}Z`;
@@ -4329,18 +4337,17 @@ function aloPlateSvg(W, H, geo, hp, mp, hpc, mpc) {
       <linearGradient id="m${id}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="${mpc[0]}"/><stop offset="1" stop-color="${mpc[1]}"/></linearGradient>
       <linearGradient id="b${id}" x1="0" y1="0" x2="1" y2="0">
-        <stop offset="0" stop-color="rgba(58,62,70,.30)"/>
-        <stop offset="${(div / W).toFixed(3)}" stop-color="rgba(58,62,70,.72)"/>
-        <stop offset="${(Math.min(0.97, (bEnd - tipIn) / W)).toFixed(3)}" stop-color="rgba(58,62,70,.52)"/>
-        <stop offset="1" stop-color="rgba(58,62,70,.08)"/></linearGradient>
+        <stop offset="0" stop-color="rgba(58,62,70,.78)"/>
+        <stop offset="${(div / W).toFixed(3)}" stop-color="rgba(58,62,70,.66)"/>
+        <stop offset="1" stop-color="rgba(58,62,70,0)"/></linearGradient>
       <linearGradient id="v${id}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="rgba(255,255,255,.10)"/><stop offset=".5" stop-color="rgba(255,255,255,0)"/>
         <stop offset="1" stop-color="rgba(0,0,0,.14)"/></linearGradient>
       <clipPath id="c${id}"><path d="${frame}"/></clipPath>
     </defs>
-    <path d="${plate}" fill="url(#b${id})"/>
+    ${geo.bare ? "" : `<path d="${plate}" fill="url(#b${id})"/>
     <path d="${plate}" fill="url(#v${id})"/>
-    <line x1="${div}" y1="${pad * 0.7}" x2="${div}" y2="${H - pad * 0.7}" stroke="rgba(228,230,236,.85)" stroke-width="1.2"/>
+    <line x1="${div}" y1="${Math.round(H * 0.16)}" x2="${div}" y2="${H - Math.round(H * 0.16)}" stroke="rgba(228,230,236,.85)" stroke-width="1.2"/>`}
     <g clip-path="url(#c${id})">
       <rect x="${bx}" y="${by}" width="${bw}" height="${hpH}" fill="rgba(225,228,236,.26)"/>
       <rect x="${bx}" y="${seam}" width="${bw}" height="${mpH}" fill="rgba(225,228,236,.2)"/>
@@ -4363,6 +4370,7 @@ function aloSplitTitle(full) {
 
 const ALO_NAME_CAP = { big: 170, small: 128 };   // px at 100%; past this, ellipsis
 const ALO_BAR_LEN  = { big: 230, small: 150 };
+const ALO_PLAYER_BAR_H = 20;   // px at 100%; the plate is taller, the bars aren't
 
 function saoPaintAloPlates() {
   const plates = Array.from(document.querySelectorAll(".rpg-alo-plate"));
@@ -4385,11 +4393,12 @@ function saoPaintAloPlates() {
     if (!H) return;
     const g = el.closest(".rpg-alo-group") || el;
     const nameW = Math.min(widest.get(g) || 0, ALO_NAME_CAP[small ? "small" : "big"] * ui);
-    const geo = aloPlateGeom(H, nameW, Math.round(ALO_BAR_LEN[small ? "small" : "big"] * ui));
+    const geo = aloPlateGeom(H, nameW, Math.round(ALO_BAR_LEN[small ? "small" : "big"] * ui),
+                             small, Math.round(ALO_PLAYER_BAR_H * ui));
 
     el.style.width = `${geo.W}px`;
     const nameEl = el.querySelector(".rpg-alo-name");
-    if (nameEl) { nameEl.style.left = `${geo.L + 5}px`; nameEl.style.width = `${Math.ceil(nameW)}px`; }
+    if (nameEl) { nameEl.style.left = `${geo.nameLeft}px`; nameEl.style.width = `${Math.ceil(nameW)}px`; }
 
     const host = el.querySelector(".rpg-alo-svg");
     if (!host) return;
@@ -5807,10 +5816,12 @@ const SAO_CSS = `<style id="rpg-sao-style">
 /* ALfheim plates. Width is set by the painter: the bars are a fixed length
    and the name compartment takes what the longest name in its group needs,
    so a long name widens the plate rather than shortening the bars. */
-.rpg-alo-plate{position:relative; height:calc(30px * var(--rpg-sao-ui, 1)); width:calc(300px * var(--rpg-sao-ui, 1)); max-width:none}
-.rpg-alo-plate.small{height:calc(20px * var(--rpg-sao-ui, 1))}
+.rpg-alo-plate{position:relative; height:calc(40px * var(--rpg-sao-ui, 1)); width:calc(300px * var(--rpg-sao-ui, 1)); max-width:none}
+.rpg-alo-plate.small{height:calc(18px * var(--rpg-sao-ui, 1))}
 .rpg-alo-svg{position:absolute; inset:0}
-.rpg-alo-svg svg{display:block; filter:drop-shadow(0 1px 2px rgba(0,0,0,.35))}
+.rpg-alo-svg svg{display:block}
+.rpg-alo-plate:not(.small) .rpg-alo-svg svg{filter:drop-shadow(0 1px 2px rgba(0,0,0,.3))}
+.rpg-alo-plate.small .rpg-alo-name{text-shadow:0 1px 2px rgba(0,0,0,.7)}
 .rpg-alo-name{position:absolute; top:0; bottom:0; z-index:1;
   display:flex; align-items:center; box-sizing:border-box;
   font-size:calc(12px * var(--rpg-sao-ui, 1)); font-weight:600; letter-spacing:.3px; color:#f4f2ec;
@@ -5827,7 +5838,7 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-alo-unit:hover .rpg-alo-name{text-decoration:underline; text-underline-offset:2px}
 .rpg-alo-unit.foe .rpg-alo-name{color:#f2a99d}
 .rpg-alo-unitnums{display:flex; flex-direction:column; justify-content:center;
-  height:calc(20px * var(--rpg-sao-ui, 1)); font-size:calc(9px * var(--rpg-sao-ui, 1)); line-height:1.15; color:#c8c4ba; white-space:nowrap}
+  height:calc(18px * var(--rpg-sao-ui, 1)); font-size:calc(9px * var(--rpg-sao-ui, 1)); line-height:1.15; color:#c8c4ba; white-space:nowrap}
 .rpg-alo-unitnums span:first-child{color:#dcd8cf; font-weight:600}
 
 /* the stack sizes to its widest plate instead of a fixed width, so meters and
