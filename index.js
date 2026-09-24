@@ -530,6 +530,73 @@ function currentChatKey(context) {
   return [context?.chatId, context?.characterId, context?.groupId].map((v) => String(v ?? "")).join("|");
 }
 
+// ---- word-level diff, so a change can be shown instead of hunted for ----
+function wordDiff(a, b) {
+  // Words are compared without trailing punctuation, so "ATK*1.4." and
+  // "ATK*1.4" match when a sentence simply carries on. Shown as written.
+  const tok = (t) => String(t ?? "").split(/\s+/).filter(Boolean)
+    .map((w) => ({ w, k: w.replace(/[.,;:!?]+$/, "").toLowerCase() || w }));
+  const A = tok(a), B = tok(b);
+  if (A.length * B.length > 160000) return null;          // absurdly long: don't try
+  const n = A.length, m = B.length;
+  const L = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) {
+    L[i][j] = A[i].k === B[j].k ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  }
+  const ops = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i].k === B[j].k) { ops.push({ op: "=", w: B[j].w, k: B[j].k }); i++; j++; }
+    else if (L[i + 1][j] >= L[i][j + 1]) { ops.push({ op: "-", w: A[i].w, k: A[i].k }); i++; }
+    else { ops.push({ op: "+", w: B[j].w, k: B[j].k }); j++; }
+  }
+  while (i < n) { ops.push({ op: "-", w: A[i].w, k: A[i].k }); i++; }
+  while (j < m) { ops.push({ op: "+", w: B[j].w, k: B[j].k }); j++; }
+  return ops;
+}
+
+// Only the changed stretches, with a few words either side for context.
+// `style` is "toast" (inline styles, dark-on-blue) or "log" (classes).
+function wordDiffHtml(a, b, style) {
+  const ops = wordDiff(a, b);
+  if (!ops) return `${escHtml(b)}`;
+  const del = style === "toast"
+    ? (w) => `<span style="text-decoration:line-through; color:#ffd6cf; background:rgba(0,0,0,.18); padding:0 2px; border-radius:2px;">${escHtml(w)}</span>`
+    : (w) => `<del class="rpg-wd-del">${escHtml(w)}</del>`;
+  const ins = style === "toast"
+    ? (w) => `<b style="color:#e4ffd9; background:rgba(255,255,255,.14); padding:0 2px; border-radius:2px;">${escHtml(w)}</b>`
+    : (w) => `<ins class="rpg-wd-ins">${escHtml(w)}</ins>`;
+
+  const CTX = 3;
+  const keep = new Array(ops.length).fill(false);
+  ops.forEach((o, k) => {
+    if (o.op === "=") return;
+    for (let x = Math.max(0, k - CTX); x <= Math.min(ops.length - 1, k + CTX); x++) keep[x] = true;
+  });
+  const parts = [];
+  let gap = false;
+  ops.forEach((o, k) => {
+    if (!keep[k]) { gap = true; return; }
+    if (gap || (k > 0 && parts.length === 0)) parts.push("\u2026");
+    gap = false;
+    parts.push(o.op === "=" ? escHtml(o.w) : o.op === "-" ? del(o.w) : ins(o.w));
+  });
+  if (!keep[ops.length - 1]) parts.push("\u2026");
+  return parts.join(" ");
+}
+
+// Is this a loss worth interrupting you for? A description losing a chunk,
+// or losing a number (a stat, a cost, a count), yes. A reworded phrase, no.
+function isMeaningfulLoss(before, after) {
+  const ops = wordDiff(before, after);
+  if (!ops) return String(after).length < String(before).length * 0.85;
+  const removed = ops.filter((o) => o.op === "-").map((o) => o.k);
+  const added = ops.filter((o) => o.op === "+").map((o) => o.k);
+  const lostChars = removed.join(" ").length - added.join(" ").length;
+  const numbersLost = removed.filter((w) => /\d/.test(w)).some((w) => !added.includes(w));
+  return numbersLost || lostChars >= 24 || lostChars >= String(before).length * 0.15;
+}
+
 // Compares the latest block with the block from the turn before it, not with
 // whatever the last scan happened to see. Scans repeat constantly, and a
 // swipe, a deletion or a reload would otherwise be read as the model editing
@@ -570,21 +637,30 @@ function maybeReportListChanges() {
   if (!diffs.length) return;
   console.log("RPG HUD: list changes", diffs);
 
-  // a description that got noticeably shorter is the one worth a heads-up —
-  // it may have been trimmed, or it may just be a rewrite, so say "changed"
-  const shrunk = diffs.filter((d) => d.type === "lost");
-  if (!shrunk.length) return;
+  // Any description that lost or swapped even one word gets flagged. Pure
+  // additions (the AI adding detail) don't lose anything, so those stay in the
+  // log. A lost number or a big chunk is marked as the more serious kind.
+  const hits = diffs
+    .filter((d) => (d.type === "lost" || d.type === "changed") && d.before)
+    .filter((d) => (wordDiff(d.before, d.name) || [{ op: "-" }]).some((o) => o.op === "-"))
+    .map((d) => ({ ...d, serious: isMeaningfulLoss(d.before, d.name) }))
+    .sort((x, y) => (y.serious ? 1 : 0) - (x.serious ? 1 : 0));
+  if (!hits.length) return;
 
-  const shown = shrunk.slice(0, 4);
+  const shown = hits.slice(0, 3);
   const body =
     shown.map((d) =>
-      `${escHtml(d.label)}: <b>${escHtml(d.name)}</b>` +
-      `<br><span style="opacity:0.7;">was: ${escHtml(d.before)}</span>`
+      `${escHtml(d.label)}: <b>${escHtml(entryBaseName(d.name) || d.name)}</b>` +
+      `<br><span style="opacity:.95;">${wordDiffHtml(d.before, d.name, "toast")}</span>`
     ).join("<br><br>") +
-    (shrunk.length > 4 ? `<br><br>(+${shrunk.length - 4} more)` : "");
+    (hits.length > 3 ? `<br><br>(+${hits.length - 3} more in the turn log)` : "");
 
-  if (window.toastr?.info) {
-    window.toastr.info(body, "\u{1F4DD} Description changed", { escapeHtml: false });
+  const serious = hits.some((d) => d.serious);
+  if (window.toastr) {
+    const fn = serious ? (window.toastr.warning || window.toastr.info) : window.toastr.info;
+    fn.call(window.toastr, body,
+      serious ? "\u26A0\uFE0F Description lost detail" : "\u{1F4DD} Description changed",
+      { escapeHtml: false });
   }
 }
 
@@ -3625,7 +3701,8 @@ function tDiffLists(out, a, b) {
       if (!A.has(k)) { out.push({ tone: "good", text: `+ ${label}: ${text}`, u: { f: "list", key, k } }); return; }
       const before = A.get(k);
       if (before === text || stripStatusTags(before) === stripStatusTags(text)) return;
-      out.push({ tone: "neutral", text: `~ ${label}: ${stripStatusTags(before)} \u2192 ${stripStatusTags(text)}`, u: { f: "list", key, k } });
+      out.push({ tone: "neutral", text: `~ ${label}: ${stripStatusTags(before)} \u2192 ${stripStatusTags(text)}`, u: { f: "list", key, k },
+        diff: { label, name: entryBaseName(text) || text, before: stripStatusTags(before), after: stripStatusTags(text) } });
     });
     A.forEach((text, k) => { if (!B.has(k)) out.push({ tone: "bad", text: `\u2212 ${label}: ${text}`, u: { f: "list", key, k } }); });
   });
@@ -5257,7 +5334,9 @@ function saoLogHtml() {
       </button>
       ${t.changes.length
         ? `<ul class="rpg-sao-changes">${t.changes.map((c, ci) => `<li class="${c.tone}">
-            <span>${escHtml(c.text)}</span>${ti === 0 && c.u
+            <span>${c.diff
+              ? `~ ${escHtml(c.diff.label)}: <b>${escHtml(c.diff.name)}</b><br><span class="rpg-wd">${wordDiffHtml(c.diff.before, c.diff.after, "log")}</span>`
+              : escHtml(c.text)}</span>${ti === 0 && c.u
               ? `<button class="rpg-sao-revert" data-ci="${ci}" data-text="${escAttr(c.text)}" title="Undo just this change">\u21B6</button>`
               : ""}</li>`).join("")}</ul>`
         : `<p class="rpg-sao-empty small">No changes.</p>`}
@@ -6173,6 +6252,9 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-sao-logtools{display:flex; gap:6px; justify-content:flex-end; margin:-2px 0 6px}
 .rpg-sao-changes li{display:flex; align-items:flex-start; justify-content:space-between; gap:6px}
 .rpg-sao-changes li > span{min-width:0; overflow-wrap:anywhere}
+.rpg-wd{font-size:11.5px; color:var(--rpg-sao-ink-dim)}
+.rpg-wd-del{color:#b23a2a; text-decoration:line-through; background:rgba(178,58,42,.08); padding:0 1px}
+.rpg-wd-ins{color:#2f7a26; text-decoration:none; font-weight:700; background:rgba(47,122,38,.08); padding:0 1px}
 .rpg-sao-revert{flex:0 0 auto; width:20px; height:18px; padding:0; margin-top:-1px; cursor:pointer;
   font-size:11px; line-height:1; border-radius:2px; color:var(--rpg-sao-ink-dim);
   background:transparent; border:1px solid var(--rpg-sao-rule); opacity:.55}
