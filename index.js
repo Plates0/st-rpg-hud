@@ -4291,23 +4291,34 @@ function saoTweenValue(key, target, draw, alive) {
 
 const ALO_MP = ["#7fb3e8", "#2d65a8"];
 
-function aloPlateSvg(W, H, nameW, hp, mp, hpc, mpc) {
-  const L = Math.max(6, Math.round(H * 0.42));     // left point depth
-  const R = Math.max(6, Math.round(H * 0.5));      // right point depth
+// The bars are a fixed length; the name compartment takes what the name
+// needs (up to a cap) and the plate grows to fit, so a long name makes the
+// plate longer instead of making the bars shorter.
+function aloPlateGeom(H, nameW, barLen) {
+  const L = Math.max(5, Math.round(H * 0.42));     // left point depth
+  const R = Math.max(5, Math.round(H * 0.5));      // right point depth
+  const div = Math.round(L + 5 + nameW + 8);       // divider after the name
+  const bx = div + 5;
+  const bEnd = bx + barLen;
+  const W = Math.round(bEnd + R * 0.45 + 3);
+  return { L, R, div, bx, bEnd, W };
+}
+
+function aloPlateSvg(W, H, geo, hp, mp, hpc, mpc) {
+  const { L, R, div, bx, bEnd } = geo;
   const mid = H / 2;
   const plate = `M${L} 1H${W - R}L${W - 1} ${mid}L${W - R} ${H - 1}H${L}L1 ${mid}Z`;
-
-  const div = clamp(nameW + L + 10, L + 26, W * 0.45);
-  const pad = Math.max(3, Math.round(H * 0.17));
-  const bx = div + 6, by = pad, bh = H - pad * 2;
-  const bEnd = W - Math.round(R * 0.45) - 3;
-  const tipIn = Math.max(4, bh * 0.6);
+  const pad = Math.max(2, Math.round(H * 0.17));
+  const by = pad, bh = H - pad * 2;
+  const tipIn = Math.max(3, bh * 0.6);
   const bw = Math.max(4, bEnd - bx);
   const frame = `M${bx} ${by}H${bEnd - tipIn}L${bEnd} ${mid}L${bEnd - tipIn} ${by + bh}H${bx}Z`;
 
-  const gap = Math.max(1, Math.round(bh * 0.09));
-  const hpH = Math.round((bh - gap) * 0.6);
-  const mpY = by + hpH + gap, mpH = by + bh - mpY;
+  // HP and MP share the frame almost evenly, HP a touch heavier, meeting on a
+  // silver seam instead of a dark gap
+  const hpH = Math.round(bh * 0.53);
+  const seam = by + hpH;
+  const mpH = by + bh - seam;
   const id = "p" + (++saoSvgUid);
   const w = (p) => (bw * clamp(p, 0, 100)) / 100;
 
@@ -4317,45 +4328,104 @@ function aloPlateSvg(W, H, nameW, hp, mp, hpc, mpc) {
         <stop offset="0" stop-color="${hpc[0]}"/><stop offset="1" stop-color="${hpc[1]}"/></linearGradient>
       <linearGradient id="m${id}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="${mpc[0]}"/><stop offset="1" stop-color="${mpc[1]}"/></linearGradient>
-      <linearGradient id="s${id}" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="rgba(255,255,255,.10)"/><stop offset="1" stop-color="rgba(0,0,0,.18)"/></linearGradient>
+      <linearGradient id="b${id}" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="rgba(58,62,70,.30)"/>
+        <stop offset="${(div / W).toFixed(3)}" stop-color="rgba(58,62,70,.72)"/>
+        <stop offset="${(Math.min(0.97, (bEnd - tipIn) / W)).toFixed(3)}" stop-color="rgba(58,62,70,.52)"/>
+        <stop offset="1" stop-color="rgba(58,62,70,.08)"/></linearGradient>
+      <linearGradient id="v${id}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="rgba(255,255,255,.10)"/><stop offset=".5" stop-color="rgba(255,255,255,0)"/>
+        <stop offset="1" stop-color="rgba(0,0,0,.14)"/></linearGradient>
       <clipPath id="c${id}"><path d="${frame}"/></clipPath>
     </defs>
-    <path d="${plate}" fill="rgba(30,32,38,.74)"/>
-    <path d="${plate}" fill="url(#s${id})"/>
-    <path d="${plate}" fill="none" stroke="rgba(236,236,240,.82)" stroke-width="1.2" stroke-linejoin="miter"/>
-    <line x1="${div}" y1="${pad * 0.6}" x2="${div}" y2="${H - pad * 0.6}" stroke="rgba(236,236,240,.8)" stroke-width="1.2"/>
+    <path d="${plate}" fill="url(#b${id})"/>
+    <path d="${plate}" fill="url(#v${id})"/>
+    <line x1="${div}" y1="${pad * 0.7}" x2="${div}" y2="${H - pad * 0.7}" stroke="rgba(228,230,236,.85)" stroke-width="1.2"/>
     <g clip-path="url(#c${id})">
       <rect x="${bx}" y="${by}" width="${bw}" height="${hpH}" fill="rgba(225,228,236,.26)"/>
-      <rect x="${bx}" y="${mpY}" width="${bw}" height="${mpH}" fill="rgba(225,228,236,.2)"/>
+      <rect x="${bx}" y="${seam}" width="${bw}" height="${mpH}" fill="rgba(225,228,236,.2)"/>
+      ${mp > 0 ? `<rect x="${bx}" y="${seam}" width="${w(mp)}" height="${mpH}" fill="url(#m${id})"/>` : ""}
       ${hp > 0 ? `<rect x="${bx}" y="${by}" width="${w(hp)}" height="${hpH}" fill="url(#h${id})"/>` : ""}
-      ${mp > 0 ? `<rect x="${bx}" y="${mpY}" width="${w(mp)}" height="${mpH}" fill="url(#m${id})"/>` : ""}
+      <line x1="${bx}" y1="${seam}" x2="${bEnd}" y2="${seam}" stroke="rgba(214,218,226,.9)" stroke-width="1"/>
     </g>
-    <path d="${frame}" fill="none" stroke="rgba(236,236,240,.7)" stroke-width="1" stroke-linejoin="miter"/>
+    <path d="${frame}" fill="none" stroke="rgba(236,236,240,.78)" stroke-width="1" stroke-linejoin="miter"/>
   </svg>`;
 }
 
-function saoPaintAloPlates() {
-  document.querySelectorAll(".rpg-alo-plate").forEach((el) => {
-    const host = el.querySelector(".rpg-alo-svg");
-    const nameEl = el.querySelector(".rpg-alo-name");
-    const W = el.clientWidth, H = el.clientHeight;
-    if (!W || !H || !host) return;
+// Titles ride above the plate: "Aldric, Warden of the Gate" or
+// "Aldric - Warden of the Gate" shows "Aldric" on the plate and the rest above.
+function aloSplitTitle(full) {
+  const text = String(full || "").trim();
+  const m = text.match(/^(.+?)(?:,\s+|\s+[\u2014\u2013-]\s+)(.+)$/);
+  if (m && m[1].trim() && m[2].trim()) return { name: m[1].trim(), title: m[2].trim() };
+  return { name: text, title: "" };
+}
 
-    const nameW = nameEl ? nameEl.offsetWidth : 0;
+const ALO_NAME_CAP = { big: 170, small: 128 };   // px at 100%; past this, ellipsis
+const ALO_BAR_LEN  = { big: 230, small: 150 };
+
+function saoPaintAloPlates() {
+  const plates = Array.from(document.querySelectorAll(".rpg-alo-plate"));
+  if (!plates.length) return;
+  const c = document.getElementById("rpg-hud-container");
+  const ui = parseFloat(c ? getComputedStyle(c).getPropertyValue("--rpg-sao-ui") : "") || 1;
+
+  // Everyone in a group shares the widest name's compartment, so their bars
+  // start and end in the same place. The player's plate is its own group.
+  const widest = new Map();
+  plates.forEach((el) => {
+    const g = el.closest(".rpg-alo-group") || el;
+    const n = el.querySelector(".rpg-alo-name");
+    widest.set(g, Math.max(widest.get(g) || 0, n ? n.scrollWidth : 0));
+  });
+
+  plates.forEach((el) => {
+    const small = el.classList.contains("small");
+    const H = el.clientHeight;
+    if (!H) return;
+    const g = el.closest(".rpg-alo-group") || el;
+    const nameW = Math.min(widest.get(g) || 0, ALO_NAME_CAP[small ? "small" : "big"] * ui);
+    const geo = aloPlateGeom(H, nameW, Math.round(ALO_BAR_LEN[small ? "small" : "big"] * ui));
+
+    el.style.width = `${geo.W}px`;
+    const nameEl = el.querySelector(".rpg-alo-name");
+    if (nameEl) { nameEl.style.left = `${geo.L + 5}px`; nameEl.style.width = `${Math.ceil(nameW)}px`; }
+
+    const host = el.querySelector(".rpg-alo-svg");
+    if (!host) return;
+    const key = el.dataset.key || "p";
     const hpT = clamp(parseFloat(el.dataset.hp) || 0, 0, 100);
     const mpT = clamp(parseFloat(el.dataset.mp) || 0, 0, 100);
-    let hpV = saoLastPct.has("p:hp") ? saoLastPct.get("p:hp") : hpT;
-    let mpV = saoLastPct.has("p:mp") ? saoLastPct.get("p:mp") : mpT;
-
+    let hpV = saoLastPct.has(`${key}:hp`) ? saoLastPct.get(`${key}:hp`) : hpT;
+    let mpV = saoLastPct.has(`${key}:mp`) ? saoLastPct.get(`${key}:mp`) : mpT;
     const draw = () => {
-      host.innerHTML = aloPlateSvg(W, H, nameW, hpV, mpV,
+      host.innerHTML = aloPlateSvg(geo.W, H, geo, hpV, mpV,
         [el.dataset.hp1, el.dataset.hp2], [el.dataset.mp1, el.dataset.mp2]);
     };
     const alive = () => el.isConnected;
-    saoTweenValue("p:hp", hpT, (v) => { hpV = v; draw(); }, alive);
-    saoTweenValue("p:mp", mpT, (v) => { mpV = v; draw(); }, alive);
+    saoTweenValue(`${key}:hp`, hpT, (v) => { hpV = v; draw(); }, alive);
+    saoTweenValue(`${key}:mp`, mpT, (v) => { mpV = v; draw(); }, alive);
   });
+}
+
+// a party member, NPC or enemy as a small ALfheim plate with HP over MP
+function aloUnitRow(view, idx, key, foe) {
+  const hp = saoPct(view.hp_curr, view.hp_max);
+  const mp = saoPct(view.en?.curr, view.en?.max);
+  const hs = saoUnitStops(view);
+  const { name, title } = aloSplitTitle(view.name);
+  const num = (a, b) => (a === undefined || a === null || a === "") ? "\u2013" : `${escHtml(a)}/${escHtml(b)}`;
+  return `<div class="rpg-alo-row">
+    <div class="rpg-alo-unit rpg-sao-jump${foe ? " foe" : ""}" data-idx="${idx}" title="${escAttr(view.name)}">
+      ${title ? `<div class="rpg-alo-title">${escHtml(title)}</div>` : ""}
+      <div class="rpg-alo-plate small" data-key="${escAttr(key)}" data-hp="${hp}" data-mp="${mp}"
+        data-hp1="${hs[0]}" data-hp2="${hs[1]}" data-mp1="${ALO_MP[0]}" data-mp2="${ALO_MP[1]}">
+        <div class="rpg-alo-svg"></div><span class="rpg-alo-name">${escHtml(name)}</span>
+      </div>
+    </div>
+    <div class="rpg-alo-unitnums"><span>${num(view.hp_curr, view.hp_max)}</span>
+      <span>${num(view.en?.curr, view.en?.max)}</span></div>
+  </div>`;
 }
 
 function saoPaintBars() {
@@ -4944,12 +5014,92 @@ function saoBindJumps() {
   });
 }
 
+// ---- undo / redo the latest turn ----
+// Writes the previous turn's block back into the latest message, so every
+// change that turn made is reverted at once. Only the <rpg_state> is touched,
+// never the story text. One level, with redo until the message changes again.
+let turnUndo = null;   // { key, idx, before, after }
+
+function setMessageText(msg, text) {
+  msg.mes = text;
+  // the active swipe keeps its own copy; without this, swiping away and back
+  // would bring the undone state straight back
+  if (Array.isArray(msg.swipes) && Number.isInteger(msg.swipe_id) && msg.swipe_id in msg.swipes) {
+    msg.swipes[msg.swipe_id] = text;
+  }
+}
+
+function afterTurnEdit(ctx, idx) {
+  const msg = ctx.chat[idx];
+  try { ctx.updateMessageBlock?.(idx, msg); } catch {}
+  try { window.saveChat?.(); } catch (e) { console.warn("RPG HUD: saveChat failed", e); }
+  // our own edit, so the description alert shouldn't read it as the model's
+  alertSig = `${idx}|${rpgInnerFromMessage(msg.mes)}`;
+  alertIdx = idx;
+  invalidateHistoryMemory();
+  turnLogCache = { sig: "", turns: [] };
+  try { checkMessage(true); } catch {}
+  renderRPG();
+}
+
+function saoUndoLastTurn() {
+  let ctx;
+  try { ctx = SillyTavern.getContext(); } catch { return; }
+  const turns = rpgTurnsOf(ctx?.chat);
+  if (turns.length < 2) return;
+  const last = turns[turns.length - 1], prev = turns[turns.length - 2];
+  const msg = ctx.chat[last.idx];
+
+  const ok = confirm(
+    "Undo the latest turn?\n\n" +
+    "Its rpg_state goes back to exactly how it was the turn before, reverting " +
+    "every change that turn made. The story text isn't touched.\n\n" +
+    "You can redo it until the chat changes."
+  );
+  if (!ok) return;
+
+  const before = msg.mes;
+  const after = before.replace(/(<rpg_state\b[^>]*>)[\s\S]*?(<\/rpg_state>)/i,
+    (m, open, close) => `${open}\n${prev.inner}\n${close}`);
+  if (after === before) return;
+
+  setMessageText(msg, after);
+  turnUndo = { key: currentChatKey(ctx), idx: last.idx, before, after };
+  afterTurnEdit(ctx, last.idx);
+  if (window.toastr) window.toastr.info("Latest turn undone.");
+}
+
+function saoCanRedo(ctx) {
+  if (!turnUndo || !ctx?.chat) return false;
+  return currentChatKey(ctx) === turnUndo.key && ctx.chat[turnUndo.idx]?.mes === turnUndo.after;
+}
+
+function saoRedoLastTurn() {
+  let ctx;
+  try { ctx = SillyTavern.getContext(); } catch { return; }
+  if (!saoCanRedo(ctx)) { turnUndo = null; renderRPG(); return; }
+  setMessageText(ctx.chat[turnUndo.idx], turnUndo.before);
+  const idx = turnUndo.idx;
+  turnUndo = null;
+  afterTurnEdit(ctx, idx);
+  if (window.toastr) window.toastr.info("Turn restored.");
+}
+
 function saoLogHtml() {
   let chat = [];
   try { chat = SillyTavern.getContext()?.chat || []; } catch {}
   const turns = buildTurnLog(chat);
+  let ctx = null;
+  try { ctx = SillyTavern.getContext(); } catch {}
+  const redo = saoCanRedo(ctx);
+  const tools = (turns.length || redo)
+    ? `<div class="rpg-sao-logtools">
+        ${turns.length ? `<button class="rpg-sao-mini" id="rpg-sao-undo" title="Revert everything the latest turn changed">\u21B6 Undo last turn</button>` : ""}
+        ${redo ? `<button class="rpg-sao-mini" id="rpg-sao-redo">\u21B7 Redo</button>` : ""}
+      </div>`
+    : "";
   if (!turns.length) {
-    return `<p class="rpg-sao-empty">Nothing yet. Each reply that carries an rpg_state adds a turn here.</p>`;
+    return tools + `<p class="rpg-sao-empty">Nothing yet. Each reply that carries an rpg_state adds a turn here.</p>`;
   }
 
   const html = turns.slice(0, saoLogShown).map((t) => `
@@ -4966,7 +5116,7 @@ function saoLogHtml() {
   const more = turns.length > saoLogShown
     ? `<button class="rpg-sao-mini" id="rpg-sao-log-more">Show older (${turns.length - saoLogShown})</button>`
     : "";
-  return html + more;
+  return tools + html + more;
 }
 
 function saoPlacePanel() {
@@ -5043,7 +5193,7 @@ function saoHelpPanel() {
       + item("Move HUD pieces",
           "Drag the bars, the orb column and the clock wherever you like. Buttons stop responding while you're arranging, so a tap can't fire by accident. Reset puts them back.")
       + item("Turn log",
-          "In the Quests orb, the Log tab lists what changed each turn \u2014 HP, items, bonds, where you went, how much time passed. It's worked out from your chat history rather than stored, so it follows swipes and edits and covers old chats too. Tap a turn to jump to its message.")
+          "In the Quests orb, the Log tab lists what changed each turn \u2014 HP, items, bonds, where you went, how much time passed. It's worked out from your chat history rather than stored, so it follows swipes and edits and covers old chats too. Tap a turn to jump to its message. Undo last turn reverts everything the newest turn changed; Redo puts it back.")
       + item("Meters",
           "Open a character in Status and use Edit under Meters to add, rename, change or remove them. The swatch sets a colour; \u21BA puts it back to automatic. Colours follow the meter's name, so every character's Shield matches.")
       + item("Animations",
@@ -5231,13 +5381,19 @@ function renderSaoSkin() {
 
       const playerBlock = uiSettings.saoBarStyle === "alo"
         // ALfheim: one plate, name on the left, HP over MP in one arrow frame
-        ? `<div class="rpg-alo-plate" data-hp="${hpPct}" data-mp="${mpPct}"
-              data-hp1="${hpStops[0]}" data-hp2="${hpStops[1]}"
-              data-mp1="${ALO_MP[0]}" data-mp2="${ALO_MP[1]}">
-             <div class="rpg-alo-svg"></div>
-             <span class="rpg-alo-name">${shownName}</span>
-           </div>
-           <div class="rpg-alo-nums"><span><i>HP</i> ${hpText}</span><span><i>${escHtml(en.label || "MP")}</i> ${mpText}</span></div>`
+        ? (() => {
+            const t = aloSplitTitle(demo ? "Name" : pName);
+            return `<div class="rpg-alo-player">
+              ${t.title ? `<div class="rpg-alo-title">${escHtml(t.title)}</div>` : ""}
+              <div class="rpg-alo-plate" data-key="p" data-hp="${hpPct}" data-mp="${mpPct}"
+                data-hp1="${hpStops[0]}" data-hp2="${hpStops[1]}"
+                data-mp1="${ALO_MP[0]}" data-mp2="${ALO_MP[1]}">
+                <div class="rpg-alo-svg"></div>
+                <span class="rpg-alo-name">${escHtml(t.name)}</span>
+              </div>
+              <div class="rpg-alo-nums"><span><i>HP</i> ${hpText}</span><span><i>${escHtml(en.label || "MP")}</i> ${mpText}</span></div>
+            </div>`;
+          })()
         : `<div class="rpg-sao-card">
           <div class="rpg-sao-block">
             <div class="rpg-sao-name">${shownName}</div>
@@ -5250,7 +5406,7 @@ function renderSaoSkin() {
           </div>
         </div>`;
 
-      vitals = `<div class="rpg-sao-vitals${animKind === "restore" && !uiSettings.barsOnMin ? " fadein" : ""}" data-drag="vitals">
+      vitals = `<div class="rpg-sao-vitals${uiSettings.saoBarStyle === "alo" ? " alo" : ""}${animKind === "restore" && !uiSettings.barsOnMin ? " fadein" : ""}" data-drag="vitals">
         ${playerBlock}`;
 
       if (pMeters.length) {
@@ -5261,15 +5417,18 @@ function renderSaoSkin() {
           `</div></div>`;
       }
       // party and NPCs get their own sections, each independently collapsible
+      const alo = uiSettings.saoBarStyle === "alo";
       const unitGroup = (label, key, list, type) => {
         if (!list.length) return "";
         return `<div class="rpg-sao-group">` + saoDivider(label, key) +
-          `<div class="rpg-sao-slim${saoCollapsed[key] ? " hide" : ""}">` +
+          `<div class="rpg-sao-slim${alo ? " rpg-alo-group" : ""}${saoCollapsed[key] ? " hide" : ""}">` +
           list.map((u, i) => {
             const v = saoUnitView(u);
             const k = `${type}:${normBondName(u?.name) || i}`;
-            return saoSlimRow(v.name, v.hp_curr, v.hp_max, saoUnitStops(v),
-                              charIndexFor(type, i), false, k) + saoMeterRows(v, k);
+            return (alo
+              ? aloUnitRow(v, charIndexFor(type, i), k, false)
+              : saoSlimRow(v.name, v.hp_curr, v.hp_max, saoUnitStops(v), charIndexFor(type, i), false, k))
+              + saoMeterRows(v, k);
           }).join("") + `</div></div>`;
       };
       vitals += unitGroup("PARTY", "party", party, "party");
@@ -5281,10 +5440,14 @@ function renderSaoSkin() {
     if (showBars && inCombat && enemies.length) {
       foesHtml = `<div class="rpg-sao-foes"><div class="rpg-sao-group">` +
         saoDivider(`ROUND ${escHtml(rpgState.combat.round ?? 1)}`, "foes", "#f0b6ab") +
-        `<div class="rpg-sao-slim${saoCollapsed.foes ? " hide" : ""}">` +
+        `<div class="rpg-sao-slim${uiSettings.saoBarStyle === "alo" ? " rpg-alo-group" : ""}${saoCollapsed.foes ? " hide" : ""}">` +
         enemies.map((u, i) => {
           const v = saoUnitView(u);
           const k = `enemy:${normBondName(u?.name) || ""}:${i}`;
+          if (uiSettings.saoBarStyle === "alo") {
+            if (!v.isVeh && !v.name) v.name = `Enemy ${i + 1}`;
+            return aloUnitRow(v, charIndexFor("enemy", i), k, true) + saoMeterRows(v, k);
+          }
           return saoSlimRow(v.isVeh ? v.name : (u?.name || `Enemy ${i + 1}`),
             v.hp_curr, v.hp_max, saoUnitStops(v), charIndexFor("enemy", i), true, k)
             + saoMeterRows(v, k);
@@ -5467,6 +5630,8 @@ function saoBind() {
   bind("rpg-sao-diagnose", () => { saoMin = false; saoPanel = "error"; renderRPG(); });
   bind("rpg-sao-help", () => { saoHelpOpen = !saoHelpOpen; renderRPG(); });
   bind("rpg-sao-log-more", () => { saoLogShown += 20; renderRPG(); });
+  bind("rpg-sao-undo", saoUndoLastTurn);
+  bind("rpg-sao-redo", saoRedoLastTurn);
   bind("rpg-sao-move", () => {
     saoLayoutMode = true;
     saoPanel = null;
@@ -5639,17 +5804,38 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-vnum{position:absolute; right:3px; top:54%; line-height:1;
   font-size:calc(10px * var(--rpg-sao-ui, 1)); font-weight:600; color:#d3cfc4; white-space:nowrap}
 
-/* ALfheim player plate */
-.rpg-alo-plate{position:relative; width:100%; height:calc(30px * var(--rpg-sao-ui, 1))}
+/* ALfheim plates. Width is set by the painter: the bars are a fixed length
+   and the name compartment takes what the longest name in its group needs,
+   so a long name widens the plate rather than shortening the bars. */
+.rpg-alo-plate{position:relative; height:calc(30px * var(--rpg-sao-ui, 1)); width:calc(300px * var(--rpg-sao-ui, 1)); max-width:none}
+.rpg-alo-plate.small{height:calc(20px * var(--rpg-sao-ui, 1))}
 .rpg-alo-svg{position:absolute; inset:0}
-.rpg-alo-svg svg{display:block; filter:drop-shadow(0 1px 3px rgba(0,0,0,.45))}
-.rpg-alo-name{position:absolute; top:0; bottom:0; left:calc(14px * var(--rpg-sao-ui, 1)); z-index:1;
-  display:flex; align-items:center; max-width:38%;
+.rpg-alo-svg svg{display:block; filter:drop-shadow(0 1px 2px rgba(0,0,0,.35))}
+.rpg-alo-name{position:absolute; top:0; bottom:0; z-index:1;
+  display:flex; align-items:center; box-sizing:border-box;
   font-size:calc(12px * var(--rpg-sao-ui, 1)); font-weight:600; letter-spacing:.3px; color:#f4f2ec;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.rpg-alo-plate.small .rpg-alo-name{font-size:calc(10.5px * var(--rpg-sao-ui, 1)); font-weight:600}
+.rpg-alo-title{font-size:calc(9.5px * var(--rpg-sao-ui, 1)); letter-spacing:.6px; color:#cfcbc1;
+  margin:0 0 1px calc(10px * var(--rpg-sao-ui, 1)); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
 .rpg-alo-nums{display:flex; justify-content:flex-end; gap:calc(12px * var(--rpg-sao-ui, 1));
-  margin:calc(3px * var(--rpg-sao-ui, 1)) calc(6px * var(--rpg-sao-ui, 1)) 0 0; font-size:calc(10px * var(--rpg-sao-ui, 1)); font-weight:600; color:#d3cfc4}
+  margin:calc(3px * var(--rpg-sao-ui, 1)) calc(8px * var(--rpg-sao-ui, 1)) 0 0; font-size:calc(10px * var(--rpg-sao-ui, 1)); font-weight:600; color:#d3cfc4}
 .rpg-alo-nums i{font-style:normal; opacity:.6; margin-right:2px}
+
+.rpg-alo-row{display:flex; align-items:flex-end; gap:calc(6px * var(--rpg-sao-ui, 1)); margin-bottom:calc(4px * var(--rpg-sao-ui, 1))}
+.rpg-alo-unit{cursor:pointer; flex:0 0 auto}
+.rpg-alo-unit:hover .rpg-alo-name{text-decoration:underline; text-underline-offset:2px}
+.rpg-alo-unit.foe .rpg-alo-name{color:#f2a99d}
+.rpg-alo-unitnums{display:flex; flex-direction:column; justify-content:center;
+  height:calc(20px * var(--rpg-sao-ui, 1)); font-size:calc(9px * var(--rpg-sao-ui, 1)); line-height:1.15; color:#c8c4ba; white-space:nowrap}
+.rpg-alo-unitnums span:first-child{color:#dcd8cf; font-weight:600}
+
+/* the stack sizes to its widest plate instead of a fixed width, so meters and
+   other grid rows need explicit bar lengths to keep from collapsing */
+.rpg-sao-vitals.alo{width:max-content; max-width:calc(100vw - 130px)}
+.rpg-sao-vitals.alo .rpg-sao-slim{margin-right:0}
+.rpg-sao-vitals.alo .rpg-sao-row{grid-template-columns:var(--tagw) calc(150px * var(--rpg-sao-ui, 1)) var(--numw)}
+.rpg-sao-vitals.alo .rpg-sao-row.sub{grid-template-columns:var(--tagw) calc(80px * var(--rpg-sao-ui, 1)) var(--numw) 0}
 .rpg-sao-bar{position:relative; flex:1 1 auto; min-width:0; width:100%; height:calc(15px * var(--rpg-sao-ui, 1))}
 .rpg-sao-bar.mid{height:calc(11px * var(--rpg-sao-ui, 1))}
 .rpg-sao-bar.slim{height:calc(9px * var(--rpg-sao-ui, 1)); width:auto}
@@ -5815,6 +6001,7 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-sao-changes li.bad::before{background:#c0392b}
 .rpg-sao-empty.small{font-size:11.5px; margin:2px 0 0}
 #rpg-sao-log-more{margin-top:8px; width:100%}
+.rpg-sao-logtools{display:flex; gap:6px; justify-content:flex-end; margin:-2px 0 6px}
 
 /* jump-to-top / bottom, floating over the panel's lower right */
 .rpg-sao-jumps{position:absolute; right:10px; bottom:10px; z-index:2;
