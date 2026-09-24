@@ -3753,7 +3753,8 @@ let saoHelpOpen = false;
 let saoQuestTab = "quests";   // "quests" | "log"
 const saoScroll = new Map();  // scroll key -> {top, left}
 let saoLogShown = 20;         // turns rendered before "show older"
-let saoMeterEdit = null;     // null, or a draft: [{name, curr, max, color, custom}]
+let saoMeterEdit = null;
+let saoMasteryEdit = null;   // null, or a draft: [{name, curr, max, tail, orig}]     // null, or a draft: [{name, curr, max, color, custom}]
 let saoLayoutMode = false;   // drag clusters around instead of using them
 let saoAnimKind = "";        // "" | "restore" | "collapse" | "panel"
 let saoAnimUntil = 0;        // animations apply to any render before this time
@@ -4380,9 +4381,13 @@ function saoStatusPanel() {
       (st.length ? `<b>${st.map(escHtml).join(", ")}</b>` : `Healthy`) + `</div>`;
   } else {
     const list = Array.isArray(display[saoSub]) ? display[saoSub] : [];
-    h += list.length
-      ? `<ul class="rpg-sao-entries">` + list.map((it) => `<li>${escHtml(it)}</li>`).join("") + `</ul>`
-      : `<p class="rpg-sao-empty">Nothing recorded.</p>`;
+    if (saoSub === "masteries") {
+      h += saoMasteriesSection(list);
+    } else {
+      h += list.length
+        ? `<ul class="rpg-sao-entries">` + list.map(saoListItem).join("") + `</ul>`
+        : `<p class="rpg-sao-empty">Nothing recorded.</p>`;
+    }
   }
   return { title: name, body: h };
 }
@@ -4449,6 +4454,128 @@ function saoMetersSection(display) {
 
   return `<div class="rpg-sao-subhead"><span class="rpg-sao-sub">Meters</span>
       <button class="rpg-sao-mini" id="rpg-sao-m-edit">&#9998; Edit</button></div>${list}`;
+}
+
+// ---- masteries: "Name: 45/100" gets a bar, same rule as the classic skin ----
+function saoParseProgress(str) {
+  const text = String(str ?? "");
+  const m = text.match(/^(.*?):\s*(-?\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)(.*)$/);
+  if (!m) return { name: text.trim(), curr: "", max: "", tail: "" };
+  return { name: m[1].trim(), curr: m[2], max: m[3], tail: m[4] || "" };
+}
+
+// ; and | would split the entry apart in the pipe format
+const saoCleanPipe = (v) => String(v ?? "").replace(/[;|]/g, " ").trim();
+
+function saoFormatProgress(e) {
+  const name = saoCleanPipe(e.name);
+  if (!name) return "";
+  const tail = saoCleanPipe(e.tail);
+  const suffix = tail ? " " + tail : "";
+  const c = String(e.curr ?? "").trim(), mx = String(e.max ?? "").trim();
+  if (c === "" && mx === "") return name + suffix;
+  return `${name}: ${c || 0}/${mx || 100}${suffix}`;
+}
+
+function saoProgressBar(curr, max) {
+  const c = parseFloat(curr), mx = parseFloat(max);
+  if (!Number.isFinite(c) || !Number.isFinite(mx) || mx <= 0) return "";
+  return `<div class="rpg-sao-pbar"><div style="width:${clamp((c / mx) * 100, 0, 100)}%"></div></div>`;
+}
+
+function saoListItem(it) {
+  const p = saoParseProgress(it);
+  const bar = p.curr !== "" ? saoProgressBar(p.curr, p.max) : "";
+  if (!bar) return `<li>${escHtml(it)}</li>`;
+  return `<li><div class="rpg-sao-li-top"><span>${escHtml(p.name)}${p.tail ? `<i> ${escHtml(p.tail.trim())}</i>` : ""}</span>
+    <b>${escHtml(p.curr)}/${escHtml(p.max)}</b></div>${bar}</li>`;
+}
+
+function saoMasteriesSection(list) {
+  if (saoMasteryEdit) {
+    const rows = saoMasteryEdit.map((m, i) => `
+      <div class="rpg-sao-mast-edit">
+        <input type="text" class="rpg-sao-ms-name" data-i="${i}" value="${escAttr(m.name)}" placeholder="Name">
+        <input type="text" class="rpg-sao-ms-curr" data-i="${i}" value="${escAttr(m.curr)}" inputmode="decimal" placeholder="\u2013">
+        <span class="rpg-sao-m-slash">/</span>
+        <input type="text" class="rpg-sao-ms-max" data-i="${i}" value="${escAttr(m.max)}" inputmode="decimal" placeholder="\u2013">
+        <button class="rpg-sao-ms-del" data-i="${i}" title="Remove">&#10005;</button>
+      </div>`).join("");
+    return `<div class="rpg-sao-subhead"><span class="rpg-sao-sub">Masteries</span></div>
+      <div class="rpg-sao-meditor rpg-sao-mseditor">
+        ${rows || `<p class="rpg-sao-empty">No masteries. Add one below.</p>`}
+        <p class="rpg-sao-hint">Leave the numbers blank for a mastery without a bar.</p>
+        <button class="rpg-sao-mini" id="rpg-sao-ms-add">+ Add mastery</button>
+        <div class="rpg-sao-medit-actions">
+          <button class="rpg-sao-mini" id="rpg-sao-ms-cancel">Cancel</button>
+          <button class="rpg-sao-mini primary" id="rpg-sao-ms-save">Save</button>
+        </div>
+      </div>`;
+  }
+
+  const body = list.length
+    ? `<ul class="rpg-sao-entries">` + list.map(saoListItem).join("") + `</ul>`
+    : `<p class="rpg-sao-empty">No masteries.</p>`;
+  return `<div class="rpg-sao-subhead"><span class="rpg-sao-sub">Masteries</span>
+      <button class="rpg-sao-mini" id="rpg-sao-ms-edit">&#9998; Edit</button></div>${body}`;
+}
+
+function saoSaveMasteryEdit() {
+  const { display } = getActiveData();
+  const before = Array.isArray(display.masteries) ? display.masteries : [];
+  let draft = saoMasteryEdit.filter((m) => saoCleanPipe(m.name));
+
+  const kept = new Set(draft.map((m) => (m.orig ?? "").toLowerCase()).filter(Boolean));
+  const removed = before.filter((x) => !kept.has(String(x).toLowerCase()));
+  if (removed.length) {
+    const sure = confirm(`Remove ${removed.length === 1 ? "this mastery" : "these masteries"}?\n\n` +
+      `${removed.map((x) => saoParseProgress(x).name).join(", ")}\n\nCancel keeps them.`);
+    if (!sure) draft = draft.concat(removed.map((x) => ({ ...saoParseProgress(x), orig: x })));
+  }
+
+  display.masteries = draft.map(saoFormatProgress).filter(Boolean);
+  saoMasteryEdit = null;
+  const ok = writeStateBackToChatMessage(rpgState);
+  if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after mastery edit");
+  renderRPG();
+}
+
+function saoBindMasteryEditor() {
+  const edit = document.getElementById("rpg-sao-ms-edit");
+  if (edit) edit.onclick = (e) => {
+    e.stopPropagation();
+    const { display } = getActiveData();
+    saoMasteryEdit = (Array.isArray(display.masteries) ? display.masteries : [])
+      .map((x) => ({ ...saoParseProgress(x), orig: String(x) }));
+    renderRPG();
+  };
+
+  const body = document.querySelector(".rpg-sao-mseditor");
+  if (!body || !saoMasteryEdit) return;
+
+  const field = (cls, key) => body.querySelectorAll(cls).forEach((el) => {
+    el.oninput = () => { const m = saoMasteryEdit[+el.dataset.i]; if (m) m[key] = el.value; };
+    el.onclick = (e) => e.stopPropagation();
+  });
+  field(".rpg-sao-ms-name", "name");
+  field(".rpg-sao-ms-curr", "curr");
+  field(".rpg-sao-ms-max", "max");
+
+  body.querySelectorAll(".rpg-sao-ms-del").forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); saoMasteryEdit.splice(+el.dataset.i, 1); renderRPG(); };
+  });
+
+  const one = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
+  one("rpg-sao-ms-add", () => {
+    saoMasteryEdit.push({ name: "", curr: "0", max: "100", tail: "", orig: "" });
+    renderRPG();
+    requestAnimationFrame(() => {
+      const names = document.querySelectorAll(".rpg-sao-ms-name");
+      names[names.length - 1]?.focus();
+    });
+  });
+  one("rpg-sao-ms-cancel", () => { saoMasteryEdit = null; renderRPG(); });
+  one("rpg-sao-ms-save", saoSaveMasteryEdit);
 }
 
 function saoStartMeterEdit() {
@@ -5112,7 +5239,7 @@ function saoBind() {
     flushInlineEdits();
     const tab = el.dataset.tab;
     const was = saoPanel;
-    saoMeterEdit = null;
+    saoMeterEdit = null; saoMasteryEdit = null;
     saoPanel = saoPanel === tab ? null : tab;
     if (saoPanel !== "gear") saoHelpOpen = false;
     if (saoPanel && saoPanel !== was) saoAnim("panel", 220);
@@ -5137,7 +5264,7 @@ function saoBind() {
   on(".rpg-sao-jump, .rpg-sao-chip", (el) => {
     const idx = parseInt(el.dataset.idx, 10);
     if (!Number.isFinite(idx)) return;
-    saoMeterEdit = null;
+    saoMeterEdit = null; saoMasteryEdit = null;
     charIndex = idx;
     saoSub = "stats";
     saoPanel = "status";
@@ -5145,7 +5272,7 @@ function saoBind() {
   });
 
   on(".rpg-sao-cat", (el) => {
-    saoMeterEdit = null;
+    saoMeterEdit = null; saoMasteryEdit = null;
     const g = saoRosterGroups().filter((x) => x.key === el.dataset.cat)[0];
     if (!g) return;
     charIndex = charIndexFor(g.type, 0);
@@ -5153,7 +5280,7 @@ function saoBind() {
     renderRPG();
   });
 
-  on(".rpg-sao-subtab", (el) => { saoSub = el.dataset.sub; renderRPG(); });
+  on(".rpg-sao-subtab", (el) => { saoSub = el.dataset.sub; saoMasteryEdit = null; renderRPG(); });
   on(".rpg-sao-qtab", (el) => { saoQuestTab = el.dataset.qtab; saoLogShown = 20; renderRPG(); });
   on(".rpg-sao-turnhead", (el) => {
     const mes = document.querySelector(`#chat .mes[mesid="${el.dataset.mes}"]`);
@@ -5185,6 +5312,7 @@ function saoBind() {
   if (timerTurn) timerTurn.onclick = (e) => { e.stopPropagation(); advanceTimerTurn(); };
 
   saoBindMeterEditor();
+  saoBindMasteryEditor();
   if (bondsEditMode) bindBondsTab();
   if (timersEditMode) bindTimersTab();
 
@@ -5536,7 +5664,7 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 /* quiet until you reach for them */
 .rpg-sao-jumpto{width:24px; height:24px; border-radius:50%; padding:0; cursor:pointer;
   display:grid; place-items:center; color:#fff;
-  background:rgba(40,40,44,.22); border:1px solid rgba(255,255,255,.35);
+  background:rgba(40,40,44,.22); border:1px solid rgba(255,255,255,.78);
   box-shadow:none; backdrop-filter:blur(1px);
   opacity:0; transform:scale(.8); pointer-events:none;
   transition:opacity .2s, transform .2s, background .2s}
@@ -5598,6 +5726,24 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-sao-m-del:hover{color:#c0392b; border-color:#c0392b}
 .rpg-sao-medit-actions{display:flex; justify-content:flex-end; gap:6px; margin-top:8px}
 .rpg-sao-mini.primary{background:#4e9c3f; border-color:#4e9c3f; color:#fff}
+
+.rpg-sao-mast-edit{display:grid; align-items:center; gap:4px; margin-bottom:5px;
+  grid-template-columns:minmax(0,1fr) 44px 8px 44px 22px}
+.rpg-sao-mast-edit input[type=text]{min-width:0; width:100%; box-sizing:border-box;
+  font:inherit; font-size:12px; padding:3px 5px; color:var(--rpg-sao-ink);
+  background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
+.rpg-sao-ms-del{width:22px; height:22px; padding:0; cursor:pointer; font-size:12px; border-radius:2px;
+  background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink)}
+.rpg-sao-ms-del:hover{color:#c0392b; border-color:#c0392b}
+.rpg-sao-hint{font-size:10.5px; color:var(--rpg-sao-ink-dim); margin:2px 0 6px}
+
+.rpg-sao-li-top{display:flex; justify-content:space-between; align-items:baseline; gap:8px}
+.rpg-sao-li-top i{font-style:normal; color:var(--rpg-sao-ink-dim); font-size:11px}
+.rpg-sao-li-top b{font-size:11.5px; font-weight:700; white-space:nowrap}
+.rpg-sao-pbar{position:relative; height:5px; margin-top:4px; background:#ddd9cf;
+  border:1px solid #c2bdb1; overflow:hidden}
+.rpg-sao-pbar > div{position:absolute; left:0; top:0; bottom:0;
+  background:linear-gradient(180deg,#b39ddb,#7e57c2)}
 .rpg-sao-mini{background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink);
   font-size:11px; font-weight:600; padding:2px 8px; cursor:pointer}
 .rpg-sao-mini:hover{filter:brightness(1.06)}
