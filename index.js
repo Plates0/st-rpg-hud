@@ -5040,7 +5040,7 @@ function renderSaoSkin() {
       const help = saoHelpPanel();
       panelHtml = `<div class="rpg-sao-panelwrap helpshift"><div class="rpg-sao-panel">
         <h2>${escHtml(help.title)}</h2>
-        <div class="rpg-sao-body" data-scroll-key="help">${help.body}</div><div class="rpg-sao-jumps"><button class="rpg-sao-jumpto up" title="Back to the top">\u25B2</button><button class="rpg-sao-jumpto down" title="To the bottom">\u25BC</button></div></div><div class="rpg-sao-notch"></div></div>`;
+        <div class="rpg-sao-body" data-scroll-key="help">${help.body}</div><div class="rpg-sao-jumps"><button class="rpg-sao-jumpto up" title="Back to the top"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 7.5L6 4l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="rpg-sao-jumpto down" title="To the bottom"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 4.5L6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div><div class="rpg-sao-notch"></div></div>`;
     } else if (!saoMin && saoPanel && saoPanel !== "gear") {
       const built = saoPanel === "status" ? saoStatusPanel()
                   : saoPanel === "bonds" ? saoBondsPanel()
@@ -5050,7 +5050,7 @@ function renderSaoSkin() {
       panelHtml = `<div class="rpg-sao-panelwrap"><div class="rpg-sao-panel">
         <h2>${escHtml(built.title)}</h2>
         ${saoPanel === "status" ? saoWhoStrip() : ""}
-        <div class="rpg-sao-body" data-scroll-key="${escAttr(saoPanelScrollKey())}">${built.body}</div><div class="rpg-sao-jumps"><button class="rpg-sao-jumpto up" title="Back to the top">\u25B2</button><button class="rpg-sao-jumpto down" title="To the bottom">\u25BC</button></div></div><div class="rpg-sao-notch"></div></div>`;
+        <div class="rpg-sao-body" data-scroll-key="${escAttr(saoPanelScrollKey())}">${built.body}</div><div class="rpg-sao-jumps"><button class="rpg-sao-jumpto up" title="Back to the top"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 7.5L6 4l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="rpg-sao-jumpto down" title="To the bottom"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 4.5L6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div><div class="rpg-sao-notch"></div></div>`;
     }
 
     const menuHtml = (!saoMin && saoPanel === "gear")
@@ -5533,14 +5533,16 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 /* jump-to-top / bottom, floating over the panel's lower right */
 .rpg-sao-jumps{position:absolute; right:10px; bottom:10px; z-index:2;
   display:flex; flex-direction:column; gap:5px; pointer-events:none}
-.rpg-sao-jumpto{width:28px; height:28px; border-radius:50%; padding:0; cursor:pointer;
-  font-size:10px; line-height:1; color:#fff;
-  background:radial-gradient(circle at 34% 28%, rgba(120,120,120,.85), rgba(40,40,44,.88));
-  border:1.5px solid rgba(255,255,255,.7); box-shadow:0 2px 6px rgba(0,0,0,.4);
-  opacity:0; transform:scale(.7); pointer-events:none;
-  transition:opacity .18s, transform .18s}
-.rpg-sao-jumpto.show{opacity:.92; transform:none; pointer-events:auto}
-.rpg-sao-jumpto:hover{opacity:1}
+/* quiet until you reach for them */
+.rpg-sao-jumpto{width:24px; height:24px; border-radius:50%; padding:0; cursor:pointer;
+  display:grid; place-items:center; color:#fff;
+  background:rgba(40,40,44,.22); border:1px solid rgba(255,255,255,.35);
+  box-shadow:none; backdrop-filter:blur(1px);
+  opacity:0; transform:scale(.8); pointer-events:none;
+  transition:opacity .2s, transform .2s, background .2s}
+.rpg-sao-jumpto svg{display:block}
+.rpg-sao-jumpto.show{opacity:.42; transform:none; pointer-events:auto}
+.rpg-sao-jumpto.show:hover, .rpg-sao-jumpto.show:focus-visible{opacity:.95; background:rgba(40,40,44,.55)}
 .rpg-sao-vline{display:flex; justify-content:space-between; font-size:13px;
   padding:3px 0; border-bottom:1px solid var(--rpg-sao-rule)}
 .rpg-sao-sub{margin-top:9px; font-size:10px; font-weight:700; letter-spacing:1.4px; color:var(--rpg-sao-ink-dim)}
