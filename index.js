@@ -353,6 +353,7 @@ const defaultUiSettings = {
   saoPanelLight: 92,      // panel lightness %, lower = dimmer but still solid
   saoCardAlpha: 11,       // % wash behind the player's HP/MP bars; higher = lighter
   saoFont: "preset",      // "preset" | "sans" | "squarish"
+  saoBarStyle: "sao",     // "sao" stepped bars | "alo" arrow-ended ALfheim bars
   saoInk: 70,             // text contrast against the panel, 0 = faint, 100 = maximum
   saoAnimate: true,       // bar tweening, orb unfold, panel and clock fades
   saoPos: null,           // {vitals:[x,y], col:[x,y], clock:[x,y]} drag offsets
@@ -4189,7 +4190,31 @@ function saoPct(currRaw, maxRaw) {
 // path, so the fill hides their inner halves and what survives outside is a
 // grey band with a thin metal line inside it. One path means the rim can't
 // thin out along the diagonal the way two nested clip-paths did.
+// ALfheim: a flat bar with an arrowhead on the right, outlined in thin silver.
+function aloBarSvg(W, H, pctVal, c1, c2) {
+  const m = 1;
+  const x0 = m, y0 = m, w = W - m * 2, h = H - m * 2;
+  if (w <= 4 || h <= 1) return "";
+  const tip = Math.min(h * 0.75, w * 0.12);
+  const d = `M${x0} ${y0}H${x0 + w - tip}L${x0 + w} ${y0 + h / 2}L${x0 + w - tip} ${y0 + h}H${x0}Z`;
+  const id = "a" + (++saoSvgUid);
+  const fx = x0 + w * clamp(pctVal, 0, 100) / 100;
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="g${id}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/>
+      </linearGradient>
+      <clipPath id="c${id}"><path d="${d}"/></clipPath>
+    </defs>
+    <path d="${d}" fill="rgba(20,24,30,.62)"/>
+    <rect x="${x0}" y="${y0}" width="${w}" height="${h}" fill="rgba(225,228,236,.2)" clip-path="url(#c${id})"/>
+    ${pctVal > 0 ? `<rect x="${x0}" y="${y0}" width="${fx - x0}" height="${h}" fill="url(#g${id})" clip-path="url(#c${id})"/>` : ""}
+    <path d="${d}" fill="none" stroke="rgba(236,236,240,.85)" stroke-width="1" stroke-linejoin="miter"/>
+  </svg>`;
+}
+
 function saoBarSvg(W, H, pctVal, c1, c2) {
+  if (uiSettings.saoBarStyle === "alo") return aloBarSvg(W, H, pctVal, c1, c2);
   const m = Math.ceil(SAO_RIM.greyW / 2);
   const x0 = m, y0 = m, w = W - m * 2, h = H - m * 2;
   if (w <= 2 || h <= 1) return "";
@@ -4240,7 +4265,101 @@ function saoDrawBar(el, p) {
   el.innerHTML = saoBarSvg(W, H, p, el.dataset.c1 || "#b9f56d", el.dataset.c2 || "#63c322");
 }
 
+function saoTweenValue(key, target, draw, alive) {
+  const animate = uiSettings.saoAnimate !== false
+    && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  if (!animate || !key) { if (key) saoLastPct.set(key, target); draw(target); return; }
+
+  const from = saoLastPct.has(key) ? saoLastPct.get(key) : target;
+  if (Math.abs(from - target) < 0.4) { saoLastPct.set(key, target); draw(target); return; }
+
+  const token = (saoTweens.get(key) || 0) + 1;
+  saoTweens.set(key, token);
+  const t0 = performance.now(), dur = 420;
+  const ease = (x) => 1 - Math.pow(1 - x, 3);
+  const step = (now) => {
+    if (saoTweens.get(key) !== token || (alive && !alive())) return;
+    const k = Math.min(1, (now - t0) / dur);
+    const v = from + (target - from) * ease(k);
+    saoLastPct.set(key, v);
+    draw(v);
+    if (k < 1) requestAnimationFrame(step);
+    else saoLastPct.set(key, target);
+  };
+  requestAnimationFrame(step);
+}
+
+const ALO_MP = ["#7fb3e8", "#2d65a8"];
+
+function aloPlateSvg(W, H, nameW, hp, mp, hpc, mpc) {
+  const L = Math.max(6, Math.round(H * 0.42));     // left point depth
+  const R = Math.max(6, Math.round(H * 0.5));      // right point depth
+  const mid = H / 2;
+  const plate = `M${L} 1H${W - R}L${W - 1} ${mid}L${W - R} ${H - 1}H${L}L1 ${mid}Z`;
+
+  const div = clamp(nameW + L + 10, L + 26, W * 0.45);
+  const pad = Math.max(3, Math.round(H * 0.17));
+  const bx = div + 6, by = pad, bh = H - pad * 2;
+  const bEnd = W - Math.round(R * 0.45) - 3;
+  const tipIn = Math.max(4, bh * 0.6);
+  const bw = Math.max(4, bEnd - bx);
+  const frame = `M${bx} ${by}H${bEnd - tipIn}L${bEnd} ${mid}L${bEnd - tipIn} ${by + bh}H${bx}Z`;
+
+  const gap = Math.max(1, Math.round(bh * 0.09));
+  const hpH = Math.round((bh - gap) * 0.6);
+  const mpY = by + hpH + gap, mpH = by + bh - mpY;
+  const id = "p" + (++saoSvgUid);
+  const w = (p) => (bw * clamp(p, 0, 100)) / 100;
+
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="h${id}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="${hpc[0]}"/><stop offset="1" stop-color="${hpc[1]}"/></linearGradient>
+      <linearGradient id="m${id}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="${mpc[0]}"/><stop offset="1" stop-color="${mpc[1]}"/></linearGradient>
+      <linearGradient id="s${id}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="rgba(255,255,255,.10)"/><stop offset="1" stop-color="rgba(0,0,0,.18)"/></linearGradient>
+      <clipPath id="c${id}"><path d="${frame}"/></clipPath>
+    </defs>
+    <path d="${plate}" fill="rgba(30,32,38,.74)"/>
+    <path d="${plate}" fill="url(#s${id})"/>
+    <path d="${plate}" fill="none" stroke="rgba(236,236,240,.82)" stroke-width="1.2" stroke-linejoin="miter"/>
+    <line x1="${div}" y1="${pad * 0.6}" x2="${div}" y2="${H - pad * 0.6}" stroke="rgba(236,236,240,.8)" stroke-width="1.2"/>
+    <g clip-path="url(#c${id})">
+      <rect x="${bx}" y="${by}" width="${bw}" height="${hpH}" fill="rgba(225,228,236,.26)"/>
+      <rect x="${bx}" y="${mpY}" width="${bw}" height="${mpH}" fill="rgba(225,228,236,.2)"/>
+      ${hp > 0 ? `<rect x="${bx}" y="${by}" width="${w(hp)}" height="${hpH}" fill="url(#h${id})"/>` : ""}
+      ${mp > 0 ? `<rect x="${bx}" y="${mpY}" width="${w(mp)}" height="${mpH}" fill="url(#m${id})"/>` : ""}
+    </g>
+    <path d="${frame}" fill="none" stroke="rgba(236,236,240,.7)" stroke-width="1" stroke-linejoin="miter"/>
+  </svg>`;
+}
+
+function saoPaintAloPlates() {
+  document.querySelectorAll(".rpg-alo-plate").forEach((el) => {
+    const host = el.querySelector(".rpg-alo-svg");
+    const nameEl = el.querySelector(".rpg-alo-name");
+    const W = el.clientWidth, H = el.clientHeight;
+    if (!W || !H || !host) return;
+
+    const nameW = nameEl ? nameEl.offsetWidth : 0;
+    const hpT = clamp(parseFloat(el.dataset.hp) || 0, 0, 100);
+    const mpT = clamp(parseFloat(el.dataset.mp) || 0, 0, 100);
+    let hpV = saoLastPct.has("p:hp") ? saoLastPct.get("p:hp") : hpT;
+    let mpV = saoLastPct.has("p:mp") ? saoLastPct.get("p:mp") : mpT;
+
+    const draw = () => {
+      host.innerHTML = aloPlateSvg(W, H, nameW, hpV, mpV,
+        [el.dataset.hp1, el.dataset.hp2], [el.dataset.mp1, el.dataset.mp2]);
+    };
+    const alive = () => el.isConnected;
+    saoTweenValue("p:hp", hpT, (v) => { hpV = v; draw(); }, alive);
+    saoTweenValue("p:mp", mpT, (v) => { mpV = v; draw(); }, alive);
+  });
+}
+
 function saoPaintBars() {
+  saoPaintAloPlates();
   const animate = uiSettings.saoAnimate !== false
     && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
@@ -4929,6 +5048,8 @@ function saoHelpPanel() {
           "Open a character in Status and use Edit under Meters to add, rename, change or remove them. The swatch sets a colour; \u21BA puts it back to automatic. Colours follow the meter's name, so every character's Shield matches.")
       + item("Animations",
           "Bars slide to their new value, orbs unfold when you reopen the HUD, and panels fade in. Off means everything snaps.")
+      + item("Bar style",
+          "Aincrad is the stepped SAO bar. ALfheim swaps it for the ALO look: one plate with your name, HP over MP in an arrow-ended frame, and arrow-ended bars for party, NPCs, enemies and meters. The ALfheim plate has its own backing, so Bar backdrop only affects Aincrad.")
       + item("Text contrast",
           "How far the text sits from the panel behind it. Maximum contrast also maximises the antialiasing fringe, so backing it off makes small text look cleaner.")
       + item("Font",
@@ -4999,6 +5120,11 @@ function saoSettingsHtml() {
     + `<div class="rpg-sao-mrow toggle"><span>Bar backdrop</span>
         <input type="range" id="rpg-sao-card-a" min="0" max="70"
                value="${Math.round(uiSettings.saoCardAlpha ?? 11)}"></div>`
+    + `<div class="rpg-sao-mrow toggle"><span>Bar style</span>
+        <select id="rpg-sao-barstyle">
+          <option value="sao"${uiSettings.saoBarStyle !== "alo" ? " selected" : ""}>Aincrad (SAO)</option>
+          <option value="alo"${uiSettings.saoBarStyle === "alo" ? " selected" : ""}>ALfheim (ALO)</option>
+        </select></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Font</span>
         <select id="rpg-sao-font">
           <option value="preset"${!SAO_FONTS[uiSettings.saoFont] ? " selected" : ""}>Follow preset</option>
@@ -5099,18 +5225,33 @@ function renderSaoSkin() {
     // --- vitals ---
     let vitals = "";
     if (showBars) {
-      vitals = `<div class="rpg-sao-vitals${animKind === "restore" && !uiSettings.barsOnMin ? " fadein" : ""}" data-drag="vitals">
-        <div class="rpg-sao-card">
+      const hpText = demo ? "720/1000" : `${escHtml(pView.hp_curr)}/${escHtml(pView.hp_max)}`;
+      const mpText = demo ? "240/500" : `${escHtml(en.curr)}/${escHtml(en.max)}`;
+      const shownName = escHtml(demo ? "Name" : pName);
+
+      const playerBlock = uiSettings.saoBarStyle === "alo"
+        // ALfheim: one plate, name on the left, HP over MP in one arrow frame
+        ? `<div class="rpg-alo-plate" data-hp="${hpPct}" data-mp="${mpPct}"
+              data-hp1="${hpStops[0]}" data-hp2="${hpStops[1]}"
+              data-mp1="${ALO_MP[0]}" data-mp2="${ALO_MP[1]}">
+             <div class="rpg-alo-svg"></div>
+             <span class="rpg-alo-name">${shownName}</span>
+           </div>
+           <div class="rpg-alo-nums"><span><i>HP</i> ${hpText}</span><span><i>${escHtml(en.label || "MP")}</i> ${mpText}</span></div>`
+        : `<div class="rpg-sao-card">
           <div class="rpg-sao-block">
-            <div class="rpg-sao-name">${escHtml(demo ? "Name" : pName)}</div>
+            <div class="rpg-sao-name">${shownName}</div>
             <div class="rpg-sao-stack">
               <div class="rpg-sao-vrow">${saoBarHtml("", hpPct, hpStops[0], hpStops[1], "p:hp")}
-                <span class="rpg-sao-vnum">${demo ? "720/1000" : `${escHtml(pView.hp_curr)}/${escHtml(pView.hp_max)}`}</span></div>
+                <span class="rpg-sao-vnum">${hpText}</span></div>
               <div class="rpg-sao-vrow">${saoBarHtml("mid", mpPct, SAO_PALETTE.mp[0], SAO_PALETTE.mp[1], "p:mp")}
-                <span class="rpg-sao-vnum">${demo ? "240/500" : `${escHtml(en.curr)}/${escHtml(en.max)}`}</span></div>
+                <span class="rpg-sao-vnum">${mpText}</span></div>
             </div>
           </div>
         </div>`;
+
+      vitals = `<div class="rpg-sao-vitals${animKind === "restore" && !uiSettings.barsOnMin ? " fadein" : ""}" data-drag="vitals">
+        ${playerBlock}`;
 
       if (pMeters.length) {
         vitals += `<div class="rpg-sao-group">` + saoDivider("METERS", "meters") +
@@ -5427,6 +5568,12 @@ function saoBind() {
     ca.onclick = (e) => e.stopPropagation();
   }
 
+  const styleSel = document.getElementById("rpg-sao-barstyle");
+  if (styleSel) {
+    styleSel.onchange = () => { uiSettings.saoBarStyle = styleSel.value; saveUiSettings(); renderRPG(); };
+    styleSel.onclick = (e) => e.stopPropagation();
+  }
+
   const fontSel = document.getElementById("rpg-sao-font");
   if (fontSel) {
     fontSel.onchange = () => { uiSettings.saoFont = fontSel.value; saveUiSettings(); renderRPG(); };
@@ -5492,6 +5639,17 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-vnum{position:absolute; right:3px; top:54%; line-height:1;
   font-size:calc(10px * var(--rpg-sao-ui, 1)); font-weight:600; color:#d3cfc4; white-space:nowrap}
 
+/* ALfheim player plate */
+.rpg-alo-plate{position:relative; width:100%; height:calc(30px * var(--rpg-sao-ui, 1))}
+.rpg-alo-svg{position:absolute; inset:0}
+.rpg-alo-svg svg{display:block; filter:drop-shadow(0 1px 3px rgba(0,0,0,.45))}
+.rpg-alo-name{position:absolute; top:0; bottom:0; left:calc(14px * var(--rpg-sao-ui, 1)); z-index:1;
+  display:flex; align-items:center; max-width:38%;
+  font-size:calc(12px * var(--rpg-sao-ui, 1)); font-weight:600; letter-spacing:.3px; color:#f4f2ec;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.rpg-alo-nums{display:flex; justify-content:flex-end; gap:calc(12px * var(--rpg-sao-ui, 1));
+  margin:calc(3px * var(--rpg-sao-ui, 1)) calc(6px * var(--rpg-sao-ui, 1)) 0 0; font-size:calc(10px * var(--rpg-sao-ui, 1)); font-weight:600; color:#d3cfc4}
+.rpg-alo-nums i{font-style:normal; opacity:.6; margin-right:2px}
 .rpg-sao-bar{position:relative; flex:1 1 auto; min-width:0; width:100%; height:calc(15px * var(--rpg-sao-ui, 1))}
 .rpg-sao-bar.mid{height:calc(11px * var(--rpg-sao-ui, 1))}
 .rpg-sao-bar.slim{height:calc(9px * var(--rpg-sao-ui, 1)); width:auto}
