@@ -1602,15 +1602,39 @@ function bindJumpLinks() {
   });
 }
 
+// SillyTavern substitutes macros in prompts, not in what the model writes back,
+// so a block can contain a literal {{user}}. Resolve it for display only.
+function displayName(raw, fallback) {
+  let out = String(raw ?? "").trim();
+  if (!out) return fallback ?? "";
+  if (!out.includes("{{")) return out;
+  let ctx = {};
+  try { ctx = SillyTavern.getContext() || {}; } catch {}
+  const user = ctx.name1 || ctx.user_name || "";
+  const char = ctx.name2 || "";
+  if (user) out = out.replace(/\{\{\s*user\s*\}\}/gi, user);
+  if (char) out = out.replace(/\{\{\s*char\s*\}\}/gi, char);
+  return out;
+}
+
+// the player also comes through as the placeholder "Player" on a fresh state
+function playerDisplayName() {
+  const raw = rpgState?.name;
+  if (!raw || raw === "Player") {
+    let ctx = {};
+    try { ctx = SillyTavern.getContext() || {}; } catch {}
+    return ctx.name1 || ctx.user_name || "Player";
+  }
+  return displayName(raw, "Player");
+}
+
 function getCharOptions() {
   const context = SillyTavern.getContext();
-  const realUserName = context?.name1 || context?.user_name || "Player";
-  let playerName = rpgState.name;
-  if (playerName === "{{user}}" || playerName === "Player") playerName = realUserName;
+  const playerName = playerDisplayName();
 
   const fmt = (char, fallback) => {
-    if (char.vehicle && char.vehicle.active) return `🤖 ${char.vehicle.name || "Vehicle"}`;
-    return char.name || fallback;
+    if (char.vehicle && char.vehicle.active) return `🤖 ${displayName(char.vehicle.name, "Vehicle")}`;
+    return displayName(char.name, fallback);
   };
 
   const optStyle = "background: #222; color: #fff;";
@@ -1765,7 +1789,7 @@ function renderMiniUnitBars(list, options = {}) {
   const rows = list
     .map((unit, idx) => {
       const target = unit?.vehicle && unit.vehicle.active ? unit.vehicle : unit;
-      const name = escHtml(target?.name || unit?.name || "Unit");
+      const name = escHtml(displayName(target?.name || unit?.name, "Unit"));
 
       const absIdx = jumpType ? charIndexFor(jumpType, idx) : null;
 
@@ -1916,8 +1940,8 @@ function renderBondsTab() {
         ? `<span title="In scene" style="color:#69f0ae;">●</span>`
         : `<span title="Away" style="color:#666;">○</span>`;
       const nameHtml = idx !== null
-        ? `<span class="rpg-jump" data-idx="${idx}" style="cursor:pointer; text-decoration:underline; text-decoration-color:#555;">${escHtml(b.name)}</span>`
-        : `<span>${escHtml(b.name)}</span>`;
+        ? `<span class="rpg-jump" data-idx="${idx}" style="cursor:pointer; text-decoration:underline; text-decoration-color:#555;">${escHtml(displayName(b.name))}</span>`
+        : `<span>${escHtml(displayName(b.name))}</span>`;
 
       // Change since the previous message's block. null prev = brand new name.
       const hasBaseline = Object.prototype.hasOwnProperty.call(b, "prev");
@@ -4001,11 +4025,12 @@ function saoSlimRow(name, curr, max, stops, jumpIdx, foe, key) {
 function saoUnitView(unit) {
   const v = unit?.vehicle;
   if (v && v.active) {
-    return { name: `\u{1F916} ${v.name || "Vehicle"}`, hp_curr: v.hp_curr, hp_max: v.hp_max,
+    return { name: `\u{1F916} ${displayName(v.name, "Vehicle")}`, hp_curr: v.hp_curr, hp_max: v.hp_max,
              isVeh: true, en: getEnergy(v, true),
              meters: Array.isArray(v.meters) ? v.meters : [] };
   }
-  return { name: unit?.name || "?", hp_curr: unit?.hp_curr, hp_max: unit?.hp_max,
+  return { name: unit === rpgState ? playerDisplayName() : displayName(unit?.name, "?"),
+           hp_curr: unit?.hp_curr, hp_max: unit?.hp_max,
            isVeh: false, en: getEnergy(unit, false),
            meters: Array.isArray(unit?.meters) ? unit.meters : [] };
 }
@@ -4048,7 +4073,8 @@ function saoDivider(label, key, color) {
 // ---- panels -------------------------------------------------------------
 function saoStatusPanel() {
   const { root, display, type, isVehicle } = getActiveData();
-  const name = display?.name || root?.name || rpgState?.name || "Player";
+  const name = display === rpgState ? playerDisplayName()
+             : displayName(display?.name || root?.name, "Unit");
 
   const subs = [["stats","Stats"],["inventory","Items"],["skills","Skills"],
                 ["passives","Passive"],["masteries","Mastery"]];
@@ -4316,8 +4342,8 @@ function saoBondsPanel() {
 
     const idx = jumpIdxFor(b.name);
     const nameHtml = idx === null
-      ? `<span class="rpg-sao-who-name">${escHtml(b.name)}</span>`
-      : `<button class="rpg-sao-who-name rpg-sao-jump" data-idx="${idx}">${escHtml(b.name)}</button>`;
+      ? `<span class="rpg-sao-who-name">${escHtml(displayName(b.name))}</span>`
+      : `<button class="rpg-sao-who-name rpg-sao-jump" data-idx="${idx}">${escHtml(displayName(b.name))}</button>`;
 
     return `<div class="rpg-sao-bond">
       <div class="rpg-sao-bondtop">
@@ -4369,7 +4395,7 @@ function saoTimersHtml() {
     .map(({ t, info }) => {
       const st = timerKindStyle(info.kind);
       const dim = info.done && !TIMER_PERSISTENT_KINDS.includes(info.kind) ? " spent" : "";
-      const owner = t.owner ? `<span class="rpg-sao-owner">${escHtml(t.owner)}&#183;</span>` : "";
+      const owner = t.owner ? `<span class="rpg-sao-owner">${escHtml(displayName(t.owner))}&#183;</span>` : "";
       const mark = t.repaired ? `<span title="Auto-ticked" style="color:#a8871f;">*</span>` : "";
       const kept = t.kept ? `<span title="Carried over" style="color:#9b978c;">&#176;</span>` : "";
       const bar = info.pct === null ? "" :
