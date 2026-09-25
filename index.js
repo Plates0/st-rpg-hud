@@ -1391,10 +1391,25 @@ function timerKindStyle(kind) {
   }
 }
 
+// Charges count uses, not time: "block the next 2 attacks". Written with an
+// x (2/2x, 2x) or the words uses/charges. Neither the round auto-tick nor the
+// manual turn button touches them, since both only match plain 2/3 and 2.
+const TIMER_CHARGE_RE = /^(-?\d+)(\s*\/\s*\d+)?(\s*(?:x|\u00D7|uses?|charges?))$/i;
+
 function timerInfo(t) {
   const kind = String(t?.kind || "CD").toUpperCase();
   const raw = String(t?.value ?? "").trim();
   const zero = timerKindStyle(kind).zero;
+
+  const ch = raw.match(TIMER_CHARGE_RE);
+  if (ch) {
+    const cur = parseInt(ch[1], 10);
+    const max = ch[2] ? parseInt(ch[2].replace(/[^\d]/g, ""), 10) : null;
+    return { kind, mode: "charges", done: cur <= 0,
+      pct: max ? clamp((cur / max) * 100, 0, 100) : null,
+      label: cur <= 0 ? "USED UP" : `${cur} use${cur === 1 ? "" : "s"}`,
+      sortKey: cur <= 0 ? Infinity : 0.5 + cur };
+  }
 
   const turns = raw.match(/^(-?\d+)\s*\/\s*(\d+)$/);
   if (turns) {
@@ -1543,6 +1558,24 @@ function mergeTimers(prevState, nextState) {
   });
 
   return merged;
+}
+
+// Spend one charge, keeping however the value was written (2/2x stays x).
+function useTimerCharge(t) {
+  const m = String(t?.value ?? "").trim().match(TIMER_CHARGE_RE);
+  if (!m) return false;
+  const cur = parseInt(m[1], 10);
+  if (cur <= 0) return false;
+  t.prev = t.value;
+  t.value = `${cur - 1}${m[2] || ""}${m[3]}`;
+  return true;
+}
+
+function spendTimerCharge(key) {
+  const t = (rpgState.timers || []).find((x) => timerKey(x) === key);
+  if (!t || !useTimerCharge(t)) return;
+  renderRPG();
+  writeStateBackToChatMessage(rpgState);
 }
 
 function advanceTimerTurn() {
@@ -5399,7 +5432,10 @@ function saoTimersHtml() {
       return `<div class="rpg-sao-timer${dim}">
         <div class="rpg-sao-tline"><span>${st.icon}</span>
           <span class="rpg-sao-tname">${owner}${escHtml(t.name)}${mark}${kept}</span>
-          <span class="rpg-sao-tleft" style="color:${st.color}">${escHtml(info.label)}</span></div>
+          <span class="rpg-sao-tleft" style="color:${st.color}">${escHtml(info.label)}</span>${
+            info.mode === "charges" && !info.done
+              ? `<button class="rpg-sao-tuse" data-key="${escAttr(timerKey(t))}" title="Use one charge">\u22121</button>`
+              : ""}</div>
         ${bar}</div>`;
     }).join("");
 
@@ -5437,6 +5473,8 @@ function saoHelpPanel() {
           "Drag the bars, the orb column and the clock wherever you like. Buttons stop responding while you're arranging, so a tap can't fire by accident. Reset puts them back.")
       + item("Turn log",
           "In the Quests orb, the Log tab lists what changed each turn \u2014 HP, items, bonds, where you went, how much time passed. It's worked out from your chat history rather than stored, so it follows swipes and edits and covers old chats too. Tap a turn to jump to its message. Undo last turn reverts everything the newest turn changed; the \u21B6 beside a single change in the newest turn reverts just that one. Redo puts either back.")
+      + item("Charges",
+          "A timer written as 2/2x, 2x or \u201c2 uses\u201d counts uses instead of turns, for effects like \u201cblock the next 2 attacks\u201d. It never ticks down on its own; the AI lowers it when it's used, or tap \u22121 in the timer list.")
       + item("Meters",
           "Open a character in Status and use Edit under Meters to add, rename, change or remove them. The swatch sets a colour; \u21BA puts it back to automatic. Colours follow the meter's name, so every character's Shield matches.")
       + item("Animations",
@@ -5855,6 +5893,8 @@ function saoBind() {
       .map((t) => ({ ...t }));
     renderRPG();
   };
+  on(".rpg-sao-tuse", (el) => spendTimerCharge(el.dataset.key));
+
   const timerTurn = document.getElementById("rpg-sao-timer-turn");
   if (timerTurn) timerTurn.onclick = (e) => { e.stopPropagation(); advanceTimerTurn(); };
 
@@ -6449,6 +6489,10 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 .rpg-sao-owner{color:var(--rpg-sao-ink-dim); font-size:11px}
 .rpg-sao-tleft{font-weight:700}
 .rpg-sao-tbar{position:relative; height:3px; margin-top:4px; background:#ddd9cf}
+.rpg-sao-tuse{flex:0 0 auto; margin-left:4px; padding:0 5px; height:17px; line-height:15px; cursor:pointer;
+  font-size:10.5px; font-weight:700; border-radius:2px; color:var(--rpg-sao-ink);
+  background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule)}
+.rpg-sao-tuse:hover{filter:brightness(1.08)}
 .rpg-sao-tbar div{position:absolute; top:0; bottom:0; left:0}
 
 .rpg-sao-clock{display:flex; align-items:center; gap:9px; background:none; border:0;
