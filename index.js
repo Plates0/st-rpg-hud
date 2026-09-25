@@ -640,8 +640,14 @@ function maybeReportListChanges() {
   // Any description that lost or swapped even one word gets flagged. Pure
   // additions (the AI adding detail) don't lose anything, so those stay in the
   // log. A lost number or a big chunk is marked as the more serious kind.
+  // Masteries exist to change: their progress ticks every turn. The same goes
+  // for any "Name: 12/30" counter elsewhere. Both stay in the turn log but
+  // never raise an alert.
+  const progressless = (t) => String(t ?? "").replace(/:\s*-?\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?/g, "").trim();
   const hits = diffs
     .filter((d) => (d.type === "lost" || d.type === "changed") && d.before)
+    .filter((d) => d.label !== "Mastery")
+    .filter((d) => progressless(d.before) !== progressless(d.name))
     .filter((d) => (wordDiff(d.before, d.name) || [{ op: "-" }]).some((o) => o.op === "-"))
     .map((d) => ({ ...d, serious: isMeaningfulLoss(d.before, d.name) }))
     .sort((x, y) => (y.serious ? 1 : 0) - (x.serious ? 1 : 0));
@@ -650,7 +656,7 @@ function maybeReportListChanges() {
   const shown = hits.slice(0, 3);
   const body =
     shown.map((d) =>
-      `${escHtml(d.label)}: <b>${escHtml(entryBaseName(d.name) || d.name)}</b>` +
+      `${escHtml(d.label)}: <b>${escHtml(tItemName(d.name))}</b>` +
       `<br><span style="opacity:.95;">${wordDiffHtml(d.before, d.name, "toast")}</span>`
     ).join("<br><br>") +
     (hits.length > 3 ? `<br><br>(+${hits.length - 3} more in the turn log)` : "");
@@ -3628,6 +3634,14 @@ const tNameKey = (u) => normBondName(u?.name);
 
 // Keyed by name with any trailing modifier dropped, so "Iron Sword +10 ATK"
 // and "Iron Sword +15 ATK" are the same item upgraded, not a swap.
+// the name alone, as written: "Iron Sword +10 ATK [X]" -> "Iron Sword"
+function tItemName(text) {
+  return entryBaseName(text)
+    .replace(/:\s*-?\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?.*$/, "")
+    .replace(/\s[+\-\u2212]\s?\d.*$/, "")
+    .trim() || String(text ?? "").trim();
+}
+
 function tItemKey(text) {
   return entryBaseName(text)
     .replace(/:\s*-?\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?.*$/, "")   // "Sword: 45/100"
@@ -3702,7 +3716,7 @@ function tDiffLists(out, a, b) {
       const before = A.get(k);
       if (before === text || stripStatusTags(before) === stripStatusTags(text)) return;
       out.push({ tone: "neutral", text: `~ ${label}: ${stripStatusTags(before)} \u2192 ${stripStatusTags(text)}`, u: { f: "list", key, k },
-        diff: { label, name: entryBaseName(text) || text, before: stripStatusTags(before), after: stripStatusTags(text) } });
+        diff: { label, name: tItemName(text), before: stripStatusTags(before), after: stripStatusTags(text) } });
     });
     A.forEach((text, k) => { if (!B.has(k)) out.push({ tone: "bad", text: `\u2212 ${label}: ${text}`, u: { f: "list", key, k } }); });
   });
