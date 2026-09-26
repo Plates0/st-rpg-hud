@@ -348,7 +348,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.5";
+const HUD_BUILD = "2026-09-26.9";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -4730,7 +4730,23 @@ function saoPaintAloPlates() {
 // tiles beside it, an emblem tile on the left, and flat HP / MP bars.
 // =====================================================================
 const BLK_MP = ["#62a5d6", "#2b76b0"];
-const BLK_TILES = ["#d4a12a", "#4f9f86", "#3a9fd9", "#6a6f76", "#b8452f", "#7aa33a", "#2b2f36", "#8a5cc2"];
+// Any colour goes, grey and red included: the tile's icon says what a
+// character is, so a red party member still can't be mistaken for an enemy.
+// Enemies alone are always red, and alone carry the skull.
+const BLK_TILES = [
+  "#d9a52b", // gold
+  "#3fae8c", // jade
+  "#2f9fe0", // sky
+  "#8a5cd0", // violet
+  "#7cb342", // lime
+  "#ec8a2e", // amber
+  "#d9508f", // rose
+  "#1fb6c9", // cyan
+  "#5b6fe0", // indigo
+  "#1b1d22", // black, like Kirito's tile in the game; the white rim keeps it readable
+  "#8d949e", // grey, like Lisbeth's
+  "#c9483a", // red
+];
 
 // shift an hsl() lightness, or blend a #hex toward white / black
 function blkShade(c, amt) {
@@ -4855,10 +4871,55 @@ function blkChips(list, max) {
   return chips + more;
 }
 
+// A name's preferred colour, from a well-mixed hash of it.
+function blkHashIndex(name) {
+  let h = 0x811c9dc5;
+  for (const ch of String(name || "").toLowerCase()) {
+    h ^= ch.codePointAt(0);
+    h = Math.imul(h, 0x01000193);
+  }
+  h ^= h >>> 15; h = Math.imul(h, 0x2c1b3c6d); h ^= h >>> 12;
+  return (h >>> 0) % BLK_TILES.length;
+}
+
+// Twelve colours can't stay distinct if each name picks alone, so everyone on
+// screen is coloured together: each starts at their preferred colour and, if
+// someone listed earlier already has it, steps to the next free one. Earlier
+// names keep theirs, so a newcomer never recolours the existing party.
+let blkColorMap = new Map();
+function blkAssignColors(names) {
+  const out = new Map(), used = new Set();
+  names.forEach((n) => {
+    const key = normBondName(n) || String(n);
+    if (!key || out.has(key)) return;
+    if (used.size >= BLK_TILES.length) used.clear();       // more than twelve: start sharing
+    let i = blkHashIndex(n);
+    for (let t = 0; t < BLK_TILES.length && used.has(BLK_TILES[i]); t++) i = (i + 1) % BLK_TILES.length;
+    out.set(key, BLK_TILES[i]);
+    used.add(BLK_TILES[i]);
+  });
+  blkColorMap = out;
+}
+
 function blkTileColor(name) {
-  let h = 0;
-  for (const ch of String(name || "")) h = (h * 31 + ch.codePointAt(0)) >>> 0;
-  return BLK_TILES[h % BLK_TILES.length];
+  return blkColorMap.get(normBondName(name) || String(name)) || BLK_TILES[blkHashIndex(name)];
+}
+
+// What sits in the tile, by what the character is. The player and party
+// icons are the Status and Bonds orbs' own; NPCs get a speech bubble, the
+// people you talk to; enemies an angry skull. evenodd punches the holes.
+const BLK_ICONS = {
+  player: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7.4" r="3.8"/><path d="M4.3 20.8c0-4.3 3.4-7 7.7-7s7.7 2.7 7.7 7z"/></svg>',
+  // party: the Bonds orb's own icon, see blkIcon
+  npc: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M4 4.5h16A1.5 1.5 0 0 1 21.5 6v9a1.5 1.5 0 0 1-1.5 1.5h-8.6L6.5 20.2v-3.7H4A1.5 1.5 0 0 1 2.5 15V6A1.5 1.5 0 0 1 4 4.5ZM8 9.3a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Zm4 0a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Zm4 0a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Z"/></svg>',
+  enemy: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M12 2.5c-4.7 0-8.3 3.4-8.3 7.8 0 2.6 1.2 4.6 3.1 5.8v2.4c0 .8.6 1.4 1.4 1.4h1v-2.2h1.6v2.2h2.4v-2.2h1.6v2.2h1c.8 0 1.4-.6 1.4-1.4v-2.4c1.9-1.2 3.1-3.2 3.1-5.8 0-4.4-3.6-7.8-8.3-7.8ZM6.6 9.2l4.1 1.5-.5 2.6-3.2-.8Zm10.8 0-4.1 1.5.5 2.6 3.2-.8ZM12 13.6l-1.2 2.1h2.4Z"/></svg>',
+};
+// The party icon is borrowed from the Bonds orb when a row is drawn, not at
+// load: SAO_TABS is declared further down, and touching a const before its
+// line throws, even behind typeof.
+function blkIcon(kind) {
+  if (kind === "party") return SAO_TABS.find((t) => t.id === "bonds")?.icon || BLK_ICONS.player;
+  return BLK_ICONS[kind] || "";
 }
 
 // One character. Only the name is a tap target; the rest lets taps through.
@@ -4873,7 +4934,8 @@ function blkUnitRow(view, idx, key, opts = {}) {
   const initial = (String(name).replace(/^[^\p{L}\p{N}]+/u, "")[0] || "?").toUpperCase();
   return `<div class="rpg-blk-row${big ? " big" : ""}${foe ? " foe" : ""}">
     <div class="rpg-blk-plate"></div>
-    <div class="rpg-blk-tile" style="background:${foe ? "#a8322a" : blkTileColor(name)}">${escHtml(initial)}</div>
+    <div class="rpg-blk-tile" style="background-color:${foe ? "#a8322a" : blkTileColor(name)}">${
+      blkIcon(opts.kind || (foe ? "enemy" : big ? "player" : "party")) || escHtml(initial)}</div>
     <div class="rpg-blk-head">
       <span class="rpg-blk-name rpg-sao-jump" data-idx="${idx}" title="${escAttr(full)}">${escHtml(name)}</span>
       ${title ? `<span class="rpg-blk-title">${escHtml(title)}</span>` : ""}
@@ -5906,8 +5968,16 @@ function renderSaoSkin() {
       const mpText = demo ? "240/500" : `${escHtml(en.curr)}/${escHtml(en.max)}`;
       const shownName = escHtml(demo ? "Name" : pName);
 
+      if (uiSettings.saoBarStyle === "blk") {
+        blkAssignColors([
+          aloSplitTitle(demo ? "Name" : pName).name,
+          ...party.map((u) => aloSplitTitle(saoUnitView(u).name).name),
+          ...npcs.map((u) => aloSplitTitle(saoUnitView(u).name).name),
+        ]);
+      }
+
       const playerBlock = uiSettings.saoBarStyle === "blk"
-        ? blkUnitRow(pView, 0, "p", { big: true, hpPct, mpPct, hpText, mpText,
+        ? blkUnitRow(pView, 0, "p", { big: true, kind: "player", hpPct, mpPct, hpText, mpText,
             name: demo ? "Name" : pName, status: blkEffects(rpgState.status_effects, null) })
         : uiSettings.saoBarStyle === "alo"
         // ALfheim: one plate, name on the left, HP over MP in one arrow frame
@@ -5957,7 +6027,7 @@ function renderSaoSkin() {
             const k = `${type}:${normBondName(u?.name) || i}`;
             const idx = charIndexFor(type, i);
             return (uiSettings.saoBarStyle === "blk"
-              ? blkUnitRow(v, idx, k, { status: blkEffects(u?.status_effects, u?.name) })
+              ? blkUnitRow(v, idx, k, { kind: type === "npc" ? "npc" : "party", status: blkEffects(u?.status_effects, u?.name) })
               : alo
               ? aloUnitRow(v, idx, k, false)
               : saoSlimRow(v.name, v.hp_curr, v.hp_max, saoUnitStops(v), idx, false, k))
@@ -5979,7 +6049,7 @@ function renderSaoSkin() {
           const k = `enemy:${normBondName(u?.name) || ""}:${i}`;
           if (uiSettings.saoBarStyle === "blk") {
             if (!v.isVeh && !v.name) v.name = `Enemy ${i + 1}`;
-            return blkUnitRow(v, charIndexFor("enemy", i), k, { foe: true, status: blkEffects(u?.status_effects, u?.name) }) + saoMeterRows(v, k);
+            return blkUnitRow(v, charIndexFor("enemy", i), k, { foe: true, kind: "enemy", status: blkEffects(u?.status_effects, u?.name) }) + saoMeterRows(v, k);
           }
           if (uiSettings.saoBarStyle === "alo") {
             if (!v.isVeh && !v.name) v.name = `Enemy ${i + 1}`;
@@ -6404,12 +6474,16 @@ const SAO_CSS = `<style id="rpg-sao-style">
 /* Centred on the bars, so HP meets MP at the tile's middle. Equal negative
    margins let it overhang above and below without making the bar row taller,
    so the name plate sits right on the HP bar and the tile overlaps it. */
+.rpg-blk-tile svg{width:60%; height:60%; display:block; fill:#fff;
+  filter:drop-shadow(0 1px 1px rgba(0,0,0,.35))}
 .rpg-blk-tile{grid-column:1; grid-row:2; align-self:center; position:relative; z-index:2; box-sizing:border-box;
   margin:calc((var(--bb) * 2 - var(--bt)) / 2) 0;
   width:var(--bt); height:var(--bt); border-radius:calc(6px * var(--rpg-sao-ui, 1));
   border:calc(2px * var(--rpg-sao-ui, 1)) solid rgba(236,240,245,.88); box-shadow:0 1px 3px rgba(0,0,0,.45);
   display:grid; place-items:center; color:#fff; font-weight:800;
-  font-size:calc(var(--bt) * .46); text-shadow:0 1px 2px rgba(0,0,0,.35)}
+  font-size:calc(var(--bt) * .46); text-shadow:0 1px 2px rgba(0,0,0,.35);
+  background-image:linear-gradient(180deg, rgba(255,255,255,.24) 0, rgba(255,255,255,.06) 48%,
+                                           rgba(0,0,0,0) 52%, rgba(0,0,0,.14) 100%)}
 /* width:0 + min-width:100% keeps a long name from widening the row */
 .rpg-blk-head{grid-column:2 / 4; grid-row:1; position:relative; z-index:1;
   display:flex; align-items:center; gap:calc(6px * var(--rpg-sao-ui, 1));
