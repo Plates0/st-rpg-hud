@@ -3975,8 +3975,9 @@ let saoSvgUid = 0;
 
 const SAO_SHAPE = { step: 0.60, slope: 2, drop: 0.50, tip: 4, tipy: 0 };
 const SAO_RIM = { grey: "#53565e", greyW: 4, metalW: 2, hi: "#eceadf", lo: "#94918a",
-                  slantW: 2.5,       // grey band width along the tip's slant; slimmer = shorter point
-                  tipSlope: 0.73 };  // slant run per unit of rise, so every bar gets the same tip angle
+                  slantW: 4,         // grey band along the slant; keep = greyW so the rim reads as one band
+                  tipSlope: 0.55 };  // slant run per unit of rise. Every bar gets the same angle, and the
+                                     // point's length depends only on this: lower = shorter, blunter point
 const SAO_WELL = "rgba(36,39,46,0.82)";
 // How many characters fit beside the bar depends on the font, the font scale
 // and the device, so it is measured after layout rather than guessed.
