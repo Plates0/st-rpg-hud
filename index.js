@@ -348,7 +348,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.12";
+const HUD_BUILD = "2026-09-26.13";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -6633,6 +6633,10 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-blk-row{
   --bt:calc(30px * var(--rpg-sao-ui, 1)); --bl:calc(150px * var(--rpg-sao-ui, 1)); --bb:calc(8px * var(--rpg-sao-ui, 1));
   position:relative; display:grid; grid-template-columns:var(--bt) auto auto; grid-template-rows:auto auto;
+  /* pack the columns at the left: otherwise the auto columns stretch to the
+     width of the widest row (the player's), so a party member's plate ran on
+     past their shorter bars and their numbers drifted off to the right */
+  justify-content:start;
   column-gap:0; align-items:center;
   margin-bottom:calc((var(--bt) - var(--bb) * 2) / 2 + 6px * var(--rpg-sao-ui, 1))}
 .rpg-blk-row.big{--bt:calc(38px * var(--rpg-sao-ui, 1)); --bl:calc(220px * var(--rpg-sao-ui, 1)); --bb:calc(10px * var(--rpg-sao-ui, 1));
