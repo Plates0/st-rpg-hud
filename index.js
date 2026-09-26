@@ -346,6 +346,10 @@ let lastPipeError = {
 
 // --- UI SETTINGS (font + scale) ---
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
+// Bump on every release. Shown at the foot of the SAO settings menu and in the
+// console, so it's obvious when the browser is still serving a cached copy.
+const HUD_BUILD = "2026-09-26.12";
+console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
   skin: "classic",
@@ -353,10 +357,13 @@ const defaultUiSettings = {
   saoPanelLight: 92,      // panel lightness %, lower = dimmer but still solid
   saoCardAlpha: 11,       // % wash behind the player's HP/MP bars; higher = lighter
   saoFont: "preset",      // "preset" | "sans" | "squarish"
+  saoBarStyle: "sao",     // "sao" stepped bars | "alo" arrow-ended ALfheim bars
   saoInk: 70,             // text contrast against the panel, 0 = faint, 100 = maximum
   saoAnimate: true,       // bar tweening, orb unfold, panel and clock fades
   saoPos: null,           // {vitals:[x,y], col:[x,y], clock:[x,y]} drag offsets
   saoSnap: true,          // snap a dragged piece to the others' edges and centres
+  meterColors: {},        // meter name (lowercase) -> "#rrggbb", overrides the auto colour
+  tileColors: {},         // ALfheim (New) tile colours you've picked: "@player" or a name key -> "#rrggbb"
   saoUiScale: 100,        // % size of the bar cluster; a desktop usually wants ~130
   saoTextShadow: false,   // shadow behind the text that sits straight on the chat
   saoTextBacking: false,  // translucent card behind that text instead        // "classic" | "sao"
@@ -528,36 +535,143 @@ function currentChatKey(context) {
   return [context?.chatId, context?.characterId, context?.groupId].map((v) => String(v ?? "")).join("|");
 }
 
+// ---- word-level diff, so a change can be shown instead of hunted for ----
+function wordDiff(a, b) {
+  // Words are compared without trailing punctuation, so "ATK*1.4." and
+  // "ATK*1.4" match when a sentence simply carries on. Shown as written.
+  const tok = (t) => String(t ?? "").split(/\s+/).filter(Boolean)
+    .map((w) => ({ w, k: w.replace(/[.,;:!?]+$/, "").toLowerCase() || w }));
+  const A = tok(a), B = tok(b);
+  if (A.length * B.length > 160000) return null;          // absurdly long: don't try
+  const n = A.length, m = B.length;
+  const L = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) {
+    L[i][j] = A[i].k === B[j].k ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  }
+  const ops = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i].k === B[j].k) { ops.push({ op: "=", w: B[j].w, k: B[j].k }); i++; j++; }
+    else if (L[i + 1][j] >= L[i][j + 1]) { ops.push({ op: "-", w: A[i].w, k: A[i].k }); i++; }
+    else { ops.push({ op: "+", w: B[j].w, k: B[j].k }); j++; }
+  }
+  while (i < n) { ops.push({ op: "-", w: A[i].w, k: A[i].k }); i++; }
+  while (j < m) { ops.push({ op: "+", w: B[j].w, k: B[j].k }); j++; }
+  return ops;
+}
+
+// Only the changed stretches, with a few words either side for context.
+// `style` is "toast" (inline styles, dark-on-blue) or "log" (classes).
+function wordDiffHtml(a, b, style) {
+  const ops = wordDiff(a, b);
+  if (!ops) return `${escHtml(b)}`;
+  const del = style === "toast"
+    ? (w) => `<span style="text-decoration:line-through; color:#ffd6cf; background:rgba(0,0,0,.18); padding:0 2px; border-radius:2px;">${escHtml(w)}</span>`
+    : (w) => `<del class="rpg-wd-del">${escHtml(w)}</del>`;
+  const ins = style === "toast"
+    ? (w) => `<b style="color:#e4ffd9; background:rgba(255,255,255,.14); padding:0 2px; border-radius:2px;">${escHtml(w)}</b>`
+    : (w) => `<ins class="rpg-wd-ins">${escHtml(w)}</ins>`;
+
+  const CTX = 3;
+  const keep = new Array(ops.length).fill(false);
+  ops.forEach((o, k) => {
+    if (o.op === "=") return;
+    for (let x = Math.max(0, k - CTX); x <= Math.min(ops.length - 1, k + CTX); x++) keep[x] = true;
+  });
+  const parts = [];
+  let gap = false;
+  ops.forEach((o, k) => {
+    if (!keep[k]) { gap = true; return; }
+    if (gap || (k > 0 && parts.length === 0)) parts.push("\u2026");
+    gap = false;
+    parts.push(o.op === "=" ? escHtml(o.w) : o.op === "-" ? del(o.w) : ins(o.w));
+  });
+  if (!keep[ops.length - 1]) parts.push("\u2026");
+  return parts.join(" ");
+}
+
+// Is this a loss worth interrupting you for? A description losing a chunk,
+// or losing a number (a stat, a cost, a count), yes. A reworded phrase, no.
+function isMeaningfulLoss(before, after) {
+  const ops = wordDiff(before, after);
+  if (!ops) return String(after).length < String(before).length * 0.85;
+  const removed = ops.filter((o) => o.op === "-").map((o) => o.k);
+  const added = ops.filter((o) => o.op === "+").map((o) => o.k);
+  const lostChars = removed.join(" ").length - added.join(" ").length;
+  const numbersLost = removed.filter((w) => /\d/.test(w)).some((w) => !added.includes(w));
+  return numbersLost || lostChars >= 24 || lostChars >= String(before).length * 0.15;
+}
+
+// Compares the latest block with the block from the turn before it, not with
+// whatever the last scan happened to see. Scans repeat constantly, and a
+// swipe, a deletion or a reload would otherwise be read as the model editing
+// descriptions. Fires at most once per message version.
+let alertKey = null;
+let alertSig = "";
+let alertIdx = -1;
+
 function maybeReportListChanges() {
-  const next = snapshotLists(rpgState);
-  const prev = lastListSnapshot;
-  lastListSnapshot = next;
+  let ctx = null;
+  try { ctx = SillyTavern.getContext(); } catch {}
+  const chat = ctx?.chat;
+  if (!Array.isArray(chat)) return;
 
-  if (!prev) return;                    // first scan is baseline only
-  if (!uiSettings.changeAlerts) return;
+  const key = currentChatKey(ctx);
+  const idx = lastRpgMsgIndex;
+  const inner = rpgInnerFromMessage(chat[idx]?.mes);
+  if (!inner) return;
+  const sig = `${idx}|${inner}`;
 
-  const diffs = diffLists(prev, next);
+  if (key !== alertKey) { alertKey = key; alertSig = sig; alertIdx = idx; return; }  // baseline
+  if (sig === alertSig) return;                                                     // same message
+  const wentBack = idx < alertIdx;                                                  // a deletion
+  alertSig = sig; alertIdx = idx;
+  if (wentBack || !uiSettings.changeAlerts) return;
+
+  let prevInner = null;
+  for (let i = idx - 1; i >= 0 && !prevInner; i--) {
+    const m = chat[i];
+    if (m && !m.is_user) prevInner = rpgInnerFromMessage(m.mes);
+  }
+  if (!prevInner) return;
+
+  const a = coreStateOf(prevInner), b = coreStateOf(inner);
+  if (!a || !b) return;
+
+  const diffs = diffLists(snapshotLists(a), snapshotLists(b));
   if (!diffs.length) return;
   console.log("RPG HUD: list changes", diffs);
 
-  const lost = diffs.filter((d) => d.type === "lost");
-  if (!lost.length) return;
+  // Any description that lost or swapped even one word gets flagged. Pure
+  // additions (the AI adding detail) don't lose anything, so those stay in the
+  // log. A lost number or a big chunk is marked as the more serious kind.
+  // Masteries exist to change: their progress ticks every turn. The same goes
+  // for any "Name: 12/30" counter elsewhere. Both stay in the turn log but
+  // never raise an alert.
+  const progressless = (t) => String(t ?? "").replace(/:\s*-?\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?/g, "").trim();
+  const hits = diffs
+    .filter((d) => (d.type === "lost" || d.type === "changed") && d.before)
+    .filter((d) => d.label !== "Mastery")
+    .filter((d) => progressless(d.before) !== progressless(d.name))
+    .filter((d) => (wordDiff(d.before, d.name) || [{ op: "-" }]).some((o) => o.op === "-"))
+    .map((d) => ({ ...d, serious: isMeaningfulLoss(d.before, d.name) }))
+    .sort((x, y) => (y.serious ? 1 : 0) - (x.serious ? 1 : 0));
+  if (!hits.length) return;
 
-  const shown = lost.slice(0, 4);
+  const shown = hits.slice(0, 3);
   const body =
-    shown
-      .map((d) =>
-        `${escHtml(d.label)}: <b>${escHtml(d.name)}</b>` +
-        `<br><span style="opacity:0.7;">was: ${escHtml(d.before)}</span>`
-      )
-      .join("<br><br>") +
-    (lost.length > 4 ? `<br><br>(+${lost.length - 4} more)` : "") +
-    (diffs.length > lost.length
-      ? `<br><br><span style="opacity:0.6;">${diffs.length - lost.length} other change(s) — see console</span>`
-      : "");
+    shown.map((d) =>
+      `${escHtml(d.label)}: <b>${escHtml(tItemName(d.name))}</b>` +
+      `<br><span style="opacity:.95;">${wordDiffHtml(d.before, d.name, "toast")}</span>`
+    ).join("<br><br>") +
+    (hits.length > 3 ? `<br><br>(+${hits.length - 3} more in the turn log)` : "");
 
-  if (window.toastr?.warning) {
-    window.toastr.warning(body, "⚠️ Description dropped", { escapeHtml: false });
+  const serious = hits.some((d) => d.serious);
+  if (window.toastr) {
+    const fn = serious ? (window.toastr.warning || window.toastr.info) : window.toastr.info;
+    fn.call(window.toastr, body,
+      serious ? "\u26A0\uFE0F Description lost detail" : "\u{1F4DD} Description changed",
+      { escapeHtml: false });
   }
 }
 
@@ -838,53 +952,77 @@ function renderIndicatorDotHtml(status, title) {
   `;
 }
 
+// Closing or switching a chat changes what "latest message" means, so the
+// first reading in any chat is a baseline, never an alert. A missing block is
+// only worth announcing when a new message just arrived in this same chat.
+let lastIndicatorKey = null;
+let lastIndicatorLen = 0;
+// A streaming reply has no block until the end, so "missing" is only real once
+// the message has stopped changing for a moment.
+let notagWatch = null;          // { key, idx, len, since, done }
+const NOTAG_SETTLE_MS = 2500;
+
+function rpgToast(kind, msg) {
+  if (!window.toastr) return;
+  window.toastr.options = {
+    ...window.toastr.options,
+    timeOut: 0, extendedTimeOut: 0, tapToDismiss: true, closeButton: true, preventDuplicates: true,
+  };
+  (window.toastr[kind] || window.toastr.info)(msg);
+}
+
+setInterval(() => {
+  if (!notagWatch || notagWatch.done) return;
+  try { updateLatestStatusAndToast(SillyTavern.getContext()?.chat); } catch {}
+}, 1000);
+
 function updateLatestStatusAndToast(chat) {
   const latest = getLatestRpgValidity(chat);
 
-  if (lastIndicatorStatus !== latest.status) {
-    const prev = lastIndicatorStatus;
+  let key = "";
+  try { key = currentChatKey(SillyTavern.getContext()); } catch {}
+  const len = Array.isArray(chat) ? chat.length : 0;
+
+  if (key !== lastIndicatorKey) {
+    lastIndicatorKey = key;
+    lastIndicatorLen = len;
     lastIndicatorStatus = latest.status;
+    return latest;
+  }
+  const grew = len > lastIndicatorLen;
+  lastIndicatorLen = len;
 
-    const enteredBad =
-      (latest.status === "invalid" || latest.status === "notag") &&
-      prev !== latest.status;
+  const prev = lastIndicatorStatus;
+  const changed = prev !== latest.status;
+  lastIndicatorStatus = latest.status;
 
-    const shouldToast =
-      enteredBad &&
-      (
-        latest.status === "invalid" ||
-        (
-          latest.status === "notag" &&
-          hudToastArmed &&
-          (prev === "valid" || prev === "invalid")
-        )
-      );
-
-    if (shouldToast) {
-      const msg =
-        latest.status === "invalid"
-          ? "RPG Pipe format is broken (🟡). Tap the dot for details."
-          : "No <rpg_state> found in the latest AI message (⚪).";
-
-      if (window.toastr) {
-        window.toastr.options = {
-          ...window.toastr.options,
-          timeOut: 0,
-          extendedTimeOut: 0,
-          tapToDismiss: true,
-          closeButton: true,
-          preventDuplicates: true,
-        };
-
-        if (latest.status === "invalid" && window.toastr.warning) window.toastr.warning(msg);
-        else if (window.toastr.info) window.toastr.info(msg);
-        else window.toastr.warning?.(msg);
-      } else {
-        alert(msg);
-      }
-    }
+  // a broken block is complete by definition, so it can be reported at once
+  if (changed && latest.status === "invalid") {
+    rpgToast("warning", "RPG Pipe format is broken (\u{1F7E1}). Tap the dot for details.");
   }
 
+  // a missing block: start watching when a new AI message shows up without one
+  if (latest.status === "notag") {
+    const last = chat[len - 1];
+    const textLen = String(last?.mes || "").length;
+    // only something that just happened: a new reply, or a block that was
+    // there a moment ago going missing (a swipe or regenerate without one).
+    // Simply opening a chat whose last message lacks a block is neither.
+    const fresh = grew || (changed && prev === "valid");
+    if (fresh) {
+      notagWatch = { key, idx: len - 1, len: textLen, since: Date.now(), done: false };
+    } else if (!notagWatch || notagWatch.key !== key || notagWatch.idx !== len - 1) {
+      // nothing being watched
+    } else if (notagWatch.len !== textLen) {
+      notagWatch.len = textLen;          // still streaming
+      notagWatch.since = Date.now();
+    } else if (!notagWatch.done && hudToastArmed && Date.now() - notagWatch.since >= NOTAG_SETTLE_MS) {
+      notagWatch.done = true;
+      rpgToast("info", "No <rpg_state> found in the latest AI message (\u26AA).");
+    }
+  } else {
+    notagWatch = null;
+  }
   return latest;
 }
 
@@ -1258,10 +1396,25 @@ function timerKindStyle(kind) {
   }
 }
 
+// Charges count uses, not time: "block the next 2 attacks". Written with an
+// x (2/2x, 2x) or the words uses/charges. Neither the round auto-tick nor the
+// manual turn button touches them, since both only match plain 2/3 and 2.
+const TIMER_CHARGE_RE = /^(-?\d+)(\s*\/\s*\d+)?(\s*(?:x|\u00D7|uses?|charges?))$/i;
+
 function timerInfo(t) {
   const kind = String(t?.kind || "CD").toUpperCase();
   const raw = String(t?.value ?? "").trim();
   const zero = timerKindStyle(kind).zero;
+
+  const ch = raw.match(TIMER_CHARGE_RE);
+  if (ch) {
+    const cur = parseInt(ch[1], 10);
+    const max = ch[2] ? parseInt(ch[2].replace(/[^\d]/g, ""), 10) : null;
+    return { kind, mode: "charges", done: cur <= 0,
+      pct: max ? clamp((cur / max) * 100, 0, 100) : null,
+      label: cur <= 0 ? "USED UP" : `${cur} use${cur === 1 ? "" : "s"}`,
+      sortKey: cur <= 0 ? Infinity : 0.5 + cur };
+  }
 
   const turns = raw.match(/^(-?\d+)\s*\/\s*(\d+)$/);
   if (turns) {
@@ -1410,6 +1563,24 @@ function mergeTimers(prevState, nextState) {
   });
 
   return merged;
+}
+
+// Spend one charge, keeping however the value was written (2/2x stays x).
+function useTimerCharge(t) {
+  const m = String(t?.value ?? "").trim().match(TIMER_CHARGE_RE);
+  if (!m) return false;
+  const cur = parseInt(m[1], 10);
+  if (cur <= 0) return false;
+  t.prev = t.value;
+  t.value = `${cur - 1}${m[2] || ""}${m[3]}`;
+  return true;
+}
+
+function spendTimerCharge(key) {
+  const t = (rpgState.timers || []).find((x) => timerKey(x) === key);
+  if (!t || !useTimerCharge(t)) return;
+  renderRPG();
+  writeStateBackToChatMessage(rpgState);
 }
 
 function advanceTimerTurn() {
@@ -1601,15 +1772,39 @@ function bindJumpLinks() {
   });
 }
 
+// SillyTavern substitutes macros in prompts, not in what the model writes back,
+// so a block can contain a literal {{user}}. Resolve it for display only.
+function displayName(raw, fallback) {
+  let out = String(raw ?? "").trim();
+  if (!out) return fallback ?? "";
+  if (!out.includes("{{")) return out;
+  let ctx = {};
+  try { ctx = SillyTavern.getContext() || {}; } catch {}
+  const user = ctx.name1 || ctx.user_name || "";
+  const char = ctx.name2 || "";
+  if (user) out = out.replace(/\{\{\s*user\s*\}\}/gi, user);
+  if (char) out = out.replace(/\{\{\s*char\s*\}\}/gi, char);
+  return out;
+}
+
+// the player also comes through as the placeholder "Player" on a fresh state
+function playerDisplayName() {
+  const raw = rpgState?.name;
+  if (!raw || raw === "Player") {
+    let ctx = {};
+    try { ctx = SillyTavern.getContext() || {}; } catch {}
+    return ctx.name1 || ctx.user_name || "Player";
+  }
+  return displayName(raw, "Player");
+}
+
 function getCharOptions() {
   const context = SillyTavern.getContext();
-  const realUserName = context?.name1 || context?.user_name || "Player";
-  let playerName = rpgState.name;
-  if (playerName === "{{user}}" || playerName === "Player") playerName = realUserName;
+  const playerName = playerDisplayName();
 
   const fmt = (char, fallback) => {
-    if (char.vehicle && char.vehicle.active) return `🤖 ${char.vehicle.name || "Vehicle"}`;
-    return char.name || fallback;
+    if (char.vehicle && char.vehicle.active) return `🤖 ${displayName(char.vehicle.name, "Vehicle")}`;
+    return displayName(char.name, fallback);
   };
 
   const optStyle = "background: #222; color: #fff;";
@@ -1764,7 +1959,7 @@ function renderMiniUnitBars(list, options = {}) {
   const rows = list
     .map((unit, idx) => {
       const target = unit?.vehicle && unit.vehicle.active ? unit.vehicle : unit;
-      const name = escHtml(target?.name || unit?.name || "Unit");
+      const name = escHtml(displayName(target?.name || unit?.name, "Unit"));
 
       const absIdx = jumpType ? charIndexFor(jumpType, idx) : null;
 
@@ -1915,8 +2110,8 @@ function renderBondsTab() {
         ? `<span title="In scene" style="color:#69f0ae;">●</span>`
         : `<span title="Away" style="color:#666;">○</span>`;
       const nameHtml = idx !== null
-        ? `<span class="rpg-jump" data-idx="${idx}" style="cursor:pointer; text-decoration:underline; text-decoration-color:#555;">${escHtml(b.name)}</span>`
-        : `<span>${escHtml(b.name)}</span>`;
+        ? `<span class="rpg-jump" data-idx="${idx}" style="cursor:pointer; text-decoration:underline; text-decoration-color:#555;">${escHtml(displayName(b.name))}</span>`
+        : `<span>${escHtml(displayName(b.name))}</span>`;
 
       // Change since the previous message's block. null prev = brand new name.
       const hasBaseline = Object.prototype.hasOwnProperty.call(b, "prev");
@@ -1978,30 +2173,56 @@ function commitBondsEdit() {
   });
 
   const nowKeys = new Set(cleaned.map((b) => normBondName(b.name)));
-  const removed = bondsSnapshot.filter((n) => !nowKeys.has(normBondName(n)));
+  let removed = bondsSnapshot.filter((b) => !nowKeys.has(normBondName(b.name)));
+
+  // Ask BEFORE anything is written. Cancel puts them back; the rest of the
+  // edit (renames, new values) still applies.
+  if (removed.length) {
+    const label = removed.map((b) => b.name).join(", ");
+    const sure = confirm(`Remove ${removed.length === 1 ? "this bond" : "these bonds"}?\n\n${label}\n\nCancel keeps them.`);
+    if (!sure) {
+      removed.forEach((b) => upsertBond(cleaned, b.name, b.bond));
+      removed = [];
+    }
+  }
 
   rpgState.bonds = cleaned;
+
+  // Party members and NPCs carry their own |Bond:| value, and the block writer
+  // copies those INTO the ledger before writing. Left alone, a character's old
+  // value would be copied straight back over the edit (only people not in the
+  // party or NPC list kept their new value). So bring the live values in line
+  // with the edit first, and drop the live value of any bond that was removed.
+  const removedKeys = new Set(removed.map((b) => normBondName(b.name)));
+  [...(rpgState.party || []), ...(rpgState.npcs || [])].forEach((u) => {
+    const key = normBondName(u?.name);
+    if (!key) return;
+    const edited = cleaned.find((b) => normBondName(b.name) === key);
+    const hasLive = u.bond !== undefined && u.bond !== null && String(u.bond).trim() !== "";
+    if (edited && hasLive) u.bond = edited.bond;
+    else if (!edited && removedKeys.has(key)) delete u.bond;
+  });
+
   bondsEditMode = false;
   bondsSnapshot = [];
   renderRPG();
 
   const ok = writeStateBackToChatMessage(rpgState);
   if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after bond edit");
+  if (!removed.length) return;
 
-  if (removed.length) {
-    const label = removed.join(", ");
-    const yes = confirm(
-      `Scrub from |Bonds:| in ALL earlier messages?\n\n${label}\n\n` +
-      `If you skip this, the AI can still see them in older blocks and may add them back.\n\n` +
-      `This edits your chat history and cannot be undone.`
-    );
-    blockBonds(removed);   // stop the next scan re-adding them from live |Bond:| values
-    if (yes) {
-      const n = purgeBondsFromHistory(removed);
-      if (window.toastr) window.toastr.info(`Scrubbed ${removed.length} name(s) from ${n} message(s).`);
-    } else if (window.toastr) {
-      window.toastr.info(`${removed.length} bond(s) removed and blocked from returning.`);
-    }
+  const names = removed.map((b) => b.name);
+  blockBonds(names);   // stop the next scan re-adding them from live |Bond:| values
+  const scrub = confirm(
+    `Also remove ${names.length === 1 ? "it" : "them"} from ALL earlier messages?\n\n` +
+    `If you skip this, the AI can still see them in older blocks. They stay blocked either way.\n\n` +
+    `This edits your chat history and cannot be undone.`
+  );
+  if (scrub) {
+    const n = purgeBondsFromHistory(names);
+    if (window.toastr) window.toastr.info(`Scrubbed ${names.length} name(s) from ${n} message(s).`);
+  } else if (window.toastr) {
+    window.toastr.info(`${names.length} bond(s) removed and blocked from returning.`);
   }
 }
 
@@ -2018,7 +2239,7 @@ function bindBondsTab() {
         commitBondsEdit();
       } else {
         bondsEditMode = true;
-		bondsSnapshot = (rpgState.bonds || []).map((b) => b?.name).filter(Boolean);
+		bondsSnapshot = (rpgState.bonds || []).filter((b) => b && b.name).map((b) => ({ ...b }));
         renderRPG();
       }
     };
@@ -2127,6 +2348,11 @@ function renderTimersTab() {
             <span style="flex:0 0 auto; color:${st.color};">
               ${escHtml(info.label)}
               ${delta ? `<span style="font-size:0.75em; color:#888;"> ${escHtml(delta)}</span>` : ""}
+              ${info.mode === "charges" && !info.done
+                ? `<button class="rpg-c-tuse" data-key="${escAttr(timerKey(t))}" title="Use one charge"
+                     style="margin-left:4px; padding:0 5px; font-size:0.85em; line-height:1.4; cursor:pointer;
+                            background:#333; color:#ddd; border:1px solid #666; border-radius:2px;">\u22121</button>`
+                : ""}
             </span>
           </div>
           ${bar}
@@ -2163,7 +2389,16 @@ function commitTimersEdit() {
 
   const cleaned = (rpgState.timers || []).filter((t) => t && String(t.name || "").trim());
   const nowKeys = new Set(cleaned.map(timerKey));
-  const removed = timersSnapshot.filter((t) => !nowKeys.has(timerKey(t)));
+  let removed = timersSnapshot.filter((t) => !nowKeys.has(timerKey(t)));
+
+  if (removed.length) {
+    const label = removed.map((t) => (t.owner ? `${t.owner}/${t.name}` : t.name)).join(", ");
+    const sure = confirm(`Remove ${removed.length === 1 ? "this timer" : "these timers"}?\n\n${label}\n\nCancel keeps them.`);
+    if (!sure) {
+      removed.forEach((t) => cleaned.push({ ...t }));
+      removed = [];
+    }
+  }
 
   rpgState.timers = cleaned;
   timersEditMode = false;
@@ -2172,18 +2407,16 @@ function commitTimersEdit() {
 
   const ok = writeStateBackToChatMessage(rpgState);
   if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after timer edit");
+  if (!removed.length) return;
 
-  if (removed.length) {
-    const label = removed.map((t) => (t.owner ? `${t.owner}/${t.name}` : t.name)).join(", ");
-    const yes = confirm(
-      `Scrub from |Timers:| in ALL earlier messages?\n\n${label}\n\n` +
-      `If you skip this, the AI can still see them in older blocks and may add them back.\n\n` +
-      `This edits your chat history and cannot be undone.`
-    );
-    if (yes) {
-      const n = purgeTimersFromHistory(removed);
-      if (window.toastr) window.toastr.info(`Scrubbed ${removed.length} timer(s) from ${n} message(s).`);
-    }
+  const scrub = confirm(
+    `Also remove ${removed.length === 1 ? "it" : "them"} from ALL earlier messages?\n\n` +
+    `If you skip this, the AI can still see them in older blocks and may add them back.\n\n` +
+    `This edits your chat history and cannot be undone.`
+  );
+  if (scrub) {
+    const n = purgeTimersFromHistory(removed);
+    if (window.toastr) window.toastr.info(`Scrubbed ${removed.length} timer(s) from ${n} message(s).`);
   }
 }
 
@@ -2196,7 +2429,7 @@ function bindTimersTab() {
       else {
         timersSnapshot = (rpgState.timers || [])
           .filter((t) => t && String(t.name || "").trim())
-          .map((t) => ({ owner: t.owner || "", name: t.name, kind: t.kind }));
+          .map((t) => ({ ...t }));
         timersEditMode = true;
         renderRPG();
       }
@@ -2240,14 +2473,17 @@ function flushInlineEdits() {
 }
 
 // Strips bond after deleting
+// Strips a name from the |Bonds:| ledger AND from any live |Bond:| value on
+// that character's own line. bondMemoryFromHistory reads both, so clearing
+// only the ledger left the bond recoverable from history and it would return.
 function stripBondsFromText(text, keys) {
   return String(text).replace(
     /(<rpg_state\b[^>]*>)([\s\S]*?)(<\/rpg_state>)/gi,
     (full, open, body, close) => {
-      const newBody = body.replace(/\|Bonds:([^|]*)\|/gi, (m, val) => {
+      let newBody = body.replace(/\|Bonds:([^|]*)\|/gi, (m, val) => {
         const kept = String(val)
           .split(";")
-          .map((s) => s.trim())
+          .map((x) => x.trim())
           .filter(Boolean)
           .filter((chunk) => {
             const i = chunk.lastIndexOf(":");
@@ -2256,6 +2492,23 @@ function stripBondsFromText(text, keys) {
           });
         return `|Bonds:${kept.join(";")}|`;
       });
+
+      // now the per-entity values, walking statefully because Name and Bond
+      // may sit on different lines
+      let curName = "";
+      let inPlayer = false;
+      newBody = newBody.split("\n").map((raw) => {
+        const line = raw.trim();
+        if (!line) return raw;
+        if (line.startsWith("[")) { inPlayer = /player/i.test(line); curName = ""; return raw; }
+        if (line.startsWith(">")) return raw;
+        const nm = line.match(/\|Name:\s*([^|]*)/i);
+        if (nm) curName = nm[1].trim();
+        if (inPlayer || !curName) return raw;
+        if (!keys.has(normBondName(curName))) return raw;
+        return raw.replace(/\|Bond:\s*[^|]*\|/gi, "");
+      }).join("\n");
+
       return open + newBody + close;
     }
   );
@@ -2341,7 +2594,18 @@ function purgeTimersFromHistory(list) {
 }
 
 // --- METERS (generic bar stats) ---
+function meterKey(name) {
+  return String(name || "").trim().toLowerCase();
+}
+
 function meterColorByName(name) {
+  const custom = uiSettings?.meterColors?.[meterKey(name)];
+  if (custom && /^#[0-9a-f]{6}$/i.test(custom)) return custom;
+  return meterAutoColor(name);
+}
+
+// the name-guessing fallback, kept separate so "reset colour" has a target
+function meterAutoColor(name) {
   const k = String(name || "").toLowerCase();
   if (k.includes("shield") || k.includes("barrier")) return "#00bcd4";
   if (k.includes("temp") && k.includes("hp")) return "#ff9800";
@@ -2477,7 +2741,11 @@ function buildPipeString(stateObj) {
 
   const buildEntity = (ent, isPlayer = false, isPartyOrNPC = false) => {
     let coinStr = (isPlayer || (ent.dankcoin !== undefined && ent.dankcoin !== null)) ? `||Coin:${ent.dankcoin ?? 0}` : "";
-    let bondStr = isPartyOrNPC ? `||Bond:${ent.bond ?? 0}` : "";
+    // Only write a bond the character actually has. Writing "Bond:0" for
+    // everyone else gave them a bond on every edit, which auto-add then
+    // folded into the ledger as a character you'd never bonded with.
+    const hasBond = ent.bond !== undefined && ent.bond !== null && String(ent.bond).trim() !== "";
+    let bondStr = isPartyOrNPC && hasBond ? `||Bond:${ent.bond}` : "";
     
     let block = [`|Name:${ent.name || "Unknown"}||HP:${ent.hp_curr ?? 0}/${ent.hp_max ?? 0}||MP:${ent.mp_curr ?? 0}/${ent.mp_max ?? 0}${coinStr}${bondStr}|`];
     block.push(`|Stats:${formatStats(ent.stats)}|`);
@@ -2743,6 +3011,13 @@ function renderClassicSkin() {
     document.body.appendChild(container);
   }
 
+  // Classic redraws through three separate paths (minimised, settings, main)
+  // with no shared ending, so positions are saved here and put back in a
+  // microtask: after this synchronous render finishes, before the next paint,
+  // so there's no visible jump.
+  saoSaveScroll(container);
+  queueMicrotask(() => saoRestoreScroll(container));
+
   const BOX_RADIUS = "0px";
   const BAR_RADIUS = "4px";
   const FONT_FAMILY = uiSettings.fontFamily || "'Courier New', Courier, monospace";
@@ -2956,7 +3231,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           <button id="rpg-settings-close" style="background:#444; border:1px solid #777; color:#fff; cursor:pointer; font-size:10px; padding:3px 10px; font-weight:bold;">CLOSE</button>
         </div>
 
-        <div style="flex:1; overflow:auto; padding-right:4px;">
+        <div data-scroll-key="c:settings" style="flex:1; overflow:auto; padding-right:4px;">
           <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Actions</div>
 
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-bottom:12px;">
@@ -3100,7 +3375,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         </div>
       </div>
 
-      <div id="rpg-tab-strip" style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid #555; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
+      <div id="rpg-tab-strip" data-scroll-key="c:strip" style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid #555; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
         <div id="tab-party" style="${tabStyle("party")}">Party</div>
 		<div id="tab-bonds" style="${tabStyle("bonds")}">Bonds</div>
 	    <div id="tab-timers" style="${tabStyle("timers")}">Timers</div>
@@ -3110,10 +3385,12 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         <div id="tab-mast" style="${tabStyle("mastery")}">Mastery</div>
         <div id="tab-quest" style="${tabStyle("quests")}">Quest</div>
         <div id="tab-env" style="${tabStyle("env")}">Environment</div>
+        <div id="tab-log" style="${tabStyle("log")}">Log</div>
       </div>
 
-      <div style="height: 110px; overflow-y: auto; font-size: 0.8em; padding:5px; background:rgba(0,0,0,0.3); scrollbar-gutter:stable;">
+      <div data-scroll-key="c:body:${activeTab}" style="height: 110px; overflow-y: auto; font-size: 0.8em; padding:5px; background:rgba(0,0,0,0.3); scrollbar-gutter:${activeTab === "log" ? "auto" : "stable"};">
         ${activeTab === "party" ? renderPartyTab() : ""}
+        ${activeTab === "log" ? classicLogHtml() : ""}
 		${activeTab === "bonds" ? renderBondsTab() : ""}
 		${activeTab === "timers" ? renderTimersTab() : ""}
         ${activeTab === "inventory" ? makeList(inv, "No Items") : ""}
@@ -3289,6 +3566,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     bind("tab-mast", () => switchTab("mastery"));
     bind("tab-quest", () => switchTab("quests"));
     bind("tab-env", () => switchTab("env"));
+    bind("tab-log", () => switchTab("log"));
+    classicBindLog();
 	  
 	if (isSettingsOpen) {
 	  bind("rpg-settings-close", toggleSettings);
@@ -3378,6 +3657,320 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 }
 
 
+
+// =====================================================================
+// TURN LOG
+// Nothing is stored. Every AI message already carries a complete
+// <rpg_state>, so a turn's changes are the difference between one block
+// and the block before it. Rebuilt from history on demand, which means it
+// follows swipes, edits and deletions for free and works on old chats.
+// =====================================================================
+
+// same rule the scanner uses: the first block in the message
+function rpgInnerFromMessage(mes) {
+  const m = String(mes || "").match(/<rpg_state\b[^>]*>([\s\S]*?)<\/rpg_state>/i);
+  if (!m) return null;
+  return m[1].replace(/```[a-z]*\n?/g, "").replace(/```/g, "").trim();
+}
+
+// parsed blocks, keyed by their exact text, so a long chat parses once
+const turnParseCache = new Map();
+function coreStateOf(inner) {
+  if (turnParseCache.has(inner)) return turnParseCache.get(inner);
+  let st = null;
+  try { st = parseBlockCore(inner); } catch (e) { st = null; }
+  if (turnParseCache.size > 600) turnParseCache.clear();
+  turnParseCache.set(inner, st);
+  return st;
+}
+
+// every AI message with a parseable block, oldest first
+function rpgTurnsOf(chat) {
+  const out = [];
+  if (!Array.isArray(chat)) return out;
+  chat.forEach((msg, i) => {
+    if (!msg || msg.is_user || typeof msg.mes !== "string") return;
+    const inner = rpgInnerFromMessage(msg.mes);
+    if (!inner) return;
+    const st = coreStateOf(inner);
+    if (st) out.push({ idx: i, inner, state: st });
+  });
+  return out;
+}
+
+const tNum = (v) => { const n = parseFloat(String(v ?? "").replace(/[^\d.\-]/g, "")); return Number.isFinite(n) ? n : null; };
+const tSigned = (n) => (n > 0 ? `+${n}` : `${n}`);
+const tNameKey = (u) => normBondName(u?.name);
+
+// Keyed by name with any trailing modifier dropped, so "Iron Sword +10 ATK"
+// and "Iron Sword +15 ATK" are the same item upgraded, not a swap.
+// the name alone, as written: "Iron Sword +10 ATK [X]" -> "Iron Sword"
+function tItemName(text) {
+  return entryBaseName(text)
+    .replace(/:\s*-?\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?.*$/, "")
+    .replace(/\s[+\-\u2212]\s?\d.*$/, "")
+    .trim() || String(text ?? "").trim();
+}
+
+function tItemKey(text) {
+  return entryBaseName(text)
+    .replace(/:\s*-?\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?.*$/, "")   // "Sword: 45/100"
+    .replace(/\s[+\-\u2212]\s?\d.*$/, "")                              // "Sword +10 ATK"
+    .trim().toLowerCase();
+}
+
+function tListMap(list) {
+  const m = new Map();
+  (Array.isArray(list) ? list : []).forEach((i) => {
+    const text = String(typeof i === "object" ? (i?.name ?? "") : (i ?? "")).trim();
+    const key = tItemKey(text);
+    if (key && !m.has(key)) m.set(key, text);
+  });
+  return m;
+}
+
+function tBondMap(st) {
+  const m = new Map();
+  (Array.isArray(st?.bonds) ? st.bonds : []).forEach((b) => {
+    if (b?.name) m.set(normBondName(b.name), { name: b.name, v: parseBondValue(b.bond) });
+  });
+  // live values on characters win, same as the live pipeline
+  [...(st?.party || []), ...(st?.npcs || [])].forEach((u) => {
+    if (u?.name && u.bond !== undefined && u.bond !== "") {
+      m.set(normBondName(u.name), { name: u.name, v: parseBondValue(u.bond) });
+    }
+  });
+  return m;
+}
+
+// Every change carries `u`, a note of exactly what it touched, so it can be
+// reverted on its own. `who` is null for the player, else {group, key}.
+function tDiffVitals(out, label, a, b, who) {
+  const pre = label ? label + " " : "";
+  const hp0 = tNum(a?.hp_curr), hp1 = tNum(b?.hp_curr);
+  if (hp0 !== null && hp1 !== null && hp0 !== hp1) {
+    out.push({ tone: hp1 < hp0 ? "bad" : "good", u: { f: "hp", who },
+      text: `${pre}HP ${hp0} \u2192 ${hp1}${b?.hp_max ? "/" + b.hp_max : ""} (${tSigned(hp1 - hp0)})` });
+  }
+  const ea = getEnergy(a || {}, false), eb = getEnergy(b || {}, false);
+  const e0 = tNum(ea.curr), e1 = tNum(eb.curr);
+  if (e0 !== null && e1 !== null && e0 !== e1) {
+    out.push({ tone: "neutral", u: { f: "mp", who },
+      text: `${pre}${eb.label || "MP"} ${e0} \u2192 ${e1}${eb.max ? "/" + eb.max : ""} (${tSigned(e1 - e0)})` });
+  }
+
+  // "Healthy", "None" and the like mean no status, so going from Poisoned to
+  // Healthy is logged as losing Poisoned, not also as gaining Healthy
+  const realStatus = (list) => new Set((list || []).map((x) => String(x).trim())
+    .filter((x) => x && !BLK_NO_STATUS.test(x)));
+  const sa = realStatus(a?.status_effects);
+  const sb = realStatus(b?.status_effects);
+  sb.forEach((x) => { if (!sa.has(x)) out.push({ tone: "bad", text: `${pre}+ ${x}`, u: { f: "status", who, item: x, added: true } }); });
+  sa.forEach((x) => { if (!sb.has(x)) out.push({ tone: "good", text: `${pre}\u2212 ${x}`, u: { f: "status", who, item: x, added: false } }); });
+
+  const ma = new Map((a?.meters || []).map((m) => [meterKey(m.name), m]));
+  const mbKeys = new Set();
+  (b?.meters || []).forEach((m) => {
+    const key = meterKey(m.name); mbKeys.add(key);
+    const before = ma.get(key);
+    if (!before) { out.push({ tone: "neutral", text: `${pre}+ ${m.name} ${m.curr}/${m.max}`, u: { f: "meter", who, key } }); return; }
+    const n0 = tNum(before.curr), n1 = tNum(m.curr);
+    if (n0 !== null && n1 !== null && n0 !== n1) {
+      out.push({ tone: "neutral", text: `${pre}${m.name} ${n0} \u2192 ${n1} (${tSigned(n1 - n0)})`, u: { f: "meter", who, key } });
+    }
+  });
+  ma.forEach((m, key) => { if (!mbKeys.has(key)) out.push({ tone: "neutral", text: `${pre}\u2212 ${m.name}`, u: { f: "meter", who, key } }); });
+}
+
+function tDiffLists(out, a, b) {
+  WATCHED_LISTS.forEach(({ key, label }) => {
+    const A = tListMap(a?.[key]), B = tListMap(b?.[key]);
+    B.forEach((text, k) => {
+      if (!A.has(k)) { out.push({ tone: "good", text: `+ ${label}: ${text}`, u: { f: "list", key, k } }); return; }
+      const before = A.get(k);
+      if (before === text || stripStatusTags(before) === stripStatusTags(text)) return;
+      out.push({ tone: "neutral", text: `~ ${label}: ${stripStatusTags(before)} \u2192 ${stripStatusTags(text)}`, u: { f: "list", key, k },
+        diff: { label, name: tItemName(text), before: stripStatusTags(before), after: stripStatusTags(text) } });
+    });
+    A.forEach((text, k) => { if (!B.has(k)) out.push({ tone: "bad", text: `\u2212 ${label}: ${text}`, u: { f: "list", key, k } }); });
+  });
+}
+
+const tTimerKey = (t) => `${String(t?.owner || "").toLowerCase()}|${String(t?.name || "").toLowerCase()}`;
+
+// everything that changed between two consecutive states
+function diffTurn(a, b) {
+  const out = [];
+
+  if (String(a.location || "") !== String(b.location || "") && b.location) {
+    out.push({ tone: "neutral", text: `Moved to ${b.location}`, u: { f: "location" } });
+  }
+  const ta = a.world_time || {}, tb = b.world_time || {};
+  try {
+    const m0 = worldMinutes(ta.month, ta.day, ta.clock, ta.year);
+    const m1 = worldMinutes(tb.month, tb.day, tb.clock, tb.year);
+    if (Number.isFinite(m0) && Number.isFinite(m1) && m1 !== m0) {
+      out.push({ tone: "neutral", text: `Time ${m1 > m0 ? "+" : "\u2212"}${formatMinutes(Math.abs(m1 - m0))}`, u: { f: "time" } });
+    }
+  } catch {}
+  if (!a.combat?.active && b.combat?.active) out.push({ tone: "bad", text: "Combat started", u: { f: "combat" } });
+  if (a.combat?.active && !b.combat?.active) out.push({ tone: "good", text: "Combat ended", u: { f: "combat" } });
+
+  tDiffVitals(out, "", a, b, null);
+  const c0 = tNum(a.dankcoin), c1 = tNum(b.dankcoin);
+  if (c0 !== null && c1 !== null && c0 !== c1) {
+    out.push({ tone: c1 > c0 ? "good" : "bad", text: `Coin ${tSigned(c1 - c0)} (${c1})`, u: { f: "coin" } });
+  }
+  tDiffLists(out, a, b);
+
+  [["party", "joined the party", "left the party"],
+   ["npcs", "appeared", "left"],
+   ["enemies", "appeared", "is gone"]].forEach(([group, joined, left]) => {
+    const A = new Map((a[group] || []).map((u) => [tNameKey(u), u]));
+    const B = new Map((b[group] || []).map((u) => [tNameKey(u), u]));
+    B.forEach((u, key) => {
+      const name = displayName(u.name, "?");
+      if (!A.has(key)) {
+        out.push({ tone: group === "enemies" ? "bad" : "good", text: `${name} ${joined}`, u: { f: "unit", group, key } });
+        return;
+      }
+      tDiffVitals(out, name, A.get(key), u, { group, key });
+    });
+    A.forEach((u, key) => {
+      if (!B.has(key)) out.push({ tone: group === "enemies" ? "good" : "neutral",
+        text: `${displayName(u.name, "?")} ${left}`, u: { f: "unit", group, key } });
+    });
+  });
+
+  const ba = tBondMap(a), bb = tBondMap(b);
+  bb.forEach((x, key) => {
+    const before = ba.get(key);
+    if (!before) { out.push({ tone: "good", text: `New bond: ${displayName(x.name)} (${x.v >= 101 ? "\u221E" : x.v})`, u: { f: "bond", key } }); return; }
+    if (before.v !== x.v) {
+      const d = x.v - before.v;
+      out.push({ tone: d > 0 ? "good" : "bad", u: { f: "bond", key },
+        text: `${displayName(x.name)} bond ${before.v} \u2192 ${x.v} (${d > 0 ? "\u25B2" : "\u25BC"}${Math.abs(d)})` });
+    }
+  });
+
+  const qa = new Set((a.quests || []).map((q) => String(q).trim()));
+  const qb = new Set((b.quests || []).map((q) => String(q).trim()));
+  qb.forEach((q) => { if (q && !qa.has(q)) out.push({ tone: "good", text: `+ Quest: ${q}`, u: { f: "quest", q, added: true } }); });
+  qa.forEach((q) => { if (q && !qb.has(q)) out.push({ tone: "neutral", text: `Quest closed: ${q}`, u: { f: "quest", q, added: false } }); });
+
+  const tma = new Map((a.timers || []).map((t) => [tTimerKey(t), t]));
+  const tmb = new Map((b.timers || []).map((t) => [tTimerKey(t), t]));
+  tmb.forEach((t, key) => { if (!tma.has(key)) out.push({ tone: "neutral", text: `+ Timer: ${t.name} (${t.value})`, u: { f: "timer", key } }); });
+  tma.forEach((t, key) => { if (!tmb.has(key)) out.push({ tone: "neutral", text: `Timer ended: ${t.name}`, u: { f: "timer", key } }); });
+
+  return out;
+}
+
+// ---- reverting one change ----
+const tClone = (v) => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
+const tItemText = (x) => String(typeof x === "object" ? (x?.name ?? "") : (x ?? "")).trim();
+
+function tTarget(state, who) {
+  if (!who) return state;
+  return (state?.[who.group] || []).find((x) => normBondName(x?.name) === who.key) || null;
+}
+
+// b is the latest block (a clone we may change), a the block before it
+function applyTurnUndo(b, a, u) {
+  const tb = tTarget(b, u.who), ta = tTarget(a, u.who);
+  const putBack = (list, match, source) => {
+    const i = list.findIndex(match);
+    if (source !== undefined) { if (i >= 0) list[i] = tClone(source); else list.push(tClone(source)); }
+    else if (i >= 0) list.splice(i, 1);
+  };
+
+  switch (u.f) {
+    case "location": b.location = a.location; break;
+    case "time": b.world_time = tClone(a.world_time); break;
+    case "combat": b.combat = tClone(a.combat); break;
+    case "coin": b.dankcoin = a.dankcoin; break;
+    case "hp":
+      if (tb && ta) { tb.hp_curr = ta.hp_curr; tb.hp_max = ta.hp_max; }
+      break;
+    case "mp":
+      if (tb && ta) ["mp_curr", "mp_max", "mp", "en_curr", "en_max", "en"].forEach((k) => {
+        if (k in ta) tb[k] = ta[k]; else delete tb[k];
+      });
+      break;
+    case "status": {
+      if (!tb) break;
+      const list = Array.isArray(tb.status_effects) ? tb.status_effects : (tb.status_effects = []);
+      if (u.added) tb.status_effects = list.filter((x) => String(x).trim() !== u.item);
+      else if (!list.some((x) => String(x).trim() === u.item)) list.push(u.item);
+      break;
+    }
+    case "meter": {
+      if (!tb) break;
+      const list = Array.isArray(tb.meters) ? tb.meters : (tb.meters = []);
+      putBack(list, (m) => meterKey(m.name) === u.key, (ta?.meters || []).find((m) => meterKey(m.name) === u.key));
+      break;
+    }
+    case "list": {
+      const list = Array.isArray(b[u.key]) ? b[u.key] : (b[u.key] = []);
+      putBack(list, (x) => tItemKey(tItemText(x)) === u.k, (a[u.key] || []).find((x) => tItemKey(tItemText(x)) === u.k));
+      break;
+    }
+    case "unit": {
+      const list = Array.isArray(b[u.group]) ? b[u.group] : (b[u.group] = []);
+      putBack(list, (x) => normBondName(x?.name) === u.key, (a[u.group] || []).find((x) => normBondName(x?.name) === u.key));
+      break;
+    }
+    case "bond": {
+      const before = tBondMap(a).get(u.key);
+      const led = Array.isArray(b.bonds) ? b.bonds : (b.bonds = []);
+      const li = led.findIndex((x) => normBondName(x?.name) === u.key);
+      if (before) { if (li >= 0) led[li].bond = before.v; else led.push({ name: before.name, bond: before.v }); }
+      else if (li >= 0) led.splice(li, 1);
+      // live values win over the ledger, so they have to follow too
+      [...(b.party || []), ...(b.npcs || [])].forEach((x) => {
+        if (normBondName(x?.name) !== u.key) return;
+        if (before) x.bond = before.v; else delete x.bond;
+      });
+      break;
+    }
+    case "quest": {
+      const list = Array.isArray(b.quests) ? b.quests : (b.quests = []);
+      if (u.added) b.quests = list.filter((x) => String(x).trim() !== u.q);
+      else if (!list.some((x) => String(x).trim() === u.q)) list.push(u.q);
+      break;
+    }
+    case "timer": {
+      const list = Array.isArray(b.timers) ? b.timers : (b.timers = []);
+      putBack(list, (t) => tTimerKey(t) === u.key, (a.timers || []).find((t) => tTimerKey(t) === u.key));
+      break;
+    }
+  }
+}
+
+// newest first; each entry is one AI message that had a block
+let turnLogCache = { sig: "", turns: [] };
+function buildTurnLog(chat) {
+  const turns = rpgTurnsOf(chat);
+  const sig = `${currentChatKey(SillyTavern.getContext())}|${turns.length}|${turns.map((t) => t.inner.length).join(",")}`;
+  if (sig === turnLogCache.sig) return turnLogCache.turns;
+
+  const out = [];
+  for (let i = 1; i < turns.length; i++) {
+    const changes = diffTurn(turns[i - 1].state, turns[i].state);
+    const wt = turns[i].state.world_time || {};
+    out.push({
+      idx: turns[i].idx,
+      n: i,
+      when: `${wt.month || "?"} ${wt.day ?? "?"} ${wt.clock || ""}`.trim(),
+      where: turns[i].state.location || "",
+      changes,
+    });
+  }
+  out.reverse();
+  turnLogCache = { sig, turns: out };
+  return out;
+}
+
 // =====================================================================
 // SKIN SYSTEM
 // renderRPG() picks a skin. Each skin owns #rpg-hud-container completely:
@@ -3407,6 +4000,11 @@ let saoPanel = null;        // null | "status" | "bonds" | "quests" | "place" | 
 let saoMin = true;   // the overlay opens collapsed to its dot
 let saoTimersOpen = false;
 let saoHelpOpen = false;
+let saoQuestTab = "quests";   // "quests" | "log"
+const saoScroll = new Map();  // scroll key -> {top, left}
+let saoLogShown = 20;         // turns rendered before "show older"
+let saoMeterEdit = null;
+let saoMasteryEdit = null;   // null, or a draft: [{name, curr, max, tail, orig}]     // null, or a draft: [{name, curr, max, color, custom}]
 let saoLayoutMode = false;   // drag clusters around instead of using them
 let saoAnimKind = "";        // "" | "restore" | "collapse" | "panel"
 let saoAnimUntil = 0;        // animations apply to any render before this time
@@ -3416,8 +4014,11 @@ let saoCollapsed = { meters: false, party: false, npcs: false, foes: false };
 let saoSub = "stats";
 let saoSvgUid = 0;
 
-const SAO_SHAPE = { step: 0.60, slope: 2, drop: 0.50, tip: 4, tipy: 0.20 };
-const SAO_RIM = { grey: "#53565e", greyW: 4, metalW: 2, hi: "#eceadf", lo: "#94918a" };
+const SAO_SHAPE = { step: 0.60, slope: 2, drop: 0.50, tip: 4, tipy: 0 };
+const SAO_RIM = { grey: "#53565e", greyW: 4, metalW: 2, hi: "#eceadf", lo: "#94918a",
+                  slantW: 4,         // grey band along the slant; keep = greyW so the rim reads as one band
+                  tipSlope: 0.55 };  // slant run per unit of rise. Every bar gets the same angle, and the
+                                     // point's length depends only on this: lower = shorter, blunter point
 const SAO_WELL = "rgba(36,39,46,0.82)";
 // How many characters fit beside the bar depends on the font, the font scale
 // and the device, so it is measured after layout rather than guessed.
@@ -3841,19 +4442,105 @@ function saoPct(currRaw, maxRaw) {
 // path, so the fill hides their inner halves and what survives outside is a
 // grey band with a thin metal line inside it. One path means the rim can't
 // thin out along the diagonal the way two nested clip-paths did.
-function saoBarSvg(W, H, pctVal, c1, c2) {
-  const m = Math.ceil(SAO_RIM.greyW / 2);
+// ALfheim: a flat bar with an arrowhead on the right, outlined in thin silver.
+function aloBarSvg(W, H, pctVal, c1, c2) {
+  const m = 1;
   const x0 = m, y0 = m, w = W - m * 2, h = H - m * 2;
+  if (w <= 4 || h <= 1) return "";
+  const tip = Math.min(h * 0.75, w * 0.12);
+  const d = `M${x0} ${y0}H${x0 + w - tip}L${x0 + w} ${y0 + h / 2}L${x0 + w - tip} ${y0 + h}H${x0}Z`;
+  const id = "a" + (++saoSvgUid);
+  const fx = x0 + w * clamp(pctVal, 0, 100) / 100;
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="g${id}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/>
+      </linearGradient>
+      <clipPath id="c${id}"><path d="${d}"/></clipPath>
+    </defs>
+    <path d="${d}" fill="rgba(20,24,30,.62)"/>
+    <rect x="${x0}" y="${y0}" width="${w}" height="${h}" fill="rgba(225,228,236,.2)" clip-path="url(#c${id})"/>
+    ${pctVal > 0 ? `<rect x="${x0}" y="${y0}" width="${fx - x0}" height="${h}" fill="url(#g${id})" clip-path="url(#c${id})"/>` : ""}
+    <path d="${d}" fill="none" stroke="rgba(236,236,240,.85)" stroke-width="1" stroke-linejoin="miter"/>
+  </svg>`;
+}
+
+// Outline of a closed polygon pushed out by r, corners mitred, except the one
+// at tipIdx, which is cut square to its bisector at distance D from the vertex.
+// A stroke can only be fully pointed or fully cut; this can be anything between.
+// Vertices run clockwise with y pointing down, so (dy, -dx) is outward.
+function saoOffsetPoly(pts, r, tipIdx, D = Infinity) {
+  const n = pts.length;
+  const rad = typeof r === "function" ? r : () => r;
+  const lines = pts.map((a, i) => {
+    const b = pts[(i + 1) % n];
+    let dx = b[0] - a[0], dy = b[1] - a[1];
+    const L = Math.hypot(dx, dy) || 1; dx /= L; dy /= L;
+    const ri = rad(i);
+    return { px: a[0] + dy * ri, py: a[1] - dx * ri, dx, dy };
+  });
+  const meet = (l1, l2) => {
+    const den = l1.dx * l2.dy - l1.dy * l2.dx;
+    if (Math.abs(den) < 1e-9) return [l2.px, l2.py];
+    const t = ((l2.px - l1.px) * l2.dy - (l2.py - l1.py) * l2.dx) / den;
+    return [l1.px + l1.dx * t, l1.py + l1.dy * t];
+  };
+  const out = [];
+  pts.forEach((V, i) => {
+    const prev = lines[(i - 1 + n) % n], cur = lines[i];
+    const A = meet(prev, cur);
+    if (i === tipIdx) {
+      let ux = A[0] - V[0], uy = A[1] - V[1];
+      const dist = Math.hypot(ux, uy) || 1;
+      if (dist > D) {
+        ux /= dist; uy /= dist;
+        const cut = { px: V[0] + ux * D, py: V[1] + uy * D, dx: -uy, dy: ux };
+        out.push(meet(prev, cut), meet(cut, cur));
+        return;
+      }
+    }
+    out.push(A);
+  });
+  return out;
+}
+
+function saoBarSvg(W, H, pctVal, c1, c2) {
+  if (uiSettings.saoBarStyle === "alo") return aloBarSvg(W, H, pctVal, c1, c2);
+  if (uiSettings.saoBarStyle === "blk") return blkBarSvg(W, H, pctVal, c1, c2);
+  const m = Math.ceil(SAO_RIM.greyW / 2);
+  // The tip is a sharp mitred corner, and the grey rim's point sticks out past
+  // the path. With only m of room the browser sliced it off flat, which read as
+  // a rounded blob. Its horizontal reach is (stroke/2)(L + run)/rise for a tip
+  // of that run and rise, so thinner bars (sharper tips) get more room.
+  // The tip keeps the same angle on every bar: its run scales with the rise.
+  // A fixed 4px run made thin bars' tips needle-thin, and a needle's rim point
+  // runs on for many pixels. Room on the right is exactly the point's reach,
+  // (rSlant*L + rTop*run)/rise for top and slant bands of rTop and rSlant.
+  const rTop = SAO_RIM.greyW / 2, rSlant = SAO_RIM.slantW / 2;
+  const rise0 = Math.max(0.5, SAO_SHAPE.drop * (H - m * 2));
+  const run0 = Math.min(SAO_SHAPE.tip, rise0 * SAO_RIM.tipSlope);
+  const reach = (rSlant * Math.hypot(run0, rise0) + rTop * run0) / rise0;
+  const mr = Math.ceil(reach) + 1;
+  const x0 = m, y0 = m, w = W - m - mr, h = H - m * 2;
   if (w <= 2 || h <= 1) return "";
 
   const stepX = clamp(SAO_SHAPE.step * w, 1, w - 2);
   const slope = Math.min(SAO_SHAPE.slope, Math.max(0, w - stepX - 1));
-  const tip = Math.min(SAO_SHAPE.tip, Math.max(0, w - stepX - slope - 1));
   const dropY = y0 + SAO_SHAPE.drop * h;
   const tipY = y0 + SAO_SHAPE.tipy * h;
+  const tip = Math.min(run0, Math.max(0, w - stepX - slope - 1));
 
-  const d = `M${x0} ${y0}H${x0 + w}V${tipY}L${x0 + w - tip} ${dropY}` +
-            `H${x0 + stepX + slope}L${x0 + stepX} ${y0 + h}H${x0}Z`;
+  const pts = [[x0, y0], [x0 + w, y0]];
+  if (tipY > y0 + 0.01) pts.push([x0 + w, tipY]);
+  pts.push([x0 + w - tip, dropY], [x0 + stepX + slope, dropY], [x0 + stepX, y0 + h], [x0, y0 + h]);
+  const tipIdx = tipY > y0 + 0.01 ? 2 : 1;          // the sharp corner
+  const d = "M" + pts.map((p) => `${p[0]} ${p[1]}`).join("L") + "Z";
+
+  // Sharp mitred outlines. The grey band runs slimmer along the tip's slant
+  // (edge tipIdx), which pulls its point in without blunting it.
+  const poly = (r) => saoOffsetPoly(pts, r, tipIdx).map((p) => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(" ");
+  const greyPoly = poly((i) => (i === tipIdx ? rSlant : rTop));
+  const metalPoly = poly(SAO_RIM.metalW / 2);
 
   const id = "s" + (++saoSvgUid);
   const f = clamp(pctVal, 0, 100) / 100;
@@ -3867,7 +4554,7 @@ function saoBarSvg(W, H, pctVal, c1, c2) {
     ? `<polygon points="${x0},${y0} ${topX},${y0} ${botX},${y0 + h} ${x0},${y0 + h}" fill="url(#g${id})" clip-path="url(#c${id})"/>`
     : "";
 
-  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" shape-rendering="geometricPrecision" xmlns="http://www.w3.org/2000/svg">
     <defs>
       <linearGradient id="m${id}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="${SAO_RIM.hi}"/><stop offset="1" stop-color="${SAO_RIM.lo}"/>
@@ -3877,8 +4564,8 @@ function saoBarSvg(W, H, pctVal, c1, c2) {
       </linearGradient>
       <clipPath id="c${id}"><path d="${d}"/></clipPath>
     </defs>
-    <path d="${d}" fill="none" stroke="${SAO_RIM.grey}" stroke-width="${SAO_RIM.greyW}" stroke-linejoin="round"/>
-    <path d="${d}" fill="none" stroke="url(#m${id})" stroke-width="${SAO_RIM.metalW}" stroke-linejoin="round"/>
+    <polygon points="${greyPoly}" fill="${SAO_RIM.grey}"/>
+    <polygon points="${metalPoly}" fill="url(#m${id})"/>
     <path d="${d}" fill="${SAO_WELL}"/>
     ${fillPoly}
   </svg>`;
@@ -3892,7 +4579,469 @@ function saoDrawBar(el, p) {
   el.innerHTML = saoBarSvg(W, H, p, el.dataset.c1 || "#b9f56d", el.dataset.c2 || "#63c322");
 }
 
+function saoTweenValue(key, target, draw, alive) {
+  const animate = uiSettings.saoAnimate !== false
+    && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  if (!animate || !key) { if (key) saoLastPct.set(key, target); draw(target); return; }
+
+  const from = saoLastPct.has(key) ? saoLastPct.get(key) : target;
+  if (Math.abs(from - target) < 0.4) { saoLastPct.set(key, target); draw(target); return; }
+
+  const token = (saoTweens.get(key) || 0) + 1;
+  saoTweens.set(key, token);
+  const t0 = performance.now(), dur = 420;
+  const ease = (x) => 1 - Math.pow(1 - x, 3);
+  const step = (now) => {
+    if (saoTweens.get(key) !== token || (alive && !alive())) return;
+    const k = Math.min(1, (now - t0) / dur);
+    const v = from + (target - from) * ease(k);
+    saoLastPct.set(key, v);
+    draw(v);
+    if (k < 1) requestAnimationFrame(step);
+    else saoLastPct.set(key, target);
+  };
+  requestAnimationFrame(step);
+}
+
+const ALO_MP = ["#7fb3e8", "#2d65a8"];
+
+// The bars are a fixed length; the name compartment takes what the name
+// needs (up to a cap) and the plate grows to fit, so a long name makes the
+// plate longer instead of making the bars shorter.
+function aloPlateGeom(H, nameW, barLen, bare, barH) {
+  if (bare) {
+    // characters: just the bars, their name sits on the line above
+    const div = nameW > 0 ? Math.round(nameW + 8) : 0;
+    const bx = nameW > 0 ? div + 2 : 1;
+    const bEnd = bx + barLen;
+    return { L: 0, R: 0, div, bx, bEnd, W: Math.round(bEnd + 2), bare: true, bh: H - 2, nameLeft: 0 };
+  }
+  const L = Math.max(5, Math.round(H * 0.42));     // left point depth
+  const R = Math.max(5, Math.round(H * 0.5));      // right point depth
+  const div = Math.round(L + 5 + nameW + 8);       // divider after the name
+  const bx = div + 5;
+  const bEnd = bx + barLen;
+  const W = Math.round(bEnd + R * 0.45 + 3);
+  return { L, R, div, bx, bEnd, W, bare: false, bh: barH || 0, nameLeft: L + 5 };
+}
+
+// A notch darker for the ALfheim bars, without touching the colour sweep the
+// Aincrad bars share. Handles the hsl() the sweep produces and plain hex.
+function aloDarken(c, amt) {
+  const str = String(c || "").trim();
+  let m = str.match(/^hsl\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%\s*\)$/i);
+  if (m) return `hsl(${m[1]},${m[2]}%,${Math.max(0, parseFloat(m[3]) - amt).toFixed(1)}%)`;
+  m = str.match(/^#([0-9a-f]{6})$/i);
+  if (m) {
+    const n = parseInt(m[1], 16), k = 1 - amt / 70;
+    const ch = (v) => Math.round(v * k).toString(16).padStart(2, "0");
+    return `#${ch((n >> 16) & 255)}${ch((n >> 8) & 255)}${ch(n & 255)}`;
+  }
+  return str;
+}
+
+// halfway between two #rrggbb colours; anything else falls back to the first
+function aloMix(a, b) {
+  const m1 = String(a).match(/^#([0-9a-f]{6})$/i), m2 = String(b).match(/^#([0-9a-f]{6})$/i);
+  if (!m1 || !m2) return a;
+  const x = parseInt(m1[1], 16), y = parseInt(m2[1], 16);
+  const ch = (sh) => Math.round((((x >> sh) & 255) + ((y >> sh) & 255)) / 2).toString(16).padStart(2, "0");
+  return `#${ch(16)}${ch(8)}${ch(0)}`;
+}
+
+function aloPlateSvg(W, H, geo, hp, mp, hpc, mpc) {
+  hpc = hpc.map((c) => aloDarken(c, 9));
+  mpc = mpc.map((c) => aloDarken(c, 9));
+  const mpFlat = aloMix(mpc[0], mpc[1]);
+  const { L, R, div, bx, bEnd } = geo;
+  const mid = H / 2;
+  const plate = `M${L} 1H${W - R}L${W - 1} ${mid}L${W - R} ${H - 1}H${L}L1 ${mid}Z`;
+  const bh = geo.bh ? Math.min(geo.bh, H - 2) : H - Math.max(2, Math.round(H * 0.17)) * 2;
+  const by = Math.round((H - bh) / 2);
+  const pad = by;
+  const tipIn = Math.max(3, bh * 0.6);
+  const bw = Math.max(4, bEnd - bx);
+  const frame = `M${bx} ${by}H${bEnd - tipIn}L${bEnd} ${mid}L${bEnd - tipIn} ${by + bh}H${bx}Z`;
+
+  // HP and MP share the frame almost evenly, HP a touch heavier, meeting on a
+  // silver seam instead of a dark gap
+  const hpH = Math.round(bh * 0.53);
+  const seam = by + hpH;
+  const mpH = by + bh - seam;
+  const id = "p" + (++saoSvgUid);
+  const w = (p) => (bw * clamp(p, 0, 100)) / 100;
+
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="h${id}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="${hpc[0]}"/><stop offset="1" stop-color="${hpc[1]}"/></linearGradient>
+      <linearGradient id="m${id}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="${mpc[0]}"/><stop offset="1" stop-color="${mpc[1]}"/></linearGradient>
+      <linearGradient id="b${id}" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="rgba(58,62,70,.78)"/>
+        <stop offset="${(div / W).toFixed(3)}" stop-color="rgba(58,62,70,.62)"/>
+        <stop offset="${((bx + (bEnd - bx) * 0.5) / W).toFixed(3)}" stop-color="rgba(58,62,70,.22)"/>
+        <stop offset="${(Math.min(0.98, (bEnd - tipIn) / W)).toFixed(3)}" stop-color="rgba(58,62,70,.03)"/>
+        <stop offset="1" stop-color="rgba(58,62,70,0)"/></linearGradient>
+      <linearGradient id="v${id}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="rgba(255,255,255,.10)"/><stop offset=".5" stop-color="rgba(255,255,255,0)"/>
+        <stop offset="1" stop-color="rgba(0,0,0,.14)"/></linearGradient>
+      <linearGradient id="d${id}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="rgba(0,0,0,0)"/><stop offset="1" stop-color="rgba(0,0,0,.42)"/></linearGradient>
+      <clipPath id="c${id}"><path d="${frame}"/></clipPath>
+    </defs>
+    ${geo.bare ? "" : `<path d="${plate}" fill="url(#b${id})"/>
+    <path d="${plate}" fill="url(#v${id})"/>
+    <line x1="${div}" y1="${Math.round(H * 0.16)}" x2="${div}" y2="${H - Math.round(H * 0.16)}" stroke="rgba(228,230,236,.85)" stroke-width="1.2"/>`}
+    <g clip-path="url(#c${id})">
+      <rect x="${bx}" y="${seam}" width="${bw}" height="${mpH}" fill="rgba(225,228,236,.2)"/>
+      ${mp > 0 ? `<rect x="${bx}" y="${seam}" width="${w(mp)}" height="${mpH}" fill="${mpFlat}"/>` : ""}
+      <rect x="${bx}" y="${by}" width="${bw}" height="${hpH}" fill="rgba(225,228,236,.26)"/>
+      ${hp > 0 ? `<rect x="${bx}" y="${by}" width="${w(hp)}" height="${hpH}" fill="url(#h${id})"/>
+      <rect x="${bx}" y="${seam - Math.max(2, Math.round(hpH * 0.5))}" width="${w(hp)}"
+            height="${Math.max(2, Math.round(hpH * 0.5))}" fill="url(#d${id})"/>` : ""}
+      <line x1="${bx}" y1="${seam}" x2="${bEnd}" y2="${seam}" stroke="rgba(214,218,226,.9)" stroke-width="1"/>
+    </g>
+    <path d="${frame}" fill="none" stroke="rgba(236,236,240,.78)" stroke-width="1" stroke-linejoin="miter"/>
+  </svg>`;
+}
+
+// Titles ride above the plate: "Aldric, Warden of the Gate" or
+// "Aldric - Warden of the Gate" shows "Aldric" on the plate and the rest above.
+function aloSplitTitle(full) {
+  const text = String(full || "").trim();
+  const m = text.match(/^(.+?)(?:,\s+|\s+[\u2014\u2013-]\s+)(.+)$/);
+  if (m && m[1].trim() && m[2].trim()) return { name: m[1].trim(), title: m[2].trim() };
+  return { name: text, title: "" };
+}
+
+const ALO_NAME_CAP = { big: 170, small: 128 };   // px at 100%; past this, ellipsis
+const ALO_BAR_LEN  = { big: 230, small: 150 };
+const ALO_PLAYER_BAR_H = 20;   // px at 100%; the plate is taller, the bars aren't
+
+function saoPaintAloPlates() {
+  const plates = Array.from(document.querySelectorAll(".rpg-alo-plate"));
+  if (!plates.length) return;
+  const c = document.getElementById("rpg-hud-container");
+  const ui = parseFloat(c ? getComputedStyle(c).getPropertyValue("--rpg-sao-ui") : "") || 1;
+
+  // Everyone in a group shares the widest name's compartment, so their bars
+  // start and end in the same place. The player's plate is its own group.
+  // Characters carry their name above the bars, so only the player's plate
+  // has a name compartment to size.
+
+  plates.forEach((el) => {
+    const small = el.classList.contains("small");
+    const H = el.clientHeight;
+    if (!H) return;
+    const nameEl0 = el.querySelector(".rpg-alo-name");
+    const nameW = small ? 0 : Math.min(nameEl0 ? nameEl0.scrollWidth : 0, ALO_NAME_CAP.big * ui);
+    const geo = aloPlateGeom(H, nameW, Math.round(ALO_BAR_LEN[small ? "small" : "big"] * ui),
+                             small, Math.round(ALO_PLAYER_BAR_H * ui));
+
+    el.style.width = `${geo.W}px`;
+    const nameEl = el.querySelector(".rpg-alo-name");
+    if (nameEl) { nameEl.style.left = `${geo.nameLeft}px`; nameEl.style.width = `${Math.ceil(nameW)}px`; }
+
+    const host = el.querySelector(".rpg-alo-svg");
+    if (!host) return;
+    const key = el.dataset.key || "p";
+    const hpT = clamp(parseFloat(el.dataset.hp) || 0, 0, 100);
+    const mpT = clamp(parseFloat(el.dataset.mp) || 0, 0, 100);
+    let hpV = saoLastPct.has(`${key}:hp`) ? saoLastPct.get(`${key}:hp`) : hpT;
+    let mpV = saoLastPct.has(`${key}:mp`) ? saoLastPct.get(`${key}:mp`) : mpT;
+    const draw = () => {
+      host.innerHTML = aloPlateSvg(geo.W, H, geo, hpV, mpV,
+        [el.dataset.hp1, el.dataset.hp2], [el.dataset.mp1, el.dataset.mp2]);
+    };
+    const alive = () => el.isConnected;
+    saoTweenValue(`${key}:hp`, hpT, (v) => { hpV = v; draw(); }, alive);
+    saoTweenValue(`${key}:mp`, mpT, (v) => { mpV = v; draw(); }, alive);
+  });
+}
+
+// a party member, NPC or enemy as a small ALfheim plate with HP over MP
+
+// =====================================================================
+// ALFHEIM (NEW) — the post-Oberon party HUD: a name with a strip of status
+// tiles beside it, an emblem tile on the left, and flat HP / MP bars.
+// =====================================================================
+const BLK_MP = ["#62a5d6", "#2b76b0"];
+// Any colour goes, grey and red included: the tile's icon says what a
+// character is, so a red party member still can't be mistaken for an enemy.
+// Enemies alone are always red, and alone carry the skull.
+const BLK_TILES = [
+  "#d9a52b", // gold
+  "#3fae8c", // jade
+  "#2f9fe0", // sky
+  "#8a5cd0", // violet
+  "#7cb342", // lime
+  "#ec8a2e", // amber
+  "#d9508f", // rose
+  "#1fb6c9", // cyan
+  "#5b6fe0", // indigo
+  "#1b1d22", // black, like Kirito's tile in the game; the white rim keeps it readable
+  "#8d949e", // grey, like Lisbeth's
+  "#c9483a", // red
+];
+
+// shift an hsl() lightness, or blend a #hex toward white / black
+function blkShade(c, amt) {
+  const str = String(c || "").trim();
+  let m = str.match(/^hsl\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%\s*\)$/i);
+  if (m) return `hsl(${m[1]},${m[2]}%,${clamp(parseFloat(m[3]) + amt, 0, 100).toFixed(1)}%)`;
+  m = str.match(/^#([0-9a-f]{6})$/i);
+  if (m) {
+    const n = parseInt(m[1], 16), t = amt >= 0 ? 255 : 0, k = Math.min(1, Math.abs(amt) / 100);
+    const ch = (v) => Math.round(v + (t - v) * k).toString(16).padStart(2, "0");
+    return `#${ch((n >> 16) & 255)}${ch((n >> 8) & 255)}${ch(n & 255)}`;
+  }
+  return str;
+}
+
+// Flat bar: a solid fill with the lighter band near its end that the game's
+// bars have, a soft top sheen, and a thin light outline. Square ends.
+function blkBarSvg(W, H, pctVal, c1, c2) {
+  if (W < 4 || H < 2) return "";
+  const id = "k" + (++saoSvgUid);
+  const fw = (W - 1) * clamp(pctVal, 0, 100) / 100;
+  // the band near the end is a gentle step up from the fill, not a highlight
+  const base = blkShade(c2, 5), light = blkShade(base, 9);
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="f${id}" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="${base}"/><stop offset=".72" stop-color="${base}"/>
+        <stop offset=".725" stop-color="${light}"/><stop offset="1" stop-color="${light}"/></linearGradient>
+      <linearGradient id="s${id}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="rgba(255,255,255,.28)"/><stop offset=".5" stop-color="rgba(255,255,255,0)"/>
+        <stop offset="1" stop-color="rgba(0,0,0,.12)"/></linearGradient>
+    </defs>
+    <rect x=".5" y=".5" width="${W - 1}" height="${H - 1}" fill="rgba(205,222,238,.12)"/>
+    ${fw > 0 ? `<rect x=".5" y=".5" width="${fw}" height="${H - 1}" fill="url(#f${id})"/>
+    <rect x=".5" y=".5" width="${fw}" height="${H - 1}" fill="url(#s${id})"/>` : ""}
+    <rect x=".5" y=".5" width="${W - 1}" height="${H - 1}" fill="none" stroke="rgba(225,235,245,.42)" stroke-width="1"/>
+  </svg>`;
+}
+
+// Status tiles. Common effects get a pictogram and a colour, the rest a
+// two-letter label, so nothing written by the model is ever dropped.
+const s16 = (inner) => `<svg viewBox="0 0 16 16" aria-hidden="true">${inner}</svg>`;
+const stroke = (d, w = 1.8) => `<path d="${d}" fill="none" stroke="#fff" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"/>`;
+const BLK_STATUS = [
+  { re: /poison|toxic|venom/i, c: "#7b4db3", i: s16('<path d="M8 2S3.5 7.5 3.5 10.2a4.5 4.5 0 0 0 9 0C12.5 7.5 8 2 8 2Z" fill="#fff"/>') },
+  { re: /bleed/i, c: "#b3261e", i: s16('<path d="M8 2S3.5 7.5 3.5 10.2a4.5 4.5 0 0 0 9 0C12.5 7.5 8 2 8 2Z" fill="#fff"/>') },
+  { re: /burn|fire|flame|scorch/i, c: "#d7263d", i: s16('<path d="M8 1.5c.5 2.5 3.5 3.8 3.5 7.2a3.5 3.5 0 0 1-7 0c0-1.4.6-2.4 1.4-3.2.1 1.3.8 2 1.6 2.3C7.3 5.8 7.4 3.6 8 1.5Z" fill="#fff"/>') },
+  { re: /stun|paraly|shock|static/i, c: "#e0a21c", i: s16('<path d="M9 1.5 4 9h3.2l-.7 5.5L12 6.8H8.8L9 1.5Z" fill="#fff"/>') },
+  { re: /freez|frozen|frost|chill|slow/i, c: "#2f8fc9", i: s16(stroke("M8 2v12M2.8 5l10.4 6M2.8 11l10.4-6", 1.6)) },
+  { re: /regen|\bheal(?:ing|ed|s)?\b|restor|mend/i, c: "#3f9e57", i: s16(stroke("M8 3.2v9.6M3.2 8h9.6", 2.4)) },
+  { re: /shield|barrier|protect|guard|veil|ward|aegis/i, c: "#3b7fb8", i: s16('<path d="M8 1.8 13 3.6v4.1c0 3.1-2.2 5.3-5 6.5-2.8-1.2-5-3.4-5-6.5V3.6Z" fill="#fff"/>') },
+  { re: /haste|quick|speed|swift|agil/i, c: "#1f9aa6", i: s16(stroke("M3 4l4 4-4 4M8 4l4 4-4 4")) },
+  { re: /strength|might|power|empower|rage|berserk|\bup\b|boost/i, c: "#e08a1c", i: s16(stroke("M8 13V3.5M4 7.5l4-4 4 4")) },
+  { re: /weak|vulnerab|fatigue|winded|exhaust|tired|drain|\bdown\b/i, c: "#8a7a2e", i: s16(stroke("M8 3v9.5M4 8.5l4 4 4-4")) },
+  { re: /critical|dying|near death/i, c: "#c0392b", i: s16(stroke("M8 2.5v7", 2.2) + '<circle cx="8" cy="12.6" r="1.3" fill="#fff"/>') },
+  { re: /sleep|drows|asleep/i, c: "#5b5fb0", t: "Z" },
+  { re: /blind|dark/i, c: "#44474d", i: s16('<path d="M1.8 8S4.3 3.8 8 3.8 14.2 8 14.2 8 11.7 12.2 8 12.2 1.8 8 1.8 8Z" fill="none" stroke="#fff" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="#fff"/>') },
+  { re: /confus|charm|dazed/i, c: "#b04da8", t: "?" },
+];
+
+// words that mean "no status", which shouldn't be drawn as a tile at all
+const BLK_NO_STATUS = /^(healthy|normal|none|fine|ok(ay)?|stable|unharmed|n\/a|-|\u2013|\u2014)$/i;
+
+// Everything affecting one character: their Status list plus any running
+// BUFF / DEBUFF timers they own (a timer with no owner is the player's).
+// The same effect from both places is shown once, with the timer's time left
+// added to its tooltip. Cooldowns, events and doom clocks aren't statuses.
+function blkEffects(statusList, ownerName) {
+  const byKey = new Map();
+  const keyOf = (label) => {
+    const n = BLK_STATUS.findIndex((b) => b.re.test(label));
+    return n >= 0 ? `icon${n}` : label.toLowerCase();
+  };
+
+  (Array.isArray(statusList) ? statusList : []).forEach((x) => {
+    const label = String(x).trim();
+    if (!label || BLK_NO_STATUS.test(label)) return;
+    const k = keyOf(label);
+    if (!byKey.has(k)) byKey.set(k, { label, tip: label });
+  });
+
+  const me = ownerName ? normBondName(ownerName) : "";
+  const playerKey = normBondName(rpgState?.name);
+  (Array.isArray(rpgState?.timers) ? rpgState.timers : []).forEach((t) => {
+    const kind = String(t?.kind || "").toUpperCase();
+    if (kind !== "BUFF" && kind !== "DEBUFF") return;
+    const owner = String(t?.owner || "").trim();
+    const ownerKey = normBondName(owner);
+    const mine = ownerName
+      ? ownerKey === me
+      : (!owner || /\{\{\s*user\s*\}\}/i.test(owner) || (playerKey && ownerKey === playerKey));
+    if (!mine) return;
+
+    const info = timerInfo(t);
+    if (info.done) return;
+    const label = String(t?.name || "").trim();
+    if (!label) return;
+    const k = keyOf(label);
+    const left = `${label} \u00B7 ${info.label}`;
+    if (byKey.has(k)) byKey.get(k).tip += ` \u00B7 ${info.label}`;
+    else byKey.set(k, { label, tip: left, kind });
+  });
+
+  return [...byKey.values()];
+}
+
+function blkChips(list, max) {
+  const all = (Array.isArray(list) ? list : [])
+    .map((x) => (typeof x === "string" ? { label: x.trim(), tip: x.trim() } : x))
+    .filter((x) => x && x.label && !BLK_NO_STATUS.test(x.label));
+  const shown = all.slice(0, max || 6);
+  const chips = shown.map((st) => {
+    const hit = BLK_STATUS.find((b) => b.re.test(st.label));
+    // unrecognised timer effects still say which way they cut
+    const fallback = st.kind === "DEBUFF" ? "#a86a1c" : st.kind === "BUFF" ? "#3a8f5c" : "#5f6b77";
+    const body = hit?.i || escHtml(hit?.t || st.label.replace(/[^\p{L}\p{N}]/gu, "").slice(0, 2).toUpperCase() || "?");
+    return `<span class="rpg-blk-chip" style="background:${hit ? hit.c : fallback}" title="${escAttr(st.tip || st.label)}">${body}</span>`;
+  }).join("");
+  const more = all.length > shown.length
+    ? `<span class="rpg-blk-more" title="${escAttr(all.slice(shown.length).map((x) => x.tip || x.label).join(", "))}">+${all.length - shown.length}</span>`
+    : "";
+  return chips + more;
+}
+
+// A name's preferred colour, from a well-mixed hash of it.
+function blkHashIndex(name) {
+  let h = 0x811c9dc5;
+  for (const ch of String(name || "").toLowerCase()) {
+    h ^= ch.codePointAt(0);
+    h = Math.imul(h, 0x01000193);
+  }
+  h ^= h >>> 15; h = Math.imul(h, 0x2c1b3c6d); h ^= h >>> 12;
+  return (h >>> 0) % BLK_TILES.length;
+}
+
+// The player's tile is black unless you pick otherwise.
+const BLK_PLAYER_TILE = "#1b1d22";
+const blkNameKey = (name) => normBondName(name) || String(name ?? "");
+function blkPlayerTileColor() {
+  return uiSettings.tileColors?.["@player"] || BLK_PLAYER_TILE;
+}
+
+// Twelve colours can't stay distinct if each name picks alone, so everyone on
+// screen is coloured together, in two steps:
+//  1. Automatic colours, worked out as if nothing had been picked and the
+//     player were black: each name starts at its preferred colour and steps to
+//     the next free one. Earlier names keep theirs, so a newcomer never
+//     recolours the party, and picking one person's colour never shuffles
+//     anyone else's.
+//  2. Picked colours win. Only someone whose automatic colour now clashes with
+//     a picked one (or with the player's) moves, to the nearest free colour.
+let blkColorMap = new Map();
+function blkAssignColors(names) {
+  const picked = uiSettings.tileColors || {};
+  const N = BLK_TILES.length;
+
+  const auto = new Map(), used = new Set([BLK_PLAYER_TILE]);
+  names.forEach((n) => {
+    const key = blkNameKey(n);
+    if (!key || auto.has(key)) return;
+    if (used.size >= N) used.clear();                      // more than twelve: start sharing
+    let i = blkHashIndex(n);
+    for (let t = 0; t < N && used.has(BLK_TILES[i]); t++) i = (i + 1) % N;
+    auto.set(key, BLK_TILES[i]);
+    used.add(BLK_TILES[i]);
+  });
+
+  const out = new Map(), taken = new Set([blkPlayerTileColor()]);
+  auto.forEach((c, key) => { if (picked[key]) { out.set(key, picked[key]); taken.add(picked[key]); } });
+  auto.forEach((c, key) => { if (!out.has(key) && !taken.has(c)) { out.set(key, c); taken.add(c); } });
+  auto.forEach((c, key) => {
+    if (out.has(key)) return;                               // only the ones that clashed
+    let i = BLK_TILES.indexOf(c), found = c;
+    for (let t = 0; t < N; t++) {
+      i = (i + 1) % N;
+      if (!taken.has(BLK_TILES[i])) { found = BLK_TILES[i]; break; }
+    }
+    out.set(key, found);
+    taken.add(found);
+  });
+  blkColorMap = out;
+}
+
+function blkTileColor(name) {
+  const key = blkNameKey(name);
+  return uiSettings.tileColors?.[key] || blkColorMap.get(key) || BLK_TILES[blkHashIndex(name)];
+}
+
+// What sits in the tile, by what the character is. The player and party
+// icons are the Status and Bonds orbs' own; NPCs get a speech bubble, the
+// people you talk to; enemies an angry skull. evenodd punches the holes.
+const BLK_ICONS = {
+  player: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7.4" r="3.8"/><path d="M4.3 20.8c0-4.3 3.4-7 7.7-7s7.7 2.7 7.7 7z"/></svg>',
+  // party: the Bonds orb's own icon, see blkIcon
+  npc: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M4 4.5h16A1.5 1.5 0 0 1 21.5 6v9a1.5 1.5 0 0 1-1.5 1.5h-8.6L6.5 20.2v-3.7H4A1.5 1.5 0 0 1 2.5 15V6A1.5 1.5 0 0 1 4 4.5ZM8 9.3a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Zm4 0a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Zm4 0a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Z"/></svg>',
+  enemy: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M12 2.5c-4.7 0-8.3 3.4-8.3 7.8 0 2.6 1.2 4.6 3.1 5.8v2.4c0 .8.6 1.4 1.4 1.4h1v-2.2h1.6v2.2h2.4v-2.2h1.6v2.2h1c.8 0 1.4-.6 1.4-1.4v-2.4c1.9-1.2 3.1-3.2 3.1-5.8 0-4.4-3.6-7.8-8.3-7.8ZM6.6 9.2l4.1 1.5-.5 2.6-3.2-.8Zm10.8 0-4.1 1.5.5 2.6 3.2-.8ZM12 13.6l-1.2 2.1h2.4Z"/></svg>',
+};
+// The party icon is borrowed from the Bonds orb when a row is drawn, not at
+// load: SAO_TABS is declared further down, and touching a const before its
+// line throws, even behind typeof.
+function blkIcon(kind) {
+  if (kind === "party") return SAO_TABS.find((t) => t.id === "bonds")?.icon || BLK_ICONS.player;
+  return BLK_ICONS[kind] || "";
+}
+
+// One character. Only the name is a tap target; the rest lets taps through.
+function blkUnitRow(view, idx, key, opts = {}) {
+  const foe = !!opts.foe, big = !!opts.big;
+  const hp = opts.hpPct ?? saoPct(view.hp_curr, view.hp_max);
+  const mp = opts.mpPct ?? saoPct(view.en?.curr, view.en?.max);
+  const hs = view.isVeh ? SAO_PALETTE.vehicle : saoHpStops(hp);
+  const full = opts.name ?? view.name;
+  const { name, title } = aloSplitTitle(full);
+  const num = (a, b) => (a === undefined || a === null || a === "") ? "\u2013" : `${escHtml(a)}/${escHtml(b)}`;
+  const initial = (String(name).replace(/^[^\p{L}\p{N}]+/u, "")[0] || "?").toUpperCase();
+  return `<div class="rpg-blk-row${big ? " big" : ""}${foe ? " foe" : ""}">
+    <div class="rpg-blk-plate"></div>
+    <div class="rpg-blk-tile" data-tkey="${escAttr(opts.kind === "player" ? "@player" : blkNameKey(name))}"
+      style="background-color:${foe ? "#a8322a" : opts.kind === "player" ? blkPlayerTileColor() : blkTileColor(name)}">${
+      blkIcon(opts.kind || (foe ? "enemy" : big ? "player" : "party")) || escHtml(initial)}</div>
+    <div class="rpg-blk-head">
+      <span class="rpg-blk-name rpg-sao-jump" data-idx="${idx}" title="${escAttr(full)}">${escHtml(name)}</span>
+      ${title ? `<span class="rpg-blk-title">${escHtml(title)}</span>` : ""}
+      <span class="rpg-blk-chips">${blkChips(opts.status, big ? 8 : 6)}</span>
+    </div>
+    <div class="rpg-blk-bars">
+      ${saoBarHtml("blkhp", hp, hs[0], hs[1], `${key}:hp`)}
+      ${saoBarHtml("blkmp", mp, BLK_MP[0], BLK_MP[1], `${key}:mp`)}
+    </div>
+    <div class="rpg-blk-nums"><span>${opts.hpText ?? num(view.hp_curr, view.hp_max)}</span>
+      <span>${opts.mpText ?? num(view.en?.curr, view.en?.max)}</span></div>
+  </div>`;
+}
+
+function aloUnitRow(view, idx, key, foe) {
+  const hp = saoPct(view.hp_curr, view.hp_max);
+  const mp = saoPct(view.en?.curr, view.en?.max);
+  const hs = saoUnitStops(view);
+  const { name, title } = aloSplitTitle(view.name);
+  const num = (a, b) => (a === undefined || a === null || a === "") ? "\u2013" : `${escHtml(a)}/${escHtml(b)}`;
+  return `<div class="rpg-alo-row">
+    <div class="rpg-alo-unit rpg-sao-jump${foe ? " foe" : ""}" data-idx="${idx}" title="${escAttr(view.name)}">
+      <div class="rpg-alo-label"><span class="rpg-alo-uname">${escHtml(name)}</span>${
+        title ? `<span class="rpg-alo-utitle">${escHtml(title)}</span>` : ""}</div>
+      <div class="rpg-alo-barline">
+        <div class="rpg-alo-plate small" data-key="${escAttr(key)}" data-hp="${hp}" data-mp="${mp}"
+          data-hp1="${hs[0]}" data-hp2="${hs[1]}" data-mp1="${ALO_MP[0]}" data-mp2="${ALO_MP[1]}">
+          <div class="rpg-alo-svg"></div>
+        </div>
+        <div class="rpg-alo-unitnums"><span>${num(view.hp_curr, view.hp_max)}</span>
+          <span>${num(view.en?.curr, view.en?.max)}</span></div>
+      </div>
+    </div>
+  </div>`;
+}
+
 function saoPaintBars() {
+  saoPaintAloPlates();
   const animate = uiSettings.saoAnimate !== false
     && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
@@ -3951,11 +5100,12 @@ function saoSlimRow(name, curr, max, stops, jumpIdx, foe, key) {
 function saoUnitView(unit) {
   const v = unit?.vehicle;
   if (v && v.active) {
-    return { name: `\u{1F916} ${v.name || "Vehicle"}`, hp_curr: v.hp_curr, hp_max: v.hp_max,
+    return { name: `\u{1F916} ${displayName(v.name, "Vehicle")}`, hp_curr: v.hp_curr, hp_max: v.hp_max,
              isVeh: true, en: getEnergy(v, true),
              meters: Array.isArray(v.meters) ? v.meters : [] };
   }
-  return { name: unit?.name || "?", hp_curr: unit?.hp_curr, hp_max: unit?.hp_max,
+  return { name: unit === rpgState ? playerDisplayName() : displayName(unit?.name, "?"),
+           hp_curr: unit?.hp_curr, hp_max: unit?.hp_max,
            isVeh: false, en: getEnergy(unit, false),
            meters: Array.isArray(unit?.meters) ? unit.meters : [] };
 }
@@ -3998,7 +5148,8 @@ function saoDivider(label, key, color) {
 // ---- panels -------------------------------------------------------------
 function saoStatusPanel() {
   const { root, display, type, isVehicle } = getActiveData();
-  const name = display?.name || root?.name || rpgState?.name || "Player";
+  const name = display === rpgState ? playerDisplayName()
+             : displayName(display?.name || root?.name, "Unit");
 
   const subs = [["stats","Stats"],["inventory","Items"],["skills","Skills"],
                 ["passives","Passive"],["masteries","Mastery"]];
@@ -4010,6 +5161,17 @@ function saoStatusPanel() {
     const en = getEnergy(display, isVehicle);
     h += `<div class="rpg-sao-vline"><span>HP</span><b>${renderInlineValue(display.hp_curr)} / ${renderInlineValue(display.hp_max)}</b></div>`;
     h += `<div class="rpg-sao-vline"><span>${escHtml(en.label || "MP")}</span><b>${renderInlineValue(en.curr)} / ${renderInlineValue(en.max)}</b></div>`;
+    // tile colour: ALfheim (New) only, and never for enemies, who stay red
+    if (uiSettings.saoBarStyle === "blk" && type !== "enemy") {
+      const tName = type === "player" ? "" : aloSplitTitle(saoUnitView(root).name).name;
+      const tKey = type === "player" ? "@player" : blkNameKey(tName);
+      const tCur = type === "player" ? blkPlayerTileColor() : blkTileColor(tName);
+      const picked = !!uiSettings.tileColors?.[tKey];
+      h += `<div class="rpg-sao-vline rpg-sao-tilecolor"><span>Tile colour</span><b>
+        <input type="color" id="rpg-sao-tilecolor" data-key="${escAttr(tKey)}" value="${escAttr(tCur)}" title="Pick this character's tile colour">
+        ${picked ? `<button class="rpg-sao-mini" id="rpg-sao-tilecolor-auto" data-key="${escAttr(tKey)}" title="Back to the automatic colour">\u21BA auto</button>` : ""}
+      </b></div>`;
+    }
     if ((type === "party" || type === "npc") && !isVehicle && root?.bond !== undefined) {
       const b = parseBondValue(root.bond);
       h += `<div class="rpg-sao-vline"><span>Bond</span><b>${b >= 101 ? "&#8734;" : b} / 100</b></div>`;
@@ -4024,21 +5186,20 @@ function saoStatusPanel() {
     const coin = toNumberOr(display.dankcoin ?? root?.dankcoin ?? 0, 0);
     h += `<div class="rpg-sao-vline" style="margin-top:8px;"><span>Coin</span><b>${escHtml(coin)}</b></div>`;
 
-    const meters = Array.isArray(display.meters) ? display.meters : [];
-    if (meters.length) {
-      h += `<div class="rpg-sao-sub">Meters</div>` + meters.map((m) =>
-        `<div class="rpg-sao-vline"><span>${escHtml(m.name)}</span><b>${escHtml(m.curr)} / ${escHtml(m.max)}</b></div>`
-      ).join("");
-    }
+    h += saoMetersSection(display);
 
     const st = Array.isArray(display.status_effects) ? display.status_effects : [];
     h += `<div class="rpg-sao-status">Status: ` +
       (st.length ? `<b>${st.map(escHtml).join(", ")}</b>` : `Healthy`) + `</div>`;
   } else {
     const list = Array.isArray(display[saoSub]) ? display[saoSub] : [];
-    h += list.length
-      ? `<ul class="rpg-sao-entries">` + list.map((it) => `<li>${escHtml(it)}</li>`).join("") + `</ul>`
-      : `<p class="rpg-sao-empty">Nothing recorded.</p>`;
+    if (saoSub === "masteries") {
+      h += saoMasteriesSection(list);
+    } else {
+      h += list.length
+        ? `<ul class="rpg-sao-entries">` + list.map(saoListItem).join("") + `</ul>`
+        : `<p class="rpg-sao-empty">Nothing recorded.</p>`;
+    }
   }
   return { title: name, body: h };
 }
@@ -4067,6 +5228,270 @@ function saoRosterGroups() {
 
 // Two rows instead of one long scroll: pick the group, then the character.
 // The second row is dropped when the group holds only one of them.
+// ---- meters: read view, or an inline editor for whoever is on the sheet ----
+function saoMetersSection(display) {
+  const meters = Array.isArray(display.meters) ? display.meters : [];
+
+  if (saoMeterEdit) {
+    const rows = saoMeterEdit.map((m, i) => `
+      <div class="rpg-sao-mrow-edit" data-i="${i}">
+        <input type="color" class="rpg-sao-m-color" data-i="${i}" value="${escAttr(m.color)}"
+          title="Colour${m.custom ? "" : " (automatic)"}">
+        <input type="text" class="rpg-sao-m-name" data-i="${i}" value="${escAttr(m.name)}" placeholder="Name">
+        <input type="text" class="rpg-sao-m-curr" data-i="${i}" value="${escAttr(m.curr)}" inputmode="decimal">
+        <span class="rpg-sao-m-slash">/</span>
+        <input type="text" class="rpg-sao-m-max" data-i="${i}" value="${escAttr(m.max)}" inputmode="decimal">
+        <button class="rpg-sao-m-auto${m.custom ? "" : " off"}" data-i="${i}" title="Back to automatic colour">&#8634;</button>
+        <button class="rpg-sao-m-del" data-i="${i}" title="Remove">&#10005;</button>
+      </div>`).join("");
+
+    return `<div class="rpg-sao-subhead"><span class="rpg-sao-sub">Meters</span></div>
+      <div class="rpg-sao-meditor">
+        ${rows || `<p class="rpg-sao-empty">No meters. Add one below.</p>`}
+        <button class="rpg-sao-mini" id="rpg-sao-m-add">+ Add meter</button>
+        <div class="rpg-sao-medit-actions">
+          <button class="rpg-sao-mini" id="rpg-sao-m-cancel">Cancel</button>
+          <button class="rpg-sao-mini primary" id="rpg-sao-m-save">Save</button>
+        </div>
+      </div>`;
+  }
+
+  const list = meters.length
+    ? meters.map((m) => {
+        const c = meterColorByName(m.name);
+        return `<div class="rpg-sao-vline"><span><i class="rpg-sao-swatch" style="background:${c}"></i>${escHtml(m.name)}</span>
+          <b>${escHtml(m.curr)} / ${escHtml(m.max)}</b></div>`;
+      }).join("")
+    : `<p class="rpg-sao-empty">No meters.</p>`;
+
+  return `<div class="rpg-sao-subhead"><span class="rpg-sao-sub">Meters</span>
+      <button class="rpg-sao-mini" id="rpg-sao-m-edit">&#9998; Edit</button></div>${list}`;
+}
+
+// ---- masteries: "Name: 45/100" gets a bar, same rule as the classic skin ----
+function saoParseProgress(str) {
+  const text = String(str ?? "");
+  const m = text.match(/^(.*?):\s*(-?\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)(.*)$/);
+  if (!m) return { name: text.trim(), curr: "", max: "", tail: "" };
+  return { name: m[1].trim(), curr: m[2], max: m[3], tail: m[4] || "" };
+}
+
+// ; and | would split the entry apart in the pipe format
+const saoCleanPipe = (v) => String(v ?? "").replace(/[;|]/g, " ").trim();
+
+function saoFormatProgress(e) {
+  const name = saoCleanPipe(e.name);
+  if (!name) return "";
+  const tail = saoCleanPipe(e.tail);
+  const suffix = tail ? " " + tail : "";
+  const c = String(e.curr ?? "").trim(), mx = String(e.max ?? "").trim();
+  if (c === "" && mx === "") return name + suffix;
+  return `${name}: ${c || 0}/${mx || 100}${suffix}`;
+}
+
+function saoProgressBar(curr, max) {
+  const c = parseFloat(curr), mx = parseFloat(max);
+  if (!Number.isFinite(c) || !Number.isFinite(mx) || mx <= 0) return "";
+  return `<div class="rpg-sao-pbar"><div style="width:${clamp((c / mx) * 100, 0, 100)}%"></div></div>`;
+}
+
+function saoListItem(it) {
+  const p = saoParseProgress(it);
+  const bar = p.curr !== "" ? saoProgressBar(p.curr, p.max) : "";
+  if (!bar) return `<li>${escHtml(it)}</li>`;
+  return `<li><div class="rpg-sao-li-top"><span>${escHtml(p.name)}${p.tail ? `<i> ${escHtml(p.tail.trim())}</i>` : ""}</span>
+    <b>${escHtml(p.curr)}/${escHtml(p.max)}</b></div>${bar}</li>`;
+}
+
+function saoMasteriesSection(list) {
+  if (saoMasteryEdit) {
+    const rows = saoMasteryEdit.map((m, i) => `
+      <div class="rpg-sao-mast-edit">
+        <input type="text" class="rpg-sao-ms-name" data-i="${i}" value="${escAttr(m.name)}" placeholder="Name">
+        <input type="text" class="rpg-sao-ms-curr" data-i="${i}" value="${escAttr(m.curr)}" inputmode="decimal" placeholder="\u2013">
+        <span class="rpg-sao-m-slash">/</span>
+        <input type="text" class="rpg-sao-ms-max" data-i="${i}" value="${escAttr(m.max)}" inputmode="decimal" placeholder="\u2013">
+        <button class="rpg-sao-ms-del" data-i="${i}" title="Remove">&#10005;</button>
+      </div>`).join("");
+    return `<div class="rpg-sao-subhead"><span class="rpg-sao-sub">Masteries</span></div>
+      <div class="rpg-sao-meditor rpg-sao-mseditor">
+        ${rows || `<p class="rpg-sao-empty">No masteries. Add one below.</p>`}
+        <p class="rpg-sao-hint">Leave the numbers blank for a mastery without a bar.</p>
+        <button class="rpg-sao-mini" id="rpg-sao-ms-add">+ Add mastery</button>
+        <div class="rpg-sao-medit-actions">
+          <button class="rpg-sao-mini" id="rpg-sao-ms-cancel">Cancel</button>
+          <button class="rpg-sao-mini primary" id="rpg-sao-ms-save">Save</button>
+        </div>
+      </div>`;
+  }
+
+  const body = list.length
+    ? `<ul class="rpg-sao-entries">` + list.map(saoListItem).join("") + `</ul>`
+    : `<p class="rpg-sao-empty">No masteries.</p>`;
+  return `<div class="rpg-sao-subhead"><span class="rpg-sao-sub">Masteries</span>
+      <button class="rpg-sao-mini" id="rpg-sao-ms-edit">&#9998; Edit</button></div>${body}`;
+}
+
+function saoSaveMasteryEdit() {
+  const { display } = getActiveData();
+  const before = Array.isArray(display.masteries) ? display.masteries : [];
+  let draft = saoMasteryEdit.filter((m) => saoCleanPipe(m.name));
+
+  const kept = new Set(draft.map((m) => (m.orig ?? "").toLowerCase()).filter(Boolean));
+  const removed = before.filter((x) => !kept.has(String(x).toLowerCase()));
+  if (removed.length) {
+    const sure = confirm(`Remove ${removed.length === 1 ? "this mastery" : "these masteries"}?\n\n` +
+      `${removed.map((x) => saoParseProgress(x).name).join(", ")}\n\nCancel keeps them.`);
+    if (!sure) draft = draft.concat(removed.map((x) => ({ ...saoParseProgress(x), orig: x })));
+  }
+
+  display.masteries = draft.map(saoFormatProgress).filter(Boolean);
+  saoMasteryEdit = null;
+  const ok = writeStateBackToChatMessage(rpgState);
+  if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after mastery edit");
+  renderRPG();
+}
+
+function saoBindMasteryEditor() {
+  const edit = document.getElementById("rpg-sao-ms-edit");
+  if (edit) edit.onclick = (e) => {
+    e.stopPropagation();
+    const { display } = getActiveData();
+    saoMasteryEdit = (Array.isArray(display.masteries) ? display.masteries : [])
+      .map((x) => ({ ...saoParseProgress(x), orig: String(x) }));
+    renderRPG();
+  };
+
+  const body = document.querySelector(".rpg-sao-mseditor");
+  if (!body || !saoMasteryEdit) return;
+
+  const field = (cls, key) => body.querySelectorAll(cls).forEach((el) => {
+    el.oninput = () => { const m = saoMasteryEdit[+el.dataset.i]; if (m) m[key] = el.value; };
+    el.onclick = (e) => e.stopPropagation();
+  });
+  field(".rpg-sao-ms-name", "name");
+  field(".rpg-sao-ms-curr", "curr");
+  field(".rpg-sao-ms-max", "max");
+
+  body.querySelectorAll(".rpg-sao-ms-del").forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); saoMasteryEdit.splice(+el.dataset.i, 1); renderRPG(); };
+  });
+
+  const one = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
+  one("rpg-sao-ms-add", () => {
+    saoMasteryEdit.push({ name: "", curr: "0", max: "100", tail: "", orig: "" });
+    renderRPG();
+    requestAnimationFrame(() => {
+      const names = document.querySelectorAll(".rpg-sao-ms-name");
+      names[names.length - 1]?.focus();
+    });
+  });
+  one("rpg-sao-ms-cancel", () => { saoMasteryEdit = null; renderRPG(); });
+  one("rpg-sao-ms-save", saoSaveMasteryEdit);
+}
+
+function saoStartMeterEdit() {
+  const { display } = getActiveData();
+  const meters = Array.isArray(display.meters) ? display.meters : [];
+  saoMeterEdit = meters.map((m) => ({
+    name: m.name ?? "",
+    curr: m.curr ?? 0,
+    max: m.max ?? 100,
+    color: meterColorByName(m.name),
+    custom: !!uiSettings.meterColors?.[meterKey(m.name)],
+    orig: m.name ?? "",
+  }));
+}
+
+function saoSaveMeterEdit() {
+  const { display } = getActiveData();
+  const before = Array.isArray(display.meters) ? display.meters : [];
+  let draft = saoMeterEdit.filter((m) => String(m.name).trim());
+
+  // Deleting asks first, and Cancel keeps them — same as bonds and timers.
+  const kept = new Set(draft.map((m) => meterKey(m.orig || m.name)));
+  const removed = before.filter((m) => !kept.has(meterKey(m.name)));
+  if (removed.length) {
+    const sure = confirm(`Remove ${removed.length === 1 ? "this meter" : "these meters"}?\n\n` +
+      `${removed.map((m) => m.name).join(", ")}\n\nCancel keeps them.`);
+    if (!sure) {
+      draft = draft.concat(removed.map((m) => ({
+        name: m.name, curr: m.curr, max: m.max, color: meterColorByName(m.name), custom: false,
+      })));
+    }
+  }
+
+  display.meters = draft.map((m) => ({
+    name: String(m.name).trim(),
+    curr: String(m.curr).trim() || "0",
+    max: String(m.max).trim() || "100",
+  }));
+
+  // colours are keyed by name, so they carry across every character with
+  // that meter and survive the model rewriting the block
+  const colors = { ...(uiSettings.meterColors || {}) };
+  draft.forEach((m) => {
+    const k = meterKey(m.name);
+    if (m.custom) colors[k] = m.color;
+    else delete colors[k];
+    if (m.orig && meterKey(m.orig) !== k) delete colors[meterKey(m.orig)];   // renamed
+  });
+  uiSettings.meterColors = colors;
+  saveUiSettings();
+
+  saoMeterEdit = null;
+  const ok = writeStateBackToChatMessage(rpgState);
+  if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after meter edit");
+  renderRPG();
+}
+
+function saoBindMeterEditor() {
+  const body = document.querySelector(".rpg-sao-meditor");
+  const edit = document.getElementById("rpg-sao-m-edit");
+  if (edit) edit.onclick = (e) => { e.stopPropagation(); saoStartMeterEdit(); renderRPG(); };
+  if (!body || !saoMeterEdit) return;
+
+  // typing updates the draft in place; re-rendering would steal focus
+  const field = (cls, key) => body.querySelectorAll(cls).forEach((el) => {
+    el.oninput = () => { const m = saoMeterEdit[+el.dataset.i]; if (m) m[key] = el.value; };
+    el.onclick = (e) => e.stopPropagation();
+  });
+  field(".rpg-sao-m-name", "name");
+  field(".rpg-sao-m-curr", "curr");
+  field(".rpg-sao-m-max", "max");
+
+  body.querySelectorAll(".rpg-sao-m-color").forEach((el) => {
+    el.oninput = () => {
+      const m = saoMeterEdit[+el.dataset.i];
+      if (!m) return;
+      m.color = el.value; m.custom = true;
+      el.closest(".rpg-sao-mrow-edit")?.querySelector(".rpg-sao-m-auto")?.classList.remove("off");
+    };
+    el.onclick = (e) => e.stopPropagation();
+  });
+
+  const btn = (sel, fn) => body.querySelectorAll(sel).forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); fn(+el.dataset.i); };
+  });
+  btn(".rpg-sao-m-del", (i) => { saoMeterEdit.splice(i, 1); renderRPG(); });
+  btn(".rpg-sao-m-auto", (i) => {
+    const m = saoMeterEdit[i]; if (!m) return;
+    m.custom = false; m.color = meterAutoColor(m.name); renderRPG();
+  });
+
+  const one = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
+  one("rpg-sao-m-add", () => {
+    saoMeterEdit.push({ name: "", curr: "0", max: "100", color: "#26a69a", custom: false, orig: "" });
+    renderRPG();
+    requestAnimationFrame(() => {
+      const names = document.querySelectorAll(".rpg-sao-m-name");
+      names[names.length - 1]?.focus();
+    });
+  });
+  one("rpg-sao-m-cancel", () => { saoMeterEdit = null; renderRPG(); });
+  one("rpg-sao-m-save", saoSaveMeterEdit);
+}
+
 function saoWhoStrip() {
   const groups = saoRosterGroups();
   if (!groups.length) return "";
@@ -4080,7 +5505,7 @@ function saoWhoStrip() {
 
   if (active.list.length < 2) return cats;
 
-  const chips = `<div class="rpg-sao-who">` + active.list.map((u, i) => {
+  const chips = `<div class="rpg-sao-who" data-scroll-key="who:${active.key}">` + active.list.map((u, i) => {
     const idx = charIndexFor(active.type, i);
     return `<button class="rpg-sao-chip${idx === charIndex ? " on" : ""}${active.key === "enemy" ? " foe" : ""}"
       data-idx="${idx}">${escHtml(saoUnitView(u).name)}</button>`;
@@ -4129,8 +5554,8 @@ function saoBondsPanel() {
 
     const idx = jumpIdxFor(b.name);
     const nameHtml = idx === null
-      ? `<span class="rpg-sao-who-name">${escHtml(b.name)}</span>`
-      : `<button class="rpg-sao-who-name rpg-sao-jump" data-idx="${idx}">${escHtml(b.name)}</button>`;
+      ? `<span class="rpg-sao-who-name">${escHtml(displayName(b.name))}</span>`
+      : `<button class="rpg-sao-who-name rpg-sao-jump" data-idx="${idx}">${escHtml(displayName(b.name))}</button>`;
 
     return `<div class="rpg-sao-bond">
       <div class="rpg-sao-bondtop">
@@ -4145,12 +5570,286 @@ function saoBondsPanel() {
 }
 
 function saoQuestsPanel() {
+  const tabs = `<div class="rpg-sao-subtabs">
+    <button class="rpg-sao-qtab${saoQuestTab === "quests" ? " on" : ""}" data-qtab="quests">Quests</button>
+    <button class="rpg-sao-qtab${saoQuestTab === "log" ? " on" : ""}" data-qtab="log">Log</button></div>`;
+
+  if (saoQuestTab === "log") return { title: "Turn log", body: tabs + saoLogHtml() };
+
   const quests = Array.isArray(rpgState.quests) ? rpgState.quests : [];
-  if (!quests.length) return { title: "Quests", body: `<p class="rpg-sao-empty">No active quests.</p>` };
   return {
     title: "Quests",
-    body: quests.map((q) => `<div class="rpg-sao-quest">${escHtml(q)}</div>`).join(""),
+    body: tabs + (quests.length
+      ? quests.map((q) => `<div class="rpg-sao-quest">${escHtml(q)}</div>`).join("")
+      : `<p class="rpg-sao-empty">No active quests.</p>`),
   };
+}
+
+// identifies what's in the panel, so switching tab or character starts at the
+// top while a re-render of the same view keeps your place
+function saoPanelScrollKey() {
+  if (saoPanel === "status") return `status:${charIndex}:${saoSub}`;
+  if (saoPanel === "quests") return `quests:${saoQuestTab}`;
+  if (saoPanel === "gear" && saoHelpOpen) return "help";
+  return `panel:${saoPanel}`;
+}
+
+function saoSaveScroll(root) {
+  root.querySelectorAll("[data-scroll-key]").forEach((el) => {
+    saoScroll.set(el.dataset.scrollKey, { top: el.scrollTop, left: el.scrollLeft });
+  });
+}
+
+function saoRestoreScroll(root) {
+  root.querySelectorAll("[data-scroll-key]").forEach((el) => {
+    const p = saoScroll.get(el.dataset.scrollKey);
+    if (!p) return;
+    if (p.top) el.scrollTop = p.top;
+    if (p.left) el.scrollLeft = p.left;
+  });
+}
+
+// Jump-to-top / jump-to-bottom, shown only when there's somewhere to jump to.
+function saoBindJumps() {
+  document.querySelectorAll(".rpg-sao-panel").forEach((panel) => {
+    const body = panel.querySelector(".rpg-sao-body");
+    const up = panel.querySelector(".rpg-sao-jumpto.up");
+    const down = panel.querySelector(".rpg-sao-jumpto.down");
+    if (!body || !up || !down) return;
+
+    const update = () => {
+      const room = body.scrollHeight - body.clientHeight;
+      up.classList.toggle("show", room > 24 && body.scrollTop > 40);
+      down.classList.toggle("show", room > 24 && body.scrollTop < room - 40);
+    };
+    if (body.dataset.jumpBound !== "1") {        // bound once per element
+      body.dataset.jumpBound = "1";
+      body.addEventListener("scroll", update, { passive: true });
+    }
+    update();
+
+    const go = (top) => (e) => {
+      e.stopPropagation();
+      body.scrollTo({ top, behavior: uiSettings.saoAnimate === false ? "auto" : "smooth" });
+    };
+    up.onclick = go(0);
+    down.onclick = go(body.scrollHeight);
+  });
+}
+
+// ---- undo / redo the latest turn ----
+// Writes the previous turn's block back into the latest message, so every
+// change that turn made is reverted at once. Only the <rpg_state> is touched,
+// never the story text. One level, with redo until the message changes again.
+let turnUndo = null;   // { key, idx, before, after }
+
+function setMessageText(msg, text) {
+  msg.mes = text;
+  // the active swipe keeps its own copy; without this, swiping away and back
+  // would bring the undone state straight back
+  if (Array.isArray(msg.swipes) && Number.isInteger(msg.swipe_id) && msg.swipe_id in msg.swipes) {
+    msg.swipes[msg.swipe_id] = text;
+  }
+}
+
+function afterTurnEdit(ctx, idx) {
+  const msg = ctx.chat[idx];
+  try { ctx.updateMessageBlock?.(idx, msg); } catch {}
+  try { window.saveChat?.(); } catch (e) { console.warn("RPG HUD: saveChat failed", e); }
+  // our own edit, so the description alert shouldn't read it as the model's
+  alertSig = `${idx}|${rpgInnerFromMessage(msg.mes)}`;
+  alertIdx = idx;
+  invalidateHistoryMemory();
+  turnLogCache = { sig: "", turns: [] };
+  // A plain scan, not a manual one: a manual scan writes the whole live state
+  // back into the message, which would overwrite the block this edit just set
+  // (and break redo, which checks the message is still exactly what we wrote).
+  try { checkMessage(); } catch {}
+  renderRPG();
+}
+
+function saoUndoLastTurn() {
+  let ctx;
+  try { ctx = SillyTavern.getContext(); } catch { return; }
+  const turns = rpgTurnsOf(ctx?.chat);
+  if (turns.length < 2) return;
+  const last = turns[turns.length - 1], prev = turns[turns.length - 2];
+  const msg = ctx.chat[last.idx];
+
+  const ok = confirm(
+    "Undo the latest turn?\n\n" +
+    "Its rpg_state goes back to exactly how it was the turn before, reverting " +
+    "every change that turn made. The story text isn't touched.\n\n" +
+    "You can redo it until the chat changes."
+  );
+  if (!ok) return;
+
+  const before = msg.mes;
+  const after = before.replace(/(<rpg_state\b[^>]*>)[\s\S]*?(<\/rpg_state>)/i,
+    (m, open, close) => `${open}\n${prev.inner}\n${close}`);
+  if (after === before) return;
+
+  setMessageText(msg, after);
+  turnUndo = { key: currentChatKey(ctx), idx: last.idx, before, after };
+  afterTurnEdit(ctx, last.idx);
+  if (window.toastr) window.toastr.info("Latest turn undone.");
+}
+
+// Revert one change from the newest turn: reparse that turn's block, put the
+// one thing back the way the turn before had it, and write the block out.
+// The write goes through the same builder as every other edit, and
+// parse -> build -> parse is lossless, so nothing else in the block moves.
+function saoUndoChange(ci, expectText) {
+  let ctx;
+  try { ctx = SillyTavern.getContext(); } catch { return; }
+  const turns = rpgTurnsOf(ctx?.chat);
+  if (turns.length < 2) return;
+  const last = turns[turns.length - 1], prev = turns[turns.length - 2];
+
+  // the chat may have moved on since the log was drawn
+  const change = diffTurn(prev.state, last.state)[ci];
+  if (!change || !change.u || change.text !== expectText) {
+    if (window.toastr) window.toastr.info("That change has already moved on. The log has been refreshed.");
+    renderRPG();
+    return;
+  }
+
+  const next = tClone(last.state);
+  applyTurnUndo(next, prev.state, change.u);
+
+  const msg = ctx.chat[last.idx];
+  const before = msg.mes;
+  const after = before.replace(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i, buildPipeString(next));
+  if (after === before) return;
+
+  setMessageText(msg, after);
+  turnUndo = { key: currentChatKey(ctx), idx: last.idx, before, after };
+  afterTurnEdit(ctx, last.idx);
+  if (window.toastr) window.toastr.info(`Reverted: ${change.text}`);
+}
+
+function saoCanRedo(ctx) {
+  if (!turnUndo || !ctx?.chat) return false;
+  return currentChatKey(ctx) === turnUndo.key && ctx.chat[turnUndo.idx]?.mes === turnUndo.after;
+}
+
+function saoRedoLastTurn() {
+  let ctx;
+  try { ctx = SillyTavern.getContext(); } catch { return; }
+  if (!saoCanRedo(ctx)) { turnUndo = null; renderRPG(); return; }
+  setMessageText(ctx.chat[turnUndo.idx], turnUndo.before);
+  const idx = turnUndo.idx;
+  turnUndo = null;
+  afterTurnEdit(ctx, idx);
+  if (window.toastr) window.toastr.info("Turn restored.");
+}
+
+// Classic's Log tab: the same turn log, undo and per-change undo as the SAO
+// Quests orb, drawn with classic's inline styles for its dark panel. Its tab
+// body drops scrollbar-gutter:stable: with it, Chromium left the good/bad
+// bullets unpainted, and a log that almost always scrolls gains nothing from it.
+function classicLogHtml() {
+  let chat = [], ctx = null;
+  try { ctx = SillyTavern.getContext(); chat = ctx?.chat || []; } catch {}
+  const turns = buildTurnLog(chat);
+  const redo = saoCanRedo(ctx);
+  const btn = "padding:1px 7px; font-size:0.9em; cursor:pointer; background:#333; color:#ddd; border:1px solid #666; border-radius:2px;";
+  const tools = (turns.length || redo)
+    ? `<div style="display:flex; gap:5px; justify-content:flex-end; margin-bottom:5px;">
+        ${turns.length ? `<button id="rpg-c-undo" style="${btn}" title="Revert everything the latest turn changed">\u21B6 Undo last turn</button>` : ""}
+        ${redo ? `<button id="rpg-c-redo" style="${btn}">\u21B7 Redo</button>` : ""}
+      </div>`
+    : "";
+  if (!turns.length) {
+    return tools + `<div style="opacity:0.5; font-style:italic;">Nothing yet. Each reply that carries an rpg_state adds a turn here.</div>`;
+  }
+
+  const dot = { good: "#66bb6a", bad: "#ef5350", neutral: "#888" };
+  const html = turns.slice(0, saoLogShown).map((t, ti) => `
+    <div style="padding:4px 0 5px; border-bottom:1px solid #333;">
+      <div class="rpg-c-turnhead" data-mes="${t.idx}" title="Jump to this message"
+           style="display:flex; justify-content:space-between; gap:8px; cursor:pointer; margin-bottom:2px;">
+        <b>Turn ${t.n}</b>
+        <span style="color:#999; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0;">
+          ${escHtml(t.when)}${t.where ? " \u00B7 " + escHtml(t.where) : ""}</span>
+      </div>
+      ${t.changes.length ? t.changes.map((c, ci) => `
+        <div style="display:flex; align-items:flex-start; gap:5px; padding:1px 0;">
+          <span style="flex:1; min-width:0; overflow-wrap:anywhere;"><span style="color:${dot[c.tone] || dot.neutral}; font-weight:bold; margin-right:4px;">\u2022</span>${c.diff
+            ? `~ ${escHtml(c.diff.label)}: <b>${escHtml(c.diff.name)}</b><br><span style="color:#aaa;">${wordDiffHtml(c.diff.before, c.diff.after, "toast")}</span>`
+            : escHtml(c.text)}</span>
+          ${ti === 0 && c.u
+            ? `<button class="rpg-c-revert" data-ci="${ci}" data-text="${escAttr(c.text)}" title="Undo just this change"
+                 style="flex:0 0 auto; padding:0 4px; font-size:0.85em; cursor:pointer; background:none; color:#aaa; border:1px solid #555; border-radius:2px;">\u21B6</button>`
+            : ""}
+        </div>`).join("")
+        : `<div style="opacity:0.5; font-style:italic;">No changes.</div>`}
+    </div>`).join("");
+
+  const more = turns.length > saoLogShown
+    ? `<button id="rpg-c-log-more" style="${btn} width:100%; margin-top:6px;">Show older (${turns.length - saoLogShown})</button>`
+    : "";
+  return tools + html + more;
+}
+
+function classicBindLog() {
+  const one = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
+  one("rpg-c-undo", saoUndoLastTurn);
+  one("rpg-c-redo", saoRedoLastTurn);
+  one("rpg-c-log-more", () => { saoLogShown += 20; renderRPG(); });
+  document.querySelectorAll(".rpg-c-revert").forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); saoUndoChange(parseInt(el.dataset.ci, 10), el.dataset.text); };
+  });
+  document.querySelectorAll(".rpg-c-turnhead").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const mes = document.querySelector(`#chat .mes[mesid="${el.dataset.mes}"]`);
+      if (mes) mes.scrollIntoView({ behavior: "smooth", block: "center" });
+      else if (window.toastr) window.toastr.info("That message isn't loaded in the chat view.");
+    };
+  });
+  document.querySelectorAll(".rpg-c-tuse").forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); spendTimerCharge(el.dataset.key); };
+  });
+}
+
+function saoLogHtml() {
+  let chat = [];
+  try { chat = SillyTavern.getContext()?.chat || []; } catch {}
+  const turns = buildTurnLog(chat);
+  let ctx = null;
+  try { ctx = SillyTavern.getContext(); } catch {}
+  const redo = saoCanRedo(ctx);
+  const tools = (turns.length || redo)
+    ? `<div class="rpg-sao-logtools">
+        ${turns.length ? `<button class="rpg-sao-mini" id="rpg-sao-undo" title="Revert everything the latest turn changed">\u21B6 Undo last turn</button>` : ""}
+        ${redo ? `<button class="rpg-sao-mini" id="rpg-sao-redo">\u21B7 Redo</button>` : ""}
+      </div>`
+    : "";
+  if (!turns.length) {
+    return tools + `<p class="rpg-sao-empty">Nothing yet. Each reply that carries an rpg_state adds a turn here.</p>`;
+  }
+
+  const html = turns.slice(0, saoLogShown).map((t, ti) => `
+    <div class="rpg-sao-turn${ti === 0 ? " newest" : ""}">
+      <button class="rpg-sao-turnhead" data-mes="${t.idx}" title="Jump to this message">
+        <span class="n">Turn ${t.n}</span>
+        <span class="w">${escHtml(t.when)}${t.where ? " \u00B7 " + escHtml(t.where) : ""}</span>
+      </button>
+      ${t.changes.length
+        ? `<ul class="rpg-sao-changes">${t.changes.map((c, ci) => `<li class="${c.tone}">
+            <span>${c.diff
+              ? `~ ${escHtml(c.diff.label)}: <b>${escHtml(c.diff.name)}</b><br><span class="rpg-wd">${wordDiffHtml(c.diff.before, c.diff.after, "log")}</span>`
+              : escHtml(c.text)}</span>${ti === 0 && c.u
+              ? `<button class="rpg-sao-revert" data-ci="${ci}" data-text="${escAttr(c.text)}" title="Undo just this change">\u21B6</button>`
+              : ""}</li>`).join("")}</ul>`
+        : `<p class="rpg-sao-empty small">No changes.</p>`}
+    </div>`).join("");
+
+  const more = turns.length > saoLogShown
+    ? `<button class="rpg-sao-mini" id="rpg-sao-log-more">Show older (${turns.length - saoLogShown})</button>`
+    : "";
+  return tools + html + more;
 }
 
 function saoPlacePanel() {
@@ -4182,7 +5881,7 @@ function saoTimersHtml() {
     .map(({ t, info }) => {
       const st = timerKindStyle(info.kind);
       const dim = info.done && !TIMER_PERSISTENT_KINDS.includes(info.kind) ? " spent" : "";
-      const owner = t.owner ? `<span class="rpg-sao-owner">${escHtml(t.owner)}&#183;</span>` : "";
+      const owner = t.owner ? `<span class="rpg-sao-owner">${escHtml(displayName(t.owner))}&#183;</span>` : "";
       const mark = t.repaired ? `<span title="Auto-ticked" style="color:#a8871f;">*</span>` : "";
       const kept = t.kept ? `<span title="Carried over" style="color:#9b978c;">&#176;</span>` : "";
       const bar = info.pct === null ? "" :
@@ -4190,7 +5889,10 @@ function saoTimersHtml() {
       return `<div class="rpg-sao-timer${dim}">
         <div class="rpg-sao-tline"><span>${st.icon}</span>
           <span class="rpg-sao-tname">${owner}${escHtml(t.name)}${mark}${kept}</span>
-          <span class="rpg-sao-tleft" style="color:${st.color}">${escHtml(info.label)}</span></div>
+          <span class="rpg-sao-tleft" style="color:${st.color}">${escHtml(info.label)}</span>${
+            info.mode === "charges" && !info.done
+              ? `<button class="rpg-sao-tuse" data-key="${escAttr(timerKey(t))}" title="Use one charge">\u22121</button>`
+              : ""}</div>
         ${bar}</div>`;
     }).join("");
 
@@ -4226,8 +5928,16 @@ function saoHelpPanel() {
           "Puts every slider and toggle back to its default. Your skin choice and chat data stay as they are.")
       + item("Move HUD pieces",
           "Drag the bars, the orb column and the clock wherever you like. Buttons stop responding while you're arranging, so a tap can't fire by accident. Reset puts them back.")
+      + item("Turn log",
+          "In the Quests orb, the Log tab lists what changed each turn \u2014 HP, items, bonds, where you went, how much time passed. It's worked out from your chat history rather than stored, so it follows swipes and edits and covers old chats too. Tap a turn to jump to its message. Undo last turn reverts everything the newest turn changed; the \u21B6 beside a single change in the newest turn reverts just that one. Redo puts either back.")
+      + item("Charges",
+          "A timer written as 2/2x, 2x or \u201c2 uses\u201d counts uses instead of turns, for effects like \u201cblock the next 2 attacks\u201d. It never ticks down on its own; the AI lowers it when it's used, or tap \u22121 in the timer list.")
+      + item("Meters",
+          "Open a character in Status and use Edit under Meters to add, rename, change or remove them. The swatch sets a colour; \u21BA puts it back to automatic. Colours follow the meter's name, so every character's Shield matches.")
       + item("Animations",
           "Bars slide to their new value, orbs unfold when you reopen the HUD, and panels fade in. Off means everything snaps.")
+      + item("Bar style",
+          "Aincrad is the stepped SAO bar. ALfheim swaps it for the ALO look: one plate with your name, HP over MP in an arrow-ended frame, and arrow-ended bars for party, NPCs, enemies and meters. ALfheim (New) is the later party HUD: an emblem tile, the name with status tiles beside it, and flat HP and MP bars. To pick someone's tile colour, open them in the Status orb's Stats tab. Bar backdrop only affects Aincrad.")
       + item("Text contrast",
           "How far the text sits from the panel behind it. Maximum contrast also maximises the antialiasing fringe, so backing it off makes small text look cleaner.")
       + item("Font",
@@ -4298,6 +6008,12 @@ function saoSettingsHtml() {
     + `<div class="rpg-sao-mrow toggle"><span>Bar backdrop</span>
         <input type="range" id="rpg-sao-card-a" min="0" max="70"
                value="${Math.round(uiSettings.saoCardAlpha ?? 11)}"></div>`
+    + `<div class="rpg-sao-mrow toggle"><span>Bar style</span>
+        <select id="rpg-sao-barstyle">
+          <option value="sao"${!["alo", "blk"].includes(uiSettings.saoBarStyle) ? " selected" : ""}>Aincrad (SAO)</option>
+          <option value="alo"${uiSettings.saoBarStyle === "alo" ? " selected" : ""}>ALfheim (Classic)</option>
+          <option value="blk"${uiSettings.saoBarStyle === "blk" ? " selected" : ""}>ALfheim (New)</option>
+        </select></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Font</span>
         <select id="rpg-sao-font">
           <option value="preset"${!SAO_FONTS[uiSettings.saoFont] ? " selected" : ""}>Follow preset</option>
@@ -4308,7 +6024,8 @@ function saoSettingsHtml() {
         <select id="rpg-sao-skin">
           <option value="classic">Classic</option>
           <option value="sao" selected>SAO</option>
-        </select></div>`;
+        </select></div>`
+    + `<div class="rpg-sao-build">build ${HUD_BUILD}</div>`;
 }
 
 // ---- orbs ---------------------------------------------------------------
@@ -4398,18 +6115,49 @@ function renderSaoSkin() {
     // --- vitals ---
     let vitals = "";
     if (showBars) {
-      vitals = `<div class="rpg-sao-vitals${animKind === "restore" && !uiSettings.barsOnMin ? " fadein" : ""}" data-drag="vitals">
-        <div class="rpg-sao-card">
+      const hpText = demo ? "720/1000" : `${escHtml(pView.hp_curr)}/${escHtml(pView.hp_max)}`;
+      const mpText = demo ? "240/500" : `${escHtml(en.curr)}/${escHtml(en.max)}`;
+      const shownName = escHtml(demo ? "Name" : pName);
+
+      if (uiSettings.saoBarStyle === "blk") {
+        blkAssignColors([
+          ...party.map((u) => aloSplitTitle(saoUnitView(u).name).name),
+          ...npcs.map((u) => aloSplitTitle(saoUnitView(u).name).name),
+        ]);
+      }
+
+      const playerBlock = uiSettings.saoBarStyle === "blk"
+        ? blkUnitRow(pView, 0, "p", { big: true, kind: "player", hpPct, mpPct, hpText, mpText,
+            name: demo ? "Name" : pName, status: blkEffects(rpgState.status_effects, null) })
+        : uiSettings.saoBarStyle === "alo"
+        // ALfheim: one plate, name on the left, HP over MP in one arrow frame
+        ? (() => {
+            const t = aloSplitTitle(demo ? "Name" : pName);
+            return `<div class="rpg-alo-player">
+              ${t.title ? `<div class="rpg-alo-title">${escHtml(t.title)}</div>` : ""}
+              <div class="rpg-alo-plate" data-key="p" data-hp="${hpPct}" data-mp="${mpPct}"
+                data-hp1="${hpStops[0]}" data-hp2="${hpStops[1]}"
+                data-mp1="${ALO_MP[0]}" data-mp2="${ALO_MP[1]}">
+                <div class="rpg-alo-svg"></div>
+                <span class="rpg-alo-name">${escHtml(t.name)}</span>
+              </div>
+              <div class="rpg-alo-nums"><span><i>HP</i> ${hpText}</span><span><i>${escHtml(en.label || "MP")}</i> ${mpText}</span></div>
+            </div>`;
+          })()
+        : `<div class="rpg-sao-card">
           <div class="rpg-sao-block">
-            <div class="rpg-sao-name">${escHtml(demo ? "Name" : pName)}</div>
+            <div class="rpg-sao-name">${shownName}</div>
             <div class="rpg-sao-stack">
               <div class="rpg-sao-vrow">${saoBarHtml("", hpPct, hpStops[0], hpStops[1], "p:hp")}
-                <span class="rpg-sao-vnum">${demo ? "720/1000" : `${escHtml(pView.hp_curr)}/${escHtml(pView.hp_max)}`}</span></div>
+                <span class="rpg-sao-vnum">${hpText}</span></div>
               <div class="rpg-sao-vrow">${saoBarHtml("mid", mpPct, SAO_PALETTE.mp[0], SAO_PALETTE.mp[1], "p:mp")}
-                <span class="rpg-sao-vnum">${demo ? "240/500" : `${escHtml(en.curr)}/${escHtml(en.max)}`}</span></div>
+                <span class="rpg-sao-vnum">${mpText}</span></div>
             </div>
           </div>
         </div>`;
+
+      vitals = `<div class="rpg-sao-vitals${uiSettings.saoBarStyle === "alo" ? " alo" : uiSettings.saoBarStyle === "blk" ? " alo blk" : ""}${animKind === "restore" && !uiSettings.barsOnMin ? " fadein" : ""}" data-drag="vitals">
+        ${playerBlock}`;
 
       if (pMeters.length) {
         vitals += `<div class="rpg-sao-group">` + saoDivider("METERS", "meters") +
@@ -4419,15 +6167,21 @@ function renderSaoSkin() {
           `</div></div>`;
       }
       // party and NPCs get their own sections, each independently collapsible
+      const alo = uiSettings.saoBarStyle === "alo";
       const unitGroup = (label, key, list, type) => {
         if (!list.length) return "";
         return `<div class="rpg-sao-group">` + saoDivider(label, key) +
-          `<div class="rpg-sao-slim${saoCollapsed[key] ? " hide" : ""}">` +
+          `<div class="rpg-sao-slim${alo ? " rpg-alo-group" : ""}${saoCollapsed[key] ? " hide" : ""}">` +
           list.map((u, i) => {
             const v = saoUnitView(u);
             const k = `${type}:${normBondName(u?.name) || i}`;
-            return saoSlimRow(v.name, v.hp_curr, v.hp_max, saoUnitStops(v),
-                              charIndexFor(type, i), false, k) + saoMeterRows(v, k);
+            const idx = charIndexFor(type, i);
+            return (uiSettings.saoBarStyle === "blk"
+              ? blkUnitRow(v, idx, k, { kind: type === "npc" ? "npc" : "party", status: blkEffects(u?.status_effects, u?.name) })
+              : alo
+              ? aloUnitRow(v, idx, k, false)
+              : saoSlimRow(v.name, v.hp_curr, v.hp_max, saoUnitStops(v), idx, false, k))
+              + saoMeterRows(v, k);
           }).join("") + `</div></div>`;
       };
       vitals += unitGroup("PARTY", "party", party, "party");
@@ -4439,10 +6193,18 @@ function renderSaoSkin() {
     if (showBars && inCombat && enemies.length) {
       foesHtml = `<div class="rpg-sao-foes"><div class="rpg-sao-group">` +
         saoDivider(`ROUND ${escHtml(rpgState.combat.round ?? 1)}`, "foes", "#f0b6ab") +
-        `<div class="rpg-sao-slim${saoCollapsed.foes ? " hide" : ""}">` +
+        `<div class="rpg-sao-slim${uiSettings.saoBarStyle === "alo" ? " rpg-alo-group" : ""}${saoCollapsed.foes ? " hide" : ""}">` +
         enemies.map((u, i) => {
           const v = saoUnitView(u);
           const k = `enemy:${normBondName(u?.name) || ""}:${i}`;
+          if (uiSettings.saoBarStyle === "blk") {
+            if (!v.isVeh && !v.name) v.name = `Enemy ${i + 1}`;
+            return blkUnitRow(v, charIndexFor("enemy", i), k, { foe: true, kind: "enemy", status: blkEffects(u?.status_effects, u?.name) }) + saoMeterRows(v, k);
+          }
+          if (uiSettings.saoBarStyle === "alo") {
+            if (!v.isVeh && !v.name) v.name = `Enemy ${i + 1}`;
+            return aloUnitRow(v, charIndexFor("enemy", i), k, true) + saoMeterRows(v, k);
+          }
           return saoSlimRow(v.isVeh ? v.name : (u?.name || `Enemy ${i + 1}`),
             v.hp_curr, v.hp_max, saoUnitStops(v), charIndexFor("enemy", i), true, k)
             + saoMeterRows(v, k);
@@ -4466,7 +6228,7 @@ function renderSaoSkin() {
       const help = saoHelpPanel();
       panelHtml = `<div class="rpg-sao-panelwrap helpshift"><div class="rpg-sao-panel">
         <h2>${escHtml(help.title)}</h2>
-        <div class="rpg-sao-body">${help.body}</div></div><div class="rpg-sao-notch"></div></div>`;
+        <div class="rpg-sao-body" data-scroll-key="help">${help.body}</div><div class="rpg-sao-jumps"><button class="rpg-sao-jumpto up" title="Back to the top"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 7.5L6 4l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="rpg-sao-jumpto down" title="To the bottom"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 4.5L6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div><div class="rpg-sao-notch"></div></div>`;
     } else if (!saoMin && saoPanel && saoPanel !== "gear") {
       const built = saoPanel === "status" ? saoStatusPanel()
                   : saoPanel === "bonds" ? saoBondsPanel()
@@ -4476,16 +6238,16 @@ function renderSaoSkin() {
       panelHtml = `<div class="rpg-sao-panelwrap"><div class="rpg-sao-panel">
         <h2>${escHtml(built.title)}</h2>
         ${saoPanel === "status" ? saoWhoStrip() : ""}
-        <div class="rpg-sao-body">${built.body}</div></div><div class="rpg-sao-notch"></div></div>`;
+        <div class="rpg-sao-body" data-scroll-key="${escAttr(saoPanelScrollKey())}">${built.body}</div><div class="rpg-sao-jumps"><button class="rpg-sao-jumpto up" title="Back to the top"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 7.5L6 4l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="rpg-sao-jumpto down" title="To the bottom"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 4.5L6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div><div class="rpg-sao-notch"></div></div>`;
     }
 
     const menuHtml = (!saoMin && saoPanel === "gear")
-      ? `<div class="rpg-sao-menuwrap${saoHelpOpen ? " hashelp" : ""}"><div class="rpg-sao-menu">${saoSettingsHtml()}</div><div class="rpg-sao-notch"></div></div>` : "";
+      ? `<div class="rpg-sao-menuwrap${saoHelpOpen ? " hashelp" : ""}"><div class="rpg-sao-menu" data-scroll-key="menu">${saoSettingsHtml()}</div><div class="rpg-sao-notch"></div></div>` : "";
 
     // --- clock ---
     const t = rpgState.world_time || {};
     const clockHtml = saoMin ? "" : `<div class="rpg-sao-clockwrap" data-drag="clock">
-      ${saoTimersOpen ? `<div class="rpg-sao-timers">${saoTimersHtml()}</div>` : ""}
+      ${saoTimersOpen ? `<div class="rpg-sao-timers" data-scroll-key="timers">${saoTimersHtml()}</div>` : ""}
       <button class="rpg-sao-clock" id="rpg-sao-clock">
         <span class="rpg-sao-dot ${saoIndicatorClass(latest.status)}"></span>
         <span class="rpg-sao-glyph">${getWeatherEmoji(t.weather)}</span>
@@ -4503,13 +6265,20 @@ function renderSaoSkin() {
           <button id="rpg-sao-layout-done">Done</button></div>`
       : "";
 
+    saoSaveScroll(container);
     container.innerHTML = SAO_CSS + vitals + orbs + panelHtml + menuHtml + clockHtml + layoutBar;
+    saoRestoreScroll(container);
 
     saoFitName();          // may change the bar width, so run it first
     saoPaintBars();
     saoPlacePanels();
+    saoBindJumps();
     requestAnimationFrame(() => {
       saoFitName(); saoPaintBars(); saoPlacePanels();
+      const vs = container.querySelector(".rpg-sao-vitals");
+      if (vs) vs.classList.toggle("scrolls", vs.scrollHeight > vs.clientHeight + 1);
+      saoRestoreScroll(container);
+      saoBindJumps();
       saoBindDragging(); saoDrawGhosts();
     });
     saoBind();
@@ -4533,6 +6302,7 @@ function saoBind() {
     flushInlineEdits();
     const tab = el.dataset.tab;
     const was = saoPanel;
+    saoMeterEdit = null; saoMasteryEdit = null;
     saoPanel = saoPanel === tab ? null : tab;
     if (saoPanel !== "gear") saoHelpOpen = false;
     if (saoPanel && saoPanel !== was) saoAnim("panel", 220);
@@ -4557,6 +6327,7 @@ function saoBind() {
   on(".rpg-sao-jump, .rpg-sao-chip", (el) => {
     const idx = parseInt(el.dataset.idx, 10);
     if (!Number.isFinite(idx)) return;
+    saoMeterEdit = null; saoMasteryEdit = null;
     charIndex = idx;
     saoSub = "stats";
     saoPanel = "status";
@@ -4564,6 +6335,7 @@ function saoBind() {
   });
 
   on(".rpg-sao-cat", (el) => {
+    saoMeterEdit = null; saoMasteryEdit = null;
     const g = saoRosterGroups().filter((x) => x.key === el.dataset.cat)[0];
     if (!g) return;
     charIndex = charIndexFor(g.type, 0);
@@ -4571,7 +6343,13 @@ function saoBind() {
     renderRPG();
   });
 
-  on(".rpg-sao-subtab", (el) => { saoSub = el.dataset.sub; renderRPG(); });
+  on(".rpg-sao-subtab", (el) => { saoSub = el.dataset.sub; saoMasteryEdit = null; renderRPG(); });
+  on(".rpg-sao-qtab", (el) => { saoQuestTab = el.dataset.qtab; saoLogShown = 20; renderRPG(); });
+  on(".rpg-sao-turnhead", (el) => {
+    const mes = document.querySelector(`#chat .mes[mesid="${el.dataset.mes}"]`);
+    if (mes) mes.scrollIntoView({ behavior: "smooth", block: "center" });
+    else if (window.toastr) window.toastr.info("That message isn't loaded in the chat view.");
+  });
 
   const clock = document.getElementById("rpg-sao-clock");
   if (clock) clock.onclick = (e) => { e.stopPropagation(); saoTimersOpen = !saoTimersOpen; renderRPG(); };
@@ -4581,7 +6359,7 @@ function saoBind() {
   if (bondEdit) bondEdit.onclick = (e) => {
     e.stopPropagation();
     bondsEditMode = true;
-    bondsSnapshot = (rpgState.bonds || []).map((b) => b?.name).filter(Boolean);
+    bondsSnapshot = (rpgState.bonds || []).filter((b) => b && b.name).map((b) => ({ ...b }));
     renderRPG();
   };
   const timerEdit = document.getElementById("rpg-sao-timer-edit");
@@ -4590,12 +6368,16 @@ function saoBind() {
     timersEditMode = true;
     timersSnapshot = (rpgState.timers || [])
       .filter((t) => t && String(t.name || "").trim())
-      .map((t) => ({ owner: t.owner || "", name: t.name, kind: t.kind }));
+      .map((t) => ({ ...t }));
     renderRPG();
   };
+  on(".rpg-sao-tuse", (el) => spendTimerCharge(el.dataset.key));
+
   const timerTurn = document.getElementById("rpg-sao-timer-turn");
   if (timerTurn) timerTurn.onclick = (e) => { e.stopPropagation(); advanceTimerTurn(); };
 
+  saoBindMeterEditor();
+  saoBindMasteryEditor();
   if (bondsEditMode) bindBondsTab();
   if (timersEditMode) bindTimersTab();
 
@@ -4608,6 +6390,34 @@ function saoBind() {
   });
   bind("rpg-sao-diagnose", () => { saoMin = false; saoPanel = "error"; renderRPG(); });
   bind("rpg-sao-help", () => { saoHelpOpen = !saoHelpOpen; renderRPG(); });
+  bind("rpg-sao-log-more", () => { saoLogShown += 20; renderRPG(); });
+
+  const tilePick = document.getElementById("rpg-sao-tilecolor");
+  if (tilePick) {
+    const key = tilePick.dataset.key;
+    const tiles = () => document.querySelectorAll(`.rpg-blk-tile[data-tkey="${CSS.escape(key)}"]`);
+    tilePick.onclick = (e) => e.stopPropagation();
+    // while choosing: recolour the tile in place, no redraw, so the picker stays open
+    tilePick.oninput = () => tiles().forEach((t) => { t.style.backgroundColor = tilePick.value; });
+    // on closing the picker: keep it
+    tilePick.onchange = () => {
+      uiSettings.tileColors = { ...(uiSettings.tileColors || {}), [key]: tilePick.value };
+      saveUiSettings();
+      renderRPG();
+    };
+  }
+  bind("rpg-sao-tilecolor-auto", () => {
+    const key = document.getElementById("rpg-sao-tilecolor-auto")?.dataset.key;
+    if (!key) return;
+    const next = { ...(uiSettings.tileColors || {}) };
+    delete next[key];
+    uiSettings.tileColors = next;
+    saveUiSettings();
+    renderRPG();
+  });
+  bind("rpg-sao-undo", saoUndoLastTurn);
+  on(".rpg-sao-revert", (el) => saoUndoChange(parseInt(el.dataset.ci, 10), el.dataset.text));
+  bind("rpg-sao-redo", saoRedoLastTurn);
   bind("rpg-sao-move", () => {
     saoLayoutMode = true;
     saoPanel = null;
@@ -4709,6 +6519,12 @@ function saoBind() {
     ca.onclick = (e) => e.stopPropagation();
   }
 
+  const styleSel = document.getElementById("rpg-sao-barstyle");
+  if (styleSel) {
+    styleSel.onchange = () => { uiSettings.saoBarStyle = styleSel.value; saveUiSettings(); renderRPG(); };
+    styleSel.onclick = (e) => e.stopPropagation();
+  }
+
   const fontSel = document.getElementById("rpg-sao-font");
   if (fontSel) {
     fontSel.onchange = () => { uiSettings.saoFont = fontSel.value; saveUiSettings(); renderRPG(); };
@@ -4774,6 +6590,132 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-vnum{position:absolute; right:3px; top:54%; line-height:1;
   font-size:calc(10px * var(--rpg-sao-ui, 1)); font-weight:600; color:#d3cfc4; white-space:nowrap}
 
+/* ALfheim plates. Width is set by the painter: the bars are a fixed length
+   and the name compartment takes what the longest name in its group needs,
+   so a long name widens the plate rather than shortening the bars. */
+.rpg-alo-plate{position:relative; height:calc(40px * var(--rpg-sao-ui, 1)); width:calc(300px * var(--rpg-sao-ui, 1)); max-width:none}
+.rpg-alo-plate.small{height:calc(18px * var(--rpg-sao-ui, 1))}
+.rpg-alo-svg{position:absolute; inset:0}
+.rpg-alo-svg svg{display:block}
+.rpg-alo-plate:not(.small) .rpg-alo-svg svg{filter:drop-shadow(0 1px 2px rgba(0,0,0,.3))}
+.rpg-alo-plate.small .rpg-alo-name{text-shadow:0 1px 2px rgba(0,0,0,.7)}
+.rpg-alo-name{position:absolute; top:0; bottom:0; z-index:1;
+  display:flex; align-items:center; box-sizing:border-box;
+  font-size:calc(12px * var(--rpg-sao-ui, 1)); font-weight:600; letter-spacing:.3px; color:#f4f2ec;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.rpg-alo-plate.small .rpg-alo-name{font-size:calc(10.5px * var(--rpg-sao-ui, 1)); font-weight:600}
+.rpg-alo-title{font-size:calc(9.5px * var(--rpg-sao-ui, 1)); letter-spacing:.6px; color:#cfcbc1;
+  margin:0 0 1px calc(10px * var(--rpg-sao-ui, 1)); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.rpg-alo-nums{display:flex; justify-content:flex-end; gap:calc(12px * var(--rpg-sao-ui, 1));
+  margin:calc(3px * var(--rpg-sao-ui, 1)) calc(8px * var(--rpg-sao-ui, 1)) 0 0; font-size:calc(10px * var(--rpg-sao-ui, 1)); font-weight:600; color:#d3cfc4}
+.rpg-alo-nums i{font-style:normal; opacity:.6; margin-right:2px}
+
+.rpg-alo-row{margin-bottom:calc(5px * var(--rpg-sao-ui, 1))}
+.rpg-alo-unit{display:block}
+.rpg-alo-label{cursor:pointer}
+/* width:0 + min-width:100% lets the label fill the row without widening it,
+   so a long name is cut off at the bars' width instead of stretching them */
+.rpg-alo-label{width:0; min-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  margin:0 0 calc(1px * var(--rpg-sao-ui, 1)) calc(1px * var(--rpg-sao-ui, 1)); line-height:1.15}
+.rpg-alo-uname{font-size:calc(10.5px * var(--rpg-sao-ui, 1)); font-weight:600; letter-spacing:.3px; color:#f0eee8;
+  text-shadow:0 1px 2px rgba(0,0,0,.7)}
+.rpg-alo-utitle{font-size:calc(9px * var(--rpg-sao-ui, 1)); color:#bdb9af; margin-left:calc(6px * var(--rpg-sao-ui, 1)); letter-spacing:.4px;
+  text-shadow:0 1px 2px rgba(0,0,0,.7)}
+.rpg-alo-unit:hover .rpg-alo-uname{text-decoration:underline; text-underline-offset:2px}
+.rpg-alo-unit.foe .rpg-alo-uname{color:#f2a99d}
+.rpg-alo-barline{display:flex; align-items:center; gap:calc(6px * var(--rpg-sao-ui, 1))}
+.rpg-alo-unitnums{display:flex; flex-direction:column; justify-content:center;
+  height:calc(18px * var(--rpg-sao-ui, 1)); font-size:calc(9px * var(--rpg-sao-ui, 1)); line-height:1.15; color:#c8c4ba; white-space:nowrap}
+.rpg-alo-unitnums span:first-child{color:#dcd8cf; font-weight:600}
+
+
+/* ---- ALfheim (New) ---- */
+.rpg-blk-row{
+  --bt:calc(30px * var(--rpg-sao-ui, 1)); --bl:calc(150px * var(--rpg-sao-ui, 1)); --bb:calc(8px * var(--rpg-sao-ui, 1));
+  position:relative; display:grid; grid-template-columns:var(--bt) auto auto; grid-template-rows:auto auto;
+  column-gap:0; align-items:center;
+  margin-bottom:calc((var(--bt) - var(--bb) * 2) / 2 + 6px * var(--rpg-sao-ui, 1))}
+.rpg-blk-row.big{--bt:calc(38px * var(--rpg-sao-ui, 1)); --bl:calc(220px * var(--rpg-sao-ui, 1)); --bb:calc(10px * var(--rpg-sao-ui, 1));
+  margin-bottom:calc((var(--bt) - var(--bb) * 2) / 2 + 9px * var(--rpg-sao-ui, 1))}
+
+/* translucent plate behind the name: starts a little in from the tile's left
+   edge and fades out by the time it reaches the end of the bars */
+.rpg-blk-plate{grid-column:1 / 3; grid-row:1; align-self:stretch; z-index:0;
+  margin-left:calc(var(--bt) * .22);
+  border-radius:calc(5px * var(--rpg-sao-ui, 1)) 0 0 calc(5px * var(--rpg-sao-ui, 1));
+  background:linear-gradient(90deg, rgba(214,222,230,.26) 0, rgba(214,222,230,.18) 45%, rgba(214,222,230,0) 100%)}
+
+/* Centred on the bars, so HP meets MP at the tile's middle. Equal negative
+   margins let it overhang above and below without making the bar row taller,
+   so the name plate sits right on the HP bar and the tile overlaps it. */
+.rpg-blk-tile svg{width:60%; height:60%; display:block; fill:#fff;
+  filter:drop-shadow(0 1px 1px rgba(0,0,0,.35))}
+.rpg-blk-tile{grid-column:1; grid-row:2; align-self:center; position:relative; z-index:2; box-sizing:border-box;
+  margin:calc((var(--bb) * 2 - var(--bt)) / 2) 0;
+  width:var(--bt); height:var(--bt); border-radius:calc(6px * var(--rpg-sao-ui, 1));
+  border:calc(2px * var(--rpg-sao-ui, 1)) solid rgba(236,240,245,.88); box-shadow:0 1px 3px rgba(0,0,0,.45);
+  display:grid; place-items:center; color:#fff; font-weight:800;
+  font-size:calc(var(--bt) * .46); text-shadow:0 1px 2px rgba(0,0,0,.35);
+  background-image:linear-gradient(180deg, rgba(255,255,255,.24) 0, rgba(255,255,255,.06) 48%,
+                                           rgba(0,0,0,0) 52%, rgba(0,0,0,.14) 100%)}
+/* width:0 + min-width:100% keeps a long name from widening the row */
+.rpg-blk-head{grid-column:2 / 4; grid-row:1; position:relative; z-index:1;
+  display:flex; align-items:center; gap:calc(6px * var(--rpg-sao-ui, 1));
+  width:0; min-width:100%; overflow:hidden; padding:calc(2px * var(--rpg-sao-ui, 1)) 0 calc(3px * var(--rpg-sao-ui, 1)) calc(7px * var(--rpg-sao-ui, 1))}
+.rpg-blk-name{flex:0 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  font-size:calc(11.5px * var(--rpg-sao-ui, 1)); font-weight:700; letter-spacing:.4px; color:#f2f0ea;
+  text-shadow:0 1px 2px rgba(0,0,0,.75); cursor:pointer}
+.rpg-blk-row.big .rpg-blk-name{font-size:calc(13px * var(--rpg-sao-ui, 1))}
+.rpg-blk-name:hover{text-decoration:underline; text-underline-offset:2px}
+.rpg-blk-row.foe .rpg-blk-name{color:#f2a99d}
+.rpg-blk-title{flex:0 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  font-size:calc(9px * var(--rpg-sao-ui, 1)); color:#bdb9af; text-shadow:0 1px 2px rgba(0,0,0,.7)}
+.rpg-blk-chips{display:flex; gap:calc(1px * var(--rpg-sao-ui, 1)); flex:0 0 auto; align-items:center}
+.rpg-blk-chip{display:grid; place-items:center; width:calc(19px * var(--rpg-sao-ui, 1)); height:calc(12px * var(--rpg-sao-ui, 1));
+  clip-path:polygon(28% 0, 100% 0, 72% 100%, 0 100%); color:#fff;
+  font-size:calc(7.5px * var(--rpg-sao-ui, 1)); font-weight:800; letter-spacing:.2px}
+.rpg-blk-row.big .rpg-blk-chip{width:calc(22px * var(--rpg-sao-ui, 1)); height:calc(14px * var(--rpg-sao-ui, 1))}
+.rpg-blk-chip svg{width:calc(9px * var(--rpg-sao-ui, 1)); height:calc(9px * var(--rpg-sao-ui, 1)); display:block}
+.rpg-blk-more{font-size:calc(9px * var(--rpg-sao-ui, 1)); color:#cfcbc1; margin-left:2px}
+
+/* HP and MP the same height, touching, and running out of the tile's edge */
+.rpg-blk-bars{grid-column:2; grid-row:2; align-self:center; display:flex; flex-direction:column; gap:0;
+  position:relative; z-index:1; margin-left:calc(-3px * var(--rpg-sao-ui, 1))}
+.rpg-sao-bar.blkhp, .rpg-sao-bar.blkmp{flex:none; width:var(--bl); height:var(--bb)}
+.rpg-blk-row .rpg-sao-bar svg{filter:none}
+.rpg-blk-nums{grid-column:3; grid-row:2; display:flex; flex-direction:column; justify-content:space-between;
+  align-self:center; height:calc(var(--bb) * 2); padding-left:calc(6px * var(--rpg-sao-ui, 1));
+  font-size:calc(9px * var(--rpg-sao-ui, 1)); line-height:1; color:#c8c4ba; white-space:nowrap;
+  text-shadow:0 1px 2px rgba(0,0,0,.7)}
+.rpg-blk-nums span:first-child{color:#e2ded5; font-weight:600}
+.rpg-blk-row.big .rpg-blk-nums{font-size:calc(10px * var(--rpg-sao-ui, 1))}
+
+/* ---- tap through the bars ----
+   Only names and the collapse arrows catch taps; everything else in the
+   stack lets them fall through to whatever is underneath. The one exception
+   is a stack long enough to scroll, which has to catch touches to scroll. */
+#rpg-hud-container .rpg-sao-vitals,
+#rpg-hud-container .rpg-sao-vitals *{pointer-events:none}
+#rpg-hud-container .rpg-sao-vitals.scrolls{pointer-events:auto}
+#rpg-hud-container .rpg-sao-vitals button.rpg-sao-tag,
+#rpg-hud-container .rpg-sao-vitals .rpg-sao-caret,
+#rpg-hud-container .rpg-sao-vitals .rpg-alo-label,
+#rpg-hud-container .rpg-sao-vitals .rpg-alo-uname,
+#rpg-hud-container .rpg-sao-vitals .rpg-blk-name{pointer-events:auto}
+
+/* the stack sizes to its widest plate instead of a fixed width, so meters and
+   other grid rows need explicit bar lengths to keep from collapsing */
+.rpg-sao-vitals.alo{width:max-content; max-width:calc(100vw - 130px)}
+.rpg-sao-vitals.alo .rpg-sao-slim{margin-right:0}
+/* in ALfheim every bar row puts its label above, so all bars share one left edge */
+.rpg-sao-vitals.alo .rpg-sao-row{
+  grid-template-columns:calc(150px * var(--rpg-sao-ui, 1)) var(--numw); row-gap:0; margin-left:0}
+.rpg-sao-vitals.alo .rpg-sao-row.sub{grid-template-columns:calc(90px * var(--rpg-sao-ui, 1)) var(--numw); opacity:.82}
+.rpg-sao-vitals.alo .rpg-sao-row > .rpg-sao-tag{grid-column:1 / -1; grid-row:1;
+  width:0; min-width:100%; text-align:left; margin-bottom:1px}
+.rpg-sao-vitals.alo .rpg-sao-row > .rpg-sao-bar{grid-column:1; grid-row:2}
+.rpg-sao-vitals.alo .rpg-sao-row > .rpg-sao-num{grid-column:2; grid-row:2}
+.rpg-sao-vitals.alo .rpg-sao-row.sub > .rpg-sao-tag{font-size:calc(9px * var(--rpg-sao-ui, 1))}
 .rpg-sao-bar{position:relative; flex:1 1 auto; min-width:0; width:100%; height:calc(15px * var(--rpg-sao-ui, 1))}
 .rpg-sao-bar.mid{height:calc(11px * var(--rpg-sao-ui, 1))}
 .rpg-sao-bar.slim{height:calc(9px * var(--rpg-sao-ui, 1)); width:auto}
@@ -4798,7 +6740,11 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-row.stacked > .rpg-sao-bar{grid-column:2; grid-row:2}
 .rpg-sao-row.stacked > .rpg-sao-num{grid-column:3; grid-row:2}
 .rpg-sao-row.sub{margin-left:13px; opacity:.85}
-.rpg-sao-row.sub{--tagw:calc(40px * var(--rpg-sao-ui, 1)); --numw:calc(50px * var(--rpg-sao-ui, 1))}
+.rpg-sao-row.sub{
+  --tagw:calc(40px * var(--rpg-sao-ui, 1)); --numw:calc(50px * var(--rpg-sao-ui, 1));
+  /* a meter belongs to the bar above it, so it never runs as long */
+  grid-template-columns:var(--tagw) minmax(0, 42%) var(--numw) 1fr;
+}
 .rpg-sao-row.sub .rpg-sao-tag{font-size:calc(9.5px * var(--rpg-sao-ui, 1)); text-decoration:none}
 .rpg-sao-row.sub .rpg-sao-bar.slim{height:calc(6px * var(--rpg-sao-ui, 1))}
 .rpg-sao-row.sub .rpg-sao-num{font-size:calc(9px * var(--rpg-sao-ui, 1))}
@@ -4914,6 +6860,51 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-sao-subtab{flex:1; padding:5px 2px; text-align:center; font-size:11px; font-weight:600;
   color:var(--rpg-sao-ink-dim); cursor:pointer; border:0; border-bottom:2px solid transparent; background:none}
 .rpg-sao-subtab.on{color:var(--rpg-sao-ink); border-bottom-color:#b3903f}
+.rpg-sao-qtab{flex:1; padding:5px 2px; text-align:center; font-size:11px; font-weight:600;
+  color:var(--rpg-sao-ink-dim); cursor:pointer; border:0; border-bottom:2px solid transparent; background:none}
+.rpg-sao-qtab.on{color:var(--rpg-sao-ink); border-bottom-color:#b3903f}
+
+.rpg-sao-turn{padding:6px 0 7px; border-bottom:1px solid var(--rpg-sao-rule)}
+.rpg-sao-turn:last-of-type{border-bottom:0}
+.rpg-sao-turnhead{display:flex; justify-content:space-between; align-items:baseline; gap:8px;
+  width:100%; padding:0; margin:0 0 3px; background:none; border:0; cursor:pointer;
+  color:var(--rpg-sao-ink); text-align:left}
+.rpg-sao-turnhead .n{font-size:12px; font-weight:700; letter-spacing:.6px}
+.rpg-sao-turnhead .w{font-size:10.5px; color:var(--rpg-sao-ink-dim); white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; min-width:0}
+.rpg-sao-turnhead:hover .n{text-decoration:underline}
+.rpg-sao-changes{list-style:none; margin:0; padding:0; font-size:12px; line-height:1.35}
+.rpg-sao-changes li{padding:1px 0 1px 9px; position:relative}
+.rpg-sao-changes li::before{content:""; position:absolute; left:0; top:.55em;
+  width:4px; height:4px; border-radius:50%; background:var(--rpg-sao-ink-dim)}
+.rpg-sao-changes li.good::before{background:#4e9c3f}
+.rpg-sao-changes li.bad::before{background:#c0392b}
+.rpg-sao-empty.small{font-size:11.5px; margin:2px 0 0}
+#rpg-sao-log-more{margin-top:8px; width:100%}
+.rpg-sao-logtools{display:flex; gap:6px; justify-content:flex-end; margin:-2px 0 6px}
+.rpg-sao-changes li{display:flex; align-items:flex-start; justify-content:space-between; gap:6px}
+.rpg-sao-changes li > span{min-width:0; overflow-wrap:anywhere}
+.rpg-wd{font-size:11.5px; color:var(--rpg-sao-ink-dim)}
+.rpg-wd-del{color:#b23a2a; text-decoration:line-through; background:rgba(178,58,42,.08); padding:0 1px}
+.rpg-wd-ins{color:#2f7a26; text-decoration:none; font-weight:700; background:rgba(47,122,38,.08); padding:0 1px}
+.rpg-sao-revert{flex:0 0 auto; width:20px; height:18px; padding:0; margin-top:-1px; cursor:pointer;
+  font-size:11px; line-height:1; border-radius:2px; color:var(--rpg-sao-ink-dim);
+  background:transparent; border:1px solid var(--rpg-sao-rule); opacity:.55}
+.rpg-sao-revert:hover, .rpg-sao-revert:focus-visible{opacity:1; color:var(--rpg-sao-ink)}
+
+/* jump-to-top / bottom, floating over the panel's lower right */
+.rpg-sao-jumps{position:absolute; right:10px; bottom:10px; z-index:2;
+  display:flex; flex-direction:column; gap:5px; pointer-events:none}
+/* quiet until you reach for them */
+.rpg-sao-jumpto{width:24px; height:24px; border-radius:50%; padding:0; cursor:pointer;
+  display:grid; place-items:center; color:#fff;
+  background:rgba(40,40,44,.22); border:1px solid var(--rpg-sao-ink-dim, #6b6760);
+  box-shadow:none; backdrop-filter:blur(1px);
+  opacity:0; transform:scale(.8); pointer-events:none;
+  transition:opacity .2s, transform .2s, background .2s}
+.rpg-sao-jumpto svg{display:block}
+.rpg-sao-jumpto.show{opacity:.42; transform:none; pointer-events:auto}
+.rpg-sao-jumpto.show:hover, .rpg-sao-jumpto.show:focus-visible{opacity:.95; background:rgba(40,40,44,.55)}
 .rpg-sao-vline{display:flex; justify-content:space-between; font-size:13px;
   padding:3px 0; border-bottom:1px solid var(--rpg-sao-rule)}
 .rpg-sao-sub{margin-top:9px; font-size:10px; font-weight:700; letter-spacing:1.4px; color:var(--rpg-sao-ink-dim)}
@@ -4947,6 +6938,49 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
   padding-bottom:3px}
 
 .rpg-sao-panelhead{display:flex; justify-content:flex-end; margin-bottom:6px}
+
+.rpg-sao-subhead{display:flex; align-items:center; justify-content:space-between;
+  margin-top:9px; border-bottom:1px solid var(--rpg-sao-rule); padding-bottom:3px}
+.rpg-sao-subhead .rpg-sao-sub{margin:0}
+.rpg-sao-swatch{display:inline-block; width:9px; height:9px; border-radius:2px;
+  margin-right:6px; vertical-align:0; box-shadow:inset 0 0 0 1px rgba(0,0,0,.25)}
+
+.rpg-sao-meditor{padding-top:6px}
+.rpg-sao-mrow-edit{display:grid; align-items:center; gap:4px; margin-bottom:5px;
+  grid-template-columns:26px minmax(0,1fr) 44px 8px 44px 22px 22px}
+.rpg-sao-mrow-edit input[type=text]{min-width:0; width:100%; box-sizing:border-box;
+  font:inherit; font-size:12px; padding:3px 5px; color:var(--rpg-sao-ink);
+  background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
+.rpg-sao-tilecolor b{display:flex; align-items:center; gap:6px}
+.rpg-sao-tilecolor input[type=color]{width:30px; height:22px; padding:0; cursor:pointer;
+  border:1px solid var(--rpg-sao-rule); border-radius:3px; background:none}
+.rpg-sao-mrow-edit input[type=color]{width:26px; height:24px; padding:0; border:1px solid var(--rpg-sao-rule);
+  border-radius:3px; background:none; cursor:pointer}
+.rpg-sao-m-slash{text-align:center; color:var(--rpg-sao-ink-dim)}
+.rpg-sao-m-auto, .rpg-sao-m-del{width:22px; height:22px; padding:0; cursor:pointer; font-size:12px;
+  background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink); border-radius:2px}
+.rpg-sao-m-auto.off{visibility:hidden}
+.rpg-sao-m-del:hover{color:#c0392b; border-color:#c0392b}
+.rpg-sao-medit-actions{display:flex; justify-content:flex-end; gap:6px; margin-top:8px}
+.rpg-sao-mini.primary{background:#4e9c3f; border-color:#4e9c3f; color:#fff}
+
+.rpg-sao-mast-edit{display:grid; align-items:center; gap:4px; margin-bottom:5px;
+  grid-template-columns:minmax(0,1fr) 44px 8px 44px 22px}
+.rpg-sao-mast-edit input[type=text]{min-width:0; width:100%; box-sizing:border-box;
+  font:inherit; font-size:12px; padding:3px 5px; color:var(--rpg-sao-ink);
+  background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
+.rpg-sao-ms-del{width:22px; height:22px; padding:0; cursor:pointer; font-size:12px; border-radius:2px;
+  background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink)}
+.rpg-sao-ms-del:hover{color:#c0392b; border-color:#c0392b}
+.rpg-sao-hint{font-size:10.5px; color:var(--rpg-sao-ink-dim); margin:2px 0 6px}
+
+.rpg-sao-li-top{display:flex; justify-content:space-between; align-items:baseline; gap:8px}
+.rpg-sao-li-top i{font-style:normal; color:var(--rpg-sao-ink-dim); font-size:11px}
+.rpg-sao-li-top b{font-size:11.5px; font-weight:700; white-space:nowrap}
+.rpg-sao-pbar{position:relative; height:5px; margin-top:4px; background:#ddd9cf;
+  border:1px solid #c2bdb1; overflow:hidden}
+.rpg-sao-pbar > div{position:absolute; left:0; top:0; bottom:0;
+  background:linear-gradient(180deg,#b39ddb,#7e57c2)}
 .rpg-sao-mini{background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink);
   font-size:11px; font-weight:600; padding:2px 8px; cursor:pointer}
 .rpg-sao-mini:hover{filter:brightness(1.06)}
@@ -4992,6 +7026,8 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 .rpg-sao-mrow .pip{flex:0 0 22px; height:22px; border-radius:50%; background:#6b6355;
   color:#fff; display:grid; place-items:center; font-size:11px}
 .rpg-sao-mrow:hover{filter:brightness(1.06)}
+.rpg-sao-build{margin-top:4px; padding:4px 11px; background:var(--rpg-sao-panel);
+  font-size:10px; letter-spacing:.5px; text-align:right; color:var(--rpg-sao-ink-dim); opacity:.8}
 .rpg-sao-mrow.toggle{cursor:default; justify-content:space-between; gap:6px}
 .rpg-sao-mrow select{font-family:inherit; font-size:12px; background:var(--rpg-sao-chip);
   border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink); padding:2px 4px}
@@ -5036,6 +7072,10 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 .rpg-sao-owner{color:var(--rpg-sao-ink-dim); font-size:11px}
 .rpg-sao-tleft{font-weight:700}
 .rpg-sao-tbar{position:relative; height:3px; margin-top:4px; background:#ddd9cf}
+.rpg-sao-tuse{flex:0 0 auto; margin-left:4px; padding:0 5px; height:17px; line-height:15px; cursor:pointer;
+  font-size:10.5px; font-weight:700; border-radius:2px; color:var(--rpg-sao-ink);
+  background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule)}
+.rpg-sao-tuse:hover{filter:brightness(1.08)}
 .rpg-sao-tbar div{position:absolute; top:0; bottom:0; left:0}
 
 .rpg-sao-clock{display:flex; align-items:center; gap:9px; background:none; border:0;
@@ -5445,7 +7485,9 @@ function applyRpgState(nextState) {
   rpgState = nextState;
 }
 
-function parsePipeFormat(text) {
+// Pure: text in, state out. No globals read or written, so it can parse any
+// message in history (the turn log does) without disturbing the live HUD.
+function parseBlockCore(text) {
   let newState = JSON.parse(JSON.stringify(defaultState));
   newState.party = [];
   newState.enemies = [];
@@ -5636,6 +7678,14 @@ function parsePipeFormat(text) {
       }).filter(m => m.name);
     }
   }
+
+  return newState;
+}
+
+// The live parse: the pure core, then the steps that depend on history and
+// on the previous state (bond ledger, timer carry-over, year inheritance).
+function parsePipeFormat(text) {
+  const newState = parseBlockCore(text);
 
   newState.bonds = mergeBondLedger(bondMemory, newState.bonds);
 
