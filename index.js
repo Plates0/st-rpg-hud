@@ -346,6 +346,10 @@ let lastPipeError = {
 
 // --- UI SETTINGS (font + scale) ---
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
+// Bump on every release. Shown at the foot of the SAO settings menu and in the
+// console, so it's obvious when the browser is still serving a cached copy.
+const HUD_BUILD = "2026-09-26.4";
+console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
   skin: "classic",
@@ -5765,6 +5769,7 @@ function saoSettingsHtml() {
     + row("rpg-sao-help", "?", saoHelpOpen ? "Hide help" : "What these do")
     + row("rpg-sao-move", "\u2725", "Move HUD pieces")
     + row("rpg-sao-reset", "\u21BA", "Reset settings")
+    + `<div class="rpg-sao-build">build ${HUD_BUILD}</div>`
     + row("rpg-sao-insert", "&#8595;", "Insert state")
     + row("rpg-sao-remind", "&#9993;", "Remind state")
     + toggle("rpg-sao-sw-alerts", "Change alerts", !!uiSettings.changeAlerts)
@@ -6766,6 +6771,8 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 .rpg-sao-mrow .pip{flex:0 0 22px; height:22px; border-radius:50%; background:#6b6355;
   color:#fff; display:grid; place-items:center; font-size:11px}
 .rpg-sao-mrow:hover{filter:brightness(1.06)}
+.rpg-sao-build{font-size:10px; text-align:right; padding:4px 6px 0; color:rgba(255,255,255,.55);
+  text-shadow:0 1px 2px rgba(0,0,0,.7); letter-spacing:.5px}
 .rpg-sao-mrow.toggle{cursor:default; justify-content:space-between; gap:6px}
 .rpg-sao-mrow select{font-family:inherit; font-size:12px; background:var(--rpg-sao-chip);
   border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink); padding:2px 4px}
