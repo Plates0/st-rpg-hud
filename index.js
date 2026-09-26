@@ -4762,7 +4762,7 @@ function blkBarSvg(W, H, pctVal, c1, c2) {
     <rect x=".5" y=".5" width="${W - 1}" height="${H - 1}" fill="rgba(205,222,238,.12)"/>
     ${fw > 0 ? `<rect x=".5" y=".5" width="${fw}" height="${H - 1}" fill="url(#f${id})"/>
     <rect x=".5" y=".5" width="${fw}" height="${H - 1}" fill="url(#s${id})"/>` : ""}
-    <rect x=".5" y=".5" width="${W - 1}" height="${H - 1}" fill="none" stroke="rgba(225,235,245,.5)" stroke-width="1"/>
+    <rect x=".5" y=".5" width="${W - 1}" height="${H - 1}" fill="none" stroke="rgba(225,235,245,.42)" stroke-width="1"/>
   </svg>`;
 }
 
@@ -4816,6 +4816,7 @@ function blkUnitRow(view, idx, key, opts = {}) {
   const num = (a, b) => (a === undefined || a === null || a === "") ? "\u2013" : `${escHtml(a)}/${escHtml(b)}`;
   const initial = (String(name).replace(/^[^\p{L}\p{N}]+/u, "")[0] || "?").toUpperCase();
   return `<div class="rpg-blk-row${big ? " big" : ""}${foe ? " foe" : ""}">
+    <div class="rpg-blk-plate"></div>
     <div class="rpg-blk-tile" style="background:${foe ? "#a8322a" : blkTileColor(name)}">${escHtml(initial)}</div>
     <div class="rpg-blk-head">
       <span class="rpg-blk-name rpg-sao-jump" data-idx="${idx}" title="${escAttr(full)}">${escHtml(name)}</span>
@@ -6329,19 +6330,26 @@ const SAO_CSS = `<style id="rpg-sao-style">
 
 /* ---- ALfheim (New) ---- */
 .rpg-blk-row{
-  --bt:calc(30px * var(--rpg-sao-ui, 1)); --bl:calc(150px * var(--rpg-sao-ui, 1)); --bh:calc(10px * var(--rpg-sao-ui, 1)); --bm:calc(6px * var(--rpg-sao-ui, 1));
-  display:grid; grid-template-columns:var(--bt) auto auto; grid-template-rows:auto auto;
-  column-gap:calc(6px * var(--rpg-sao-ui, 1)); align-items:end; margin-bottom:calc(7px * var(--rpg-sao-ui, 1))}
-.rpg-blk-row.big{--bt:calc(38px * var(--rpg-sao-ui, 1)); --bl:calc(220px * var(--rpg-sao-ui, 1)); --bh:calc(13px * var(--rpg-sao-ui, 1)); --bm:calc(8px * var(--rpg-sao-ui, 1));
+  --bt:calc(30px * var(--rpg-sao-ui, 1)); --bl:calc(150px * var(--rpg-sao-ui, 1)); --bb:calc(8px * var(--rpg-sao-ui, 1));
+  position:relative; display:grid; grid-template-columns:var(--bt) auto auto; grid-template-rows:auto auto;
+  column-gap:0; align-items:end; margin-bottom:calc(7px * var(--rpg-sao-ui, 1))}
+.rpg-blk-row.big{--bt:calc(38px * var(--rpg-sao-ui, 1)); --bl:calc(220px * var(--rpg-sao-ui, 1)); --bb:calc(10px * var(--rpg-sao-ui, 1));
   margin-bottom:calc(10px * var(--rpg-sao-ui, 1))}
-.rpg-blk-tile{grid-column:1; grid-row:1 / 3; align-self:end; box-sizing:border-box;
+
+/* translucent plate behind the name, starting behind the tile, fading out */
+.rpg-blk-plate{grid-column:1 / 4; grid-row:1; align-self:stretch; z-index:0;
+  border-radius:calc(5px * var(--rpg-sao-ui, 1)) 0 0 calc(5px * var(--rpg-sao-ui, 1));
+  background:linear-gradient(90deg, rgba(214,222,230,.26) 0, rgba(214,222,230,.18) 45%, rgba(214,222,230,0) 100%)}
+
+.rpg-blk-tile{grid-column:1; grid-row:1 / 3; align-self:end; position:relative; z-index:2; box-sizing:border-box;
   width:var(--bt); height:var(--bt); border-radius:calc(6px * var(--rpg-sao-ui, 1));
   border:calc(2px * var(--rpg-sao-ui, 1)) solid rgba(236,240,245,.88); box-shadow:0 1px 3px rgba(0,0,0,.45);
   display:grid; place-items:center; color:#fff; font-weight:800;
-  font-size:calc(var(--bt) * .46); text-shadow:0 1px 2px rgba(0,0,0,.35)}
+  font-size:calc(var(--bt) * .46); text-shadow:0 1px 2px rgba(0,0,0,.35); margin-bottom:calc(-2px * var(--rpg-sao-ui, 1))}
 /* width:0 + min-width:100% keeps a long name from widening the row */
-.rpg-blk-head{grid-column:2 / 4; grid-row:1; display:flex; align-items:center; gap:calc(6px * var(--rpg-sao-ui, 1));
-  width:0; min-width:100%; overflow:hidden; margin-bottom:calc(2px * var(--rpg-sao-ui, 1))}
+.rpg-blk-head{grid-column:2 / 4; grid-row:1; position:relative; z-index:1;
+  display:flex; align-items:center; gap:calc(6px * var(--rpg-sao-ui, 1));
+  width:0; min-width:100%; overflow:hidden; padding:calc(2px * var(--rpg-sao-ui, 1)) 0 calc(3px * var(--rpg-sao-ui, 1)) calc(7px * var(--rpg-sao-ui, 1))}
 .rpg-blk-name{flex:0 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   font-size:calc(11.5px * var(--rpg-sao-ui, 1)); font-weight:700; letter-spacing:.4px; color:#f2f0ea;
   text-shadow:0 1px 2px rgba(0,0,0,.75); cursor:pointer}
@@ -6357,12 +6365,15 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-blk-row.big .rpg-blk-chip{width:calc(22px * var(--rpg-sao-ui, 1)); height:calc(14px * var(--rpg-sao-ui, 1))}
 .rpg-blk-chip svg{width:calc(9px * var(--rpg-sao-ui, 1)); height:calc(9px * var(--rpg-sao-ui, 1)); display:block}
 .rpg-blk-more{font-size:calc(9px * var(--rpg-sao-ui, 1)); color:#cfcbc1; margin-left:2px}
-.rpg-blk-bars{grid-column:2; grid-row:2; display:flex; flex-direction:column; gap:calc(2px * var(--rpg-sao-ui, 1))}
-.rpg-sao-bar.blkhp{flex:none; width:var(--bl); height:var(--bh)}
-.rpg-sao-bar.blkmp{flex:none; width:var(--bl); height:var(--bm)}
-.rpg-blk-row .rpg-sao-bar svg{filter:drop-shadow(0 1px 1px rgba(0,0,0,.35))}
+
+/* HP and MP the same height, touching, and running out of the tile's edge */
+.rpg-blk-bars{grid-column:2; grid-row:2; display:flex; flex-direction:column; gap:0;
+  position:relative; z-index:1; margin-left:calc(-3px * var(--rpg-sao-ui, 1))}
+.rpg-sao-bar.blkhp, .rpg-sao-bar.blkmp{flex:none; width:var(--bl); height:var(--bb)}
+.rpg-blk-row .rpg-sao-bar svg{filter:none}
 .rpg-blk-nums{grid-column:3; grid-row:2; display:flex; flex-direction:column; justify-content:space-between;
-  align-self:stretch; font-size:calc(9px * var(--rpg-sao-ui, 1)); line-height:1.1; color:#c8c4ba; white-space:nowrap;
+  align-self:stretch; padding-left:calc(6px * var(--rpg-sao-ui, 1));
+  font-size:calc(9px * var(--rpg-sao-ui, 1)); line-height:1; color:#c8c4ba; white-space:nowrap;
   text-shadow:0 1px 2px rgba(0,0,0,.7)}
 .rpg-blk-nums span:first-child{color:#e2ded5; font-weight:600}
 .rpg-blk-row.big .rpg-blk-nums{font-size:calc(10px * var(--rpg-sao-ui, 1))}
