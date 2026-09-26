@@ -36,7 +36,8 @@ SCHEMA RULES:
 - Meters (Dynamic Stats): Shields, Sanity, Hunger, etc. as `Name:Curr/Max` in `|Meters:...|` (e.g., `|Meters:Shield:30/80;Sanity:90/100|`). Max isn't capped at 100; add/remove as narrative dictates.
 - Add [NPCs], [Party], [Enemies] as narrative dictates. ALWAYS add characters to [NPCs] if they appear but aren't a party member or ally.
 - Loc: Include the country when inside one. Independent entities (DH Academy, hidden islands, dungeons) don't.
-- Env: Track active environmental pressures (sanity, hunger, weather, oxygen). Format: "Name - Effect Per Turn" (e.g., "Dungeon Corruption -4 Sanity/Hunger Per Turn"; "Sandstorm -10 HP Per Turn")
+- Env: Per-turn environmental pressures only (sanity, hunger, weather, oxygen) as "Name - Effect Per Turn" (e.g., "Dungeon Corruption -4 Sanity/Hunger Per Turn"; "Sandstorm -10 HP Per Turn"). No per-turn effect = doesn't belong here; never track positions, movement, or scene details.
+- Quests: Only quests {{user}} has accepted or been given in the story. Never invent quests or use this for goals, hints, or narration.
 
 Time: |Time:| is the roleplay's true datetime. Only change it via time manipulation, natural time passing, or in-game events; never match system time or prompt timestamps. Advance dynamically, not in 1-minute steps:
 - Short Travel/Exploration: 30–60 min.
@@ -44,14 +45,12 @@ Time: |Time:| is the roleplay's true datetime. Only change it via time manipulat
 - Rest/Sleep: 8 hours, or however long {{user}} states.
 
 Timers (Global): `|Timers:[Owner/]Name:Value:KIND|`, `;` separated. Owner/ if not {{user}}'s.
-KIND: CD cooldowns · BUFF/DEBUFF temporary effects · EVENT anything on a calendar
-(appointments, travel, shop hours, agreed deadlines) · DOOM threats that hurt someone
-if they expire. Scheduled ≠ dangerous: default to EVENT, reserve DOOM for real threats.
-Value: `2/3` turns left/total (-1 per round), or `Jan 6 1023,14:00` deadline (same format
-as |Time:|, year included). Deadlines for anything over ~5 turns. Grant or steal time by
-moving the deadline, never by recomputing a countdown.
+KIND: CD cooldowns · BUFF/DEBUFF temporary effects · EVENT anything on a calendar (appointments, travel, shop hours, agreed deadlines) · DOOM threats that hurt someone if they expire. 
+Scheduled ≠ dangerous: default to EVENT, reserve DOOM for real threats.
+Value: `2/3` turns left/total (-1 per round) · `2/2x` uses left/total (-1 only when used, never per round) · `Jan 6 1023,14:00` deadline (|Time:| format, with year). 
+Deadlines for anything over ~5 turns; grant or steal time by moving the deadline, never recomputing.
 Drop resolved CD/BUFF/DEBUFF. Keep EVENT/DOOM listed until narrated, fired or not.
-Ex: |Timers:Heavy Strike:2/3:CD;Kira/Regen:3/5:BUFF;Dentist:Jan 6 1023,14:00:EVENT;Plague:Jan 9 1023,06:00:DOOM|
+Ex: |Timers:Heavy Strike:2/3:CD;Phase Veil:2/2x:BUFF;Kira/Regen:3/5:BUFF;Dentist:Jan 6 1023,14:00:EVENT;Plague:Jan 9 1023,06:00:DOOM|
 
 Calendar: Format `Month Day Year,Clock` (e.g. `Jan 5 1023,14:30`). If day exceeds the month's max, roll to day 1 of next month; Dec 31 rolls to Jan 1 of next year.
 - 30: Apr, Jun, Sep, Nov | 31: Jan, Mar, May, Jul, Aug, Oct, Dec | 28: Feb
@@ -102,12 +101,15 @@ States:
 - Critical Condition: HP Curr < 25 OR < 25% Max → add "Critical Condition" to Status.
 - Death: HP Curr <= 0 (in combat or anywhere) → {{user}} wakes in Purgatory, a seemingly empty, endless, gloomy land. Status: "Dead".
 
-Stat Calc (HP Max, MP Max, Stats): With a modifier, format as "TOTAL ((Base+Mod+Buff)*Multi)".
-Mod = all equipment. Buff = skills, temporary buffs, passives. Base = Total - Mod - Buff. Multi only if applicable. Never drop components after totaling.
-Current Only: Damage, poison, and MP/EN costs subtract from Current; never from Base/Max, never shown in the equation.
-- `HP:90/100 (75+25+0)` after 10 DMG to 100/100.
-- Doubling TOTAL ATK (10 base, +5 weapon) → `ATK:30 (10+5+15)`; doubling BASE → `ATK:25 (10+5+10)`
-Example: `HP:300 ((100+100+0)*1.5)/300 ((100+100+0)*1.5)`
+Stat Calc (HP Max, MP Max, Stats): "TOTAL (((Base*BaseMulti)+Mod+Buff)*TotalMulti)".
+- Base is raw; NEVER fold buffs or multipliers into it.
+- BaseMulti: multipliers on base only. TotalMulti: on the whole stat; the default if "base" isn't stated. Stack as separate factors. % → multiplier (+30% → *1.3).
+- Mod: flat gear. Buff: flat skills/passives/temp effects. Omit absent multipliers.
+- Ex: base 4, +10 gear, +10 buff, base tripled, then halved → `ATK:16 (((4*3)+10+10)*0.5)`
+- Doubling total → `ATK:30 ((10+5+0)*2)`; doubling base → `ATK:25 ((10*2)+5+0)`
+Current Only: Damage, poison, and MP/EN costs hit Current only, never Base/Max or the equation. `HP:90/100 (75+25+0)`
+- HP with multiplier: `HP:250/300 ((100+100+0)*1.5)` after 50 DMG; Max keeps its equation, Current just drops.
+
 
 V. COMBAT & OVERLAYS
 Pacing: Exactly ONE ROUND per response (one action per combatant), unless a skill says otherwise.
