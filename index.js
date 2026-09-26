@@ -3975,7 +3975,8 @@ let saoSvgUid = 0;
 
 const SAO_SHAPE = { step: 0.60, slope: 2, drop: 0.50, tip: 4, tipy: 0 };
 const SAO_RIM = { grey: "#53565e", greyW: 4, metalW: 2, hi: "#eceadf", lo: "#94918a",
-                  tipReach: 2.4 };   // how far the rim's point may reach past the tip, px
+                  slantW: 2.5,       // grey band width along the tip's slant; slimmer = shorter point
+                  tipSlope: 0.73 };  // slant run per unit of rise, so every bar gets the same tip angle
 const SAO_WELL = "rgba(36,39,46,0.82)";
 // How many characters fit beside the bar depends on the font, the font scale
 // and the device, so it is measured after layout rather than guessed.
@@ -4426,13 +4427,15 @@ function aloBarSvg(W, H, pctVal, c1, c2) {
 // at tipIdx, which is cut square to its bisector at distance D from the vertex.
 // A stroke can only be fully pointed or fully cut; this can be anything between.
 // Vertices run clockwise with y pointing down, so (dy, -dx) is outward.
-function saoOffsetPoly(pts, r, tipIdx, D) {
+function saoOffsetPoly(pts, r, tipIdx, D = Infinity) {
   const n = pts.length;
+  const rad = typeof r === "function" ? r : () => r;
   const lines = pts.map((a, i) => {
     const b = pts[(i + 1) % n];
     let dx = b[0] - a[0], dy = b[1] - a[1];
     const L = Math.hypot(dx, dy) || 1; dx /= L; dy /= L;
-    return { px: a[0] + dy * r, py: a[1] - dx * r, dx, dy };
+    const ri = rad(i);
+    return { px: a[0] + dy * ri, py: a[1] - dx * ri, dx, dy };
   });
   const meet = (l1, l2) => {
     const den = l1.dx * l2.dy - l1.dy * l2.dx;
@@ -4466,16 +4469,23 @@ function saoBarSvg(W, H, pctVal, c1, c2) {
   // the path. With only m of room the browser sliced it off flat, which read as
   // a rounded blob. Its horizontal reach is (stroke/2)(L + run)/rise for a tip
   // of that run and rise, so thinner bars (sharper tips) get more room.
-  // The point is trimmed to tipReach, so that's all the room it needs.
-  const mr = m + Math.ceil(SAO_RIM.tipReach) + 1;
+  // The tip keeps the same angle on every bar: its run scales with the rise.
+  // A fixed 4px run made thin bars' tips needle-thin, and a needle's rim point
+  // runs on for many pixels. Room on the right is exactly the point's reach,
+  // (rSlant*L + rTop*run)/rise for top and slant bands of rTop and rSlant.
+  const rTop = SAO_RIM.greyW / 2, rSlant = SAO_RIM.slantW / 2;
+  const rise0 = Math.max(0.5, SAO_SHAPE.drop * (H - m * 2));
+  const run0 = Math.min(SAO_SHAPE.tip, rise0 * SAO_RIM.tipSlope);
+  const reach = (rSlant * Math.hypot(run0, rise0) + rTop * run0) / rise0;
+  const mr = Math.ceil(reach) + 1;
   const x0 = m, y0 = m, w = W - m - mr, h = H - m * 2;
   if (w <= 2 || h <= 1) return "";
 
   const stepX = clamp(SAO_SHAPE.step * w, 1, w - 2);
   const slope = Math.min(SAO_SHAPE.slope, Math.max(0, w - stepX - 1));
-  const tip = Math.min(SAO_SHAPE.tip, Math.max(0, w - stepX - slope - 1));
   const dropY = y0 + SAO_SHAPE.drop * h;
   const tipY = y0 + SAO_SHAPE.tipy * h;
+  const tip = Math.min(run0, Math.max(0, w - stepX - slope - 1));
 
   const pts = [[x0, y0], [x0 + w, y0]];
   if (tipY > y0 + 0.01) pts.push([x0 + w, tipY]);
@@ -4483,10 +4493,11 @@ function saoBarSvg(W, H, pctVal, c1, c2) {
   const tipIdx = tipY > y0 + 0.01 ? 2 : 1;          // the sharp corner
   const d = "M" + pts.map((p) => `${p[0]} ${p[1]}`).join("L") + "Z";
 
-  // the grey band's point is trimmed; the metal line stops just inside it
-  const poly = (r, D) => saoOffsetPoly(pts, r, tipIdx, D).map((p) => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(" ");
-  const greyPoly = poly(SAO_RIM.greyW / 2, SAO_RIM.tipReach);
-  const metalPoly = poly(SAO_RIM.metalW / 2, Math.max(0.4, SAO_RIM.tipReach - (SAO_RIM.greyW - SAO_RIM.metalW) / 2));
+  // Sharp mitred outlines. The grey band runs slimmer along the tip's slant
+  // (edge tipIdx), which pulls its point in without blunting it.
+  const poly = (r) => saoOffsetPoly(pts, r, tipIdx).map((p) => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(" ");
+  const greyPoly = poly((i) => (i === tipIdx ? rSlant : rTop));
+  const metalPoly = poly(SAO_RIM.metalW / 2);
 
   const id = "s" + (++saoSvgUid);
   const f = clamp(pctVal, 0, 100) / 100;
