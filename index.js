@@ -348,7 +348,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.4";
+const HUD_BUILD = "2026-09-26.5";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -6389,9 +6389,10 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-blk-row{
   --bt:calc(30px * var(--rpg-sao-ui, 1)); --bl:calc(150px * var(--rpg-sao-ui, 1)); --bb:calc(8px * var(--rpg-sao-ui, 1));
   position:relative; display:grid; grid-template-columns:var(--bt) auto auto; grid-template-rows:auto auto;
-  column-gap:0; align-items:center; margin-bottom:calc(7px * var(--rpg-sao-ui, 1))}
+  column-gap:0; align-items:center;
+  margin-bottom:calc((var(--bt) - var(--bb) * 2) / 2 + 6px * var(--rpg-sao-ui, 1))}
 .rpg-blk-row.big{--bt:calc(38px * var(--rpg-sao-ui, 1)); --bl:calc(220px * var(--rpg-sao-ui, 1)); --bb:calc(10px * var(--rpg-sao-ui, 1));
-  margin-bottom:calc(10px * var(--rpg-sao-ui, 1))}
+  margin-bottom:calc((var(--bt) - var(--bb) * 2) / 2 + 9px * var(--rpg-sao-ui, 1))}
 
 /* translucent plate behind the name: starts a little in from the tile's left
    edge and fades out by the time it reaches the end of the bars */
@@ -6400,8 +6401,11 @@ const SAO_CSS = `<style id="rpg-sao-style">
   border-radius:calc(5px * var(--rpg-sao-ui, 1)) 0 0 calc(5px * var(--rpg-sao-ui, 1));
   background:linear-gradient(90deg, rgba(214,222,230,.26) 0, rgba(214,222,230,.18) 45%, rgba(214,222,230,0) 100%)}
 
-/* centred on the bars, so HP meets MP at the tile's middle */
+/* Centred on the bars, so HP meets MP at the tile's middle. Equal negative
+   margins let it overhang above and below without making the bar row taller,
+   so the name plate sits right on the HP bar and the tile overlaps it. */
 .rpg-blk-tile{grid-column:1; grid-row:2; align-self:center; position:relative; z-index:2; box-sizing:border-box;
+  margin:calc((var(--bb) * 2 - var(--bt)) / 2) 0;
   width:var(--bt); height:var(--bt); border-radius:calc(6px * var(--rpg-sao-ui, 1));
   border:calc(2px * var(--rpg-sao-ui, 1)) solid rgba(236,240,245,.88); box-shadow:0 1px 3px rgba(0,0,0,.45);
   display:grid; place-items:center; color:#fff; font-weight:800;
