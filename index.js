@@ -348,7 +348,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.9";
+const HUD_BUILD = "2026-09-26.10";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -363,6 +363,7 @@ const defaultUiSettings = {
   saoPos: null,           // {vitals:[x,y], col:[x,y], clock:[x,y]} drag offsets
   saoSnap: true,          // snap a dragged piece to the others' edges and centres
   meterColors: {},        // meter name (lowercase) -> "#rrggbb", overrides the auto colour
+  tileColors: {},         // ALfheim (New) tile colours you've picked: "@player" or a name key -> "#rrggbb"
   saoUiScale: 100,        // % size of the bar cluster; a desktop usually wants ~130
   saoTextShadow: false,   // shadow behind the text that sits straight on the chat
   saoTextBacking: false,  // translucent card behind that text instead        // "classic" | "sao"
@@ -4882,27 +4883,57 @@ function blkHashIndex(name) {
   return (h >>> 0) % BLK_TILES.length;
 }
 
+// The player's tile is black unless you pick otherwise.
+const BLK_PLAYER_TILE = "#1b1d22";
+const blkNameKey = (name) => normBondName(name) || String(name ?? "");
+function blkPlayerTileColor() {
+  return uiSettings.tileColors?.["@player"] || BLK_PLAYER_TILE;
+}
+
 // Twelve colours can't stay distinct if each name picks alone, so everyone on
-// screen is coloured together: each starts at their preferred colour and, if
-// someone listed earlier already has it, steps to the next free one. Earlier
-// names keep theirs, so a newcomer never recolours the existing party.
+// screen is coloured together, in two steps:
+//  1. Automatic colours, worked out as if nothing had been picked and the
+//     player were black: each name starts at its preferred colour and steps to
+//     the next free one. Earlier names keep theirs, so a newcomer never
+//     recolours the party, and picking one person's colour never shuffles
+//     anyone else's.
+//  2. Picked colours win. Only someone whose automatic colour now clashes with
+//     a picked one (or with the player's) moves, to the nearest free colour.
 let blkColorMap = new Map();
 function blkAssignColors(names) {
-  const out = new Map(), used = new Set();
+  const picked = uiSettings.tileColors || {};
+  const N = BLK_TILES.length;
+
+  const auto = new Map(), used = new Set([BLK_PLAYER_TILE]);
   names.forEach((n) => {
-    const key = normBondName(n) || String(n);
-    if (!key || out.has(key)) return;
-    if (used.size >= BLK_TILES.length) used.clear();       // more than twelve: start sharing
+    const key = blkNameKey(n);
+    if (!key || auto.has(key)) return;
+    if (used.size >= N) used.clear();                      // more than twelve: start sharing
     let i = blkHashIndex(n);
-    for (let t = 0; t < BLK_TILES.length && used.has(BLK_TILES[i]); t++) i = (i + 1) % BLK_TILES.length;
-    out.set(key, BLK_TILES[i]);
+    for (let t = 0; t < N && used.has(BLK_TILES[i]); t++) i = (i + 1) % N;
+    auto.set(key, BLK_TILES[i]);
     used.add(BLK_TILES[i]);
+  });
+
+  const out = new Map(), taken = new Set([blkPlayerTileColor()]);
+  auto.forEach((c, key) => { if (picked[key]) { out.set(key, picked[key]); taken.add(picked[key]); } });
+  auto.forEach((c, key) => { if (!out.has(key) && !taken.has(c)) { out.set(key, c); taken.add(c); } });
+  auto.forEach((c, key) => {
+    if (out.has(key)) return;                               // only the ones that clashed
+    let i = BLK_TILES.indexOf(c), found = c;
+    for (let t = 0; t < N; t++) {
+      i = (i + 1) % N;
+      if (!taken.has(BLK_TILES[i])) { found = BLK_TILES[i]; break; }
+    }
+    out.set(key, found);
+    taken.add(found);
   });
   blkColorMap = out;
 }
 
 function blkTileColor(name) {
-  return blkColorMap.get(normBondName(name) || String(name)) || BLK_TILES[blkHashIndex(name)];
+  const key = blkNameKey(name);
+  return uiSettings.tileColors?.[key] || blkColorMap.get(key) || BLK_TILES[blkHashIndex(name)];
 }
 
 // What sits in the tile, by what the character is. The player and party
@@ -4934,7 +4965,8 @@ function blkUnitRow(view, idx, key, opts = {}) {
   const initial = (String(name).replace(/^[^\p{L}\p{N}]+/u, "")[0] || "?").toUpperCase();
   return `<div class="rpg-blk-row${big ? " big" : ""}${foe ? " foe" : ""}">
     <div class="rpg-blk-plate"></div>
-    <div class="rpg-blk-tile" style="background-color:${foe ? "#a8322a" : blkTileColor(name)}">${
+    <div class="rpg-blk-tile" data-tkey="${escAttr(opts.kind === "player" ? "@player" : blkNameKey(name))}"
+      style="background-color:${foe ? "#a8322a" : opts.kind === "player" ? blkPlayerTileColor() : blkTileColor(name)}">${
       blkIcon(opts.kind || (foe ? "enemy" : big ? "player" : "party")) || escHtml(initial)}</div>
     <div class="rpg-blk-head">
       <span class="rpg-blk-name rpg-sao-jump" data-idx="${idx}" title="${escAttr(full)}">${escHtml(name)}</span>
@@ -5093,6 +5125,17 @@ function saoStatusPanel() {
     const en = getEnergy(display, isVehicle);
     h += `<div class="rpg-sao-vline"><span>HP</span><b>${renderInlineValue(display.hp_curr)} / ${renderInlineValue(display.hp_max)}</b></div>`;
     h += `<div class="rpg-sao-vline"><span>${escHtml(en.label || "MP")}</span><b>${renderInlineValue(en.curr)} / ${renderInlineValue(en.max)}</b></div>`;
+    // tile colour: ALfheim (New) only, and never for enemies, who stay red
+    if (uiSettings.saoBarStyle === "blk" && type !== "enemy") {
+      const tName = type === "player" ? "" : aloSplitTitle(saoUnitView(root).name).name;
+      const tKey = type === "player" ? "@player" : blkNameKey(tName);
+      const tCur = type === "player" ? blkPlayerTileColor() : blkTileColor(tName);
+      const picked = !!uiSettings.tileColors?.[tKey];
+      h += `<div class="rpg-sao-vline rpg-sao-tilecolor"><span>Tile colour</span><b>
+        <input type="color" id="rpg-sao-tilecolor" data-key="${escAttr(tKey)}" value="${escAttr(tCur)}" title="Pick this character's tile colour">
+        ${picked ? `<button class="rpg-sao-mini" id="rpg-sao-tilecolor-auto" data-key="${escAttr(tKey)}" title="Back to the automatic colour">\u21BA auto</button>` : ""}
+      </b></div>`;
+    }
     if ((type === "party" || type === "npc") && !isVehicle && root?.bond !== undefined) {
       const b = parseBondValue(root.bond);
       h += `<div class="rpg-sao-vline"><span>Bond</span><b>${b >= 101 ? "&#8734;" : b} / 100</b></div>`;
@@ -5786,7 +5829,7 @@ function saoHelpPanel() {
       + item("Animations",
           "Bars slide to their new value, orbs unfold when you reopen the HUD, and panels fade in. Off means everything snaps.")
       + item("Bar style",
-          "Aincrad is the stepped SAO bar. ALfheim swaps it for the ALO look: one plate with your name, HP over MP in an arrow-ended frame, and arrow-ended bars for party, NPCs, enemies and meters. ALfheim (New) is the later party HUD: an emblem tile, the name with status tiles beside it, and flat HP and MP bars. Bar backdrop only affects Aincrad.")
+          "Aincrad is the stepped SAO bar. ALfheim swaps it for the ALO look: one plate with your name, HP over MP in an arrow-ended frame, and arrow-ended bars for party, NPCs, enemies and meters. ALfheim (New) is the later party HUD: an emblem tile, the name with status tiles beside it, and flat HP and MP bars. To pick someone's tile colour, open them in the Status orb's Stats tab. Bar backdrop only affects Aincrad.")
       + item("Text contrast",
           "How far the text sits from the panel behind it. Maximum contrast also maximises the antialiasing fringe, so backing it off makes small text look cleaner.")
       + item("Font",
@@ -5970,7 +6013,6 @@ function renderSaoSkin() {
 
       if (uiSettings.saoBarStyle === "blk") {
         blkAssignColors([
-          aloSplitTitle(demo ? "Name" : pName).name,
           ...party.map((u) => aloSplitTitle(saoUnitView(u).name).name),
           ...npcs.map((u) => aloSplitTitle(saoUnitView(u).name).name),
         ]);
@@ -6241,6 +6283,30 @@ function saoBind() {
   bind("rpg-sao-diagnose", () => { saoMin = false; saoPanel = "error"; renderRPG(); });
   bind("rpg-sao-help", () => { saoHelpOpen = !saoHelpOpen; renderRPG(); });
   bind("rpg-sao-log-more", () => { saoLogShown += 20; renderRPG(); });
+
+  const tilePick = document.getElementById("rpg-sao-tilecolor");
+  if (tilePick) {
+    const key = tilePick.dataset.key;
+    const tiles = () => document.querySelectorAll(`.rpg-blk-tile[data-tkey="${CSS.escape(key)}"]`);
+    tilePick.onclick = (e) => e.stopPropagation();
+    // while choosing: recolour the tile in place, no redraw, so the picker stays open
+    tilePick.oninput = () => tiles().forEach((t) => { t.style.backgroundColor = tilePick.value; });
+    // on closing the picker: keep it
+    tilePick.onchange = () => {
+      uiSettings.tileColors = { ...(uiSettings.tileColors || {}), [key]: tilePick.value };
+      saveUiSettings();
+      renderRPG();
+    };
+  }
+  bind("rpg-sao-tilecolor-auto", () => {
+    const key = document.getElementById("rpg-sao-tilecolor-auto")?.dataset.key;
+    if (!key) return;
+    const next = { ...(uiSettings.tileColors || {}) };
+    delete next[key];
+    uiSettings.tileColors = next;
+    saveUiSettings();
+    renderRPG();
+  });
   bind("rpg-sao-undo", saoUndoLastTurn);
   on(".rpg-sao-revert", (el) => saoUndoChange(parseInt(el.dataset.ci, 10), el.dataset.text));
   bind("rpg-sao-redo", saoRedoLastTurn);
@@ -6777,6 +6843,9 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-sao-mrow-edit input[type=text]{min-width:0; width:100%; box-sizing:border-box;
   font:inherit; font-size:12px; padding:3px 5px; color:var(--rpg-sao-ink);
   background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
+.rpg-sao-tilecolor b{display:flex; align-items:center; gap:6px}
+.rpg-sao-tilecolor input[type=color]{width:30px; height:22px; padding:0; cursor:pointer;
+  border:1px solid var(--rpg-sao-rule); border-radius:3px; background:none}
 .rpg-sao-mrow-edit input[type=color]{width:26px; height:24px; padding:0; border:1px solid var(--rpg-sao-rule);
   border-radius:3px; background:none; cursor:pointer}
 .rpg-sao-m-slash{text-align:center; color:var(--rpg-sao-ink-dim)}
