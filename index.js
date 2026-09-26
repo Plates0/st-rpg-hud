@@ -4465,6 +4465,7 @@ function saoOffsetPoly(pts, r, tipIdx, D = Infinity) {
 
 function saoBarSvg(W, H, pctVal, c1, c2) {
   if (uiSettings.saoBarStyle === "alo") return aloBarSvg(W, H, pctVal, c1, c2);
+  if (uiSettings.saoBarStyle === "blk") return blkBarSvg(W, H, pctVal, c1, c2);
   const m = Math.ceil(SAO_RIM.greyW / 2);
   // The tip is a sharp mitred corner, and the grey rim's point sticks out past
   // the path. With only m of room the browser sliced it off flat, which read as
@@ -4719,6 +4720,117 @@ function saoPaintAloPlates() {
 }
 
 // a party member, NPC or enemy as a small ALfheim plate with HP over MP
+
+// =====================================================================
+// ALFHEIM (NEW) — the post-Oberon party HUD: a name with a strip of status
+// tiles beside it, an emblem tile on the left, and flat HP / MP bars.
+// =====================================================================
+const BLK_MP = ["#62a5d6", "#2b76b0"];
+const BLK_TILES = ["#d4a12a", "#4f9f86", "#3a9fd9", "#6a6f76", "#b8452f", "#7aa33a", "#2b2f36", "#8a5cc2"];
+
+// shift an hsl() lightness, or blend a #hex toward white / black
+function blkShade(c, amt) {
+  const str = String(c || "").trim();
+  let m = str.match(/^hsl\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%\s*\)$/i);
+  if (m) return `hsl(${m[1]},${m[2]}%,${clamp(parseFloat(m[3]) + amt, 0, 100).toFixed(1)}%)`;
+  m = str.match(/^#([0-9a-f]{6})$/i);
+  if (m) {
+    const n = parseInt(m[1], 16), t = amt >= 0 ? 255 : 0, k = Math.min(1, Math.abs(amt) / 100);
+    const ch = (v) => Math.round(v + (t - v) * k).toString(16).padStart(2, "0");
+    return `#${ch((n >> 16) & 255)}${ch((n >> 8) & 255)}${ch(n & 255)}`;
+  }
+  return str;
+}
+
+// Flat bar: a solid fill with the lighter band near its end that the game's
+// bars have, a soft top sheen, and a thin light outline. Square ends.
+function blkBarSvg(W, H, pctVal, c1, c2) {
+  if (W < 4 || H < 2) return "";
+  const id = "k" + (++saoSvgUid);
+  const fw = (W - 1) * clamp(pctVal, 0, 100) / 100;
+  // the band near the end is a gentle step up from the fill, not a highlight
+  const base = blkShade(c2, 5), light = blkShade(base, 9);
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="f${id}" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="${base}"/><stop offset=".72" stop-color="${base}"/>
+        <stop offset=".725" stop-color="${light}"/><stop offset="1" stop-color="${light}"/></linearGradient>
+      <linearGradient id="s${id}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="rgba(255,255,255,.28)"/><stop offset=".5" stop-color="rgba(255,255,255,0)"/>
+        <stop offset="1" stop-color="rgba(0,0,0,.12)"/></linearGradient>
+    </defs>
+    <rect x=".5" y=".5" width="${W - 1}" height="${H - 1}" fill="rgba(205,222,238,.12)"/>
+    ${fw > 0 ? `<rect x=".5" y=".5" width="${fw}" height="${H - 1}" fill="url(#f${id})"/>
+    <rect x=".5" y=".5" width="${fw}" height="${H - 1}" fill="url(#s${id})"/>` : ""}
+    <rect x=".5" y=".5" width="${W - 1}" height="${H - 1}" fill="none" stroke="rgba(225,235,245,.5)" stroke-width="1"/>
+  </svg>`;
+}
+
+// Status tiles. Common effects get a pictogram and a colour, the rest a
+// two-letter label, so nothing written by the model is ever dropped.
+const s16 = (inner) => `<svg viewBox="0 0 16 16" aria-hidden="true">${inner}</svg>`;
+const stroke = (d, w = 1.8) => `<path d="${d}" fill="none" stroke="#fff" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"/>`;
+const BLK_STATUS = [
+  { re: /poison|toxic|venom/i, c: "#7b4db3", i: s16('<path d="M8 2S3.5 7.5 3.5 10.2a4.5 4.5 0 0 0 9 0C12.5 7.5 8 2 8 2Z" fill="#fff"/>') },
+  { re: /bleed/i, c: "#b3261e", i: s16('<path d="M8 2S3.5 7.5 3.5 10.2a4.5 4.5 0 0 0 9 0C12.5 7.5 8 2 8 2Z" fill="#fff"/>') },
+  { re: /burn|fire|flame|scorch/i, c: "#d7263d", i: s16('<path d="M8 1.5c.5 2.5 3.5 3.8 3.5 7.2a3.5 3.5 0 0 1-7 0c0-1.4.6-2.4 1.4-3.2.1 1.3.8 2 1.6 2.3C7.3 5.8 7.4 3.6 8 1.5Z" fill="#fff"/>') },
+  { re: /stun|paraly|shock|static/i, c: "#e0a21c", i: s16('<path d="M9 1.5 4 9h3.2l-.7 5.5L12 6.8H8.8L9 1.5Z" fill="#fff"/>') },
+  { re: /freez|frozen|frost|chill|slow/i, c: "#2f8fc9", i: s16(stroke("M8 2v12M2.8 5l10.4 6M2.8 11l10.4-6", 1.6)) },
+  { re: /regen|heal|restor|mend/i, c: "#3f9e57", i: s16(stroke("M8 3.2v9.6M3.2 8h9.6", 2.4)) },
+  { re: /shield|barrier|protect|guard|veil|ward|aegis/i, c: "#3b7fb8", i: s16('<path d="M8 1.8 13 3.6v4.1c0 3.1-2.2 5.3-5 6.5-2.8-1.2-5-3.4-5-6.5V3.6Z" fill="#fff"/>') },
+  { re: /haste|quick|speed|swift|agil/i, c: "#1f9aa6", i: s16(stroke("M3 4l4 4-4 4M8 4l4 4-4 4")) },
+  { re: /strength|might|power|empower|rage|berserk|\bup\b|boost/i, c: "#e08a1c", i: s16(stroke("M8 13V3.5M4 7.5l4-4 4 4")) },
+  { re: /weak|vulnerab|fatigue|winded|exhaust|tired|drain|\bdown\b/i, c: "#8a7a2e", i: s16(stroke("M8 3v9.5M4 8.5l4 4 4-4")) },
+  { re: /critical|dying|near death/i, c: "#c0392b", i: s16(stroke("M8 2.5v7", 2.2) + '<circle cx="8" cy="12.6" r="1.3" fill="#fff"/>') },
+  { re: /sleep|drows|asleep/i, c: "#5b5fb0", t: "Z" },
+  { re: /blind|dark/i, c: "#44474d", i: s16('<path d="M1.8 8S4.3 3.8 8 3.8 14.2 8 14.2 8 11.7 12.2 8 12.2 1.8 8 1.8 8Z" fill="none" stroke="#fff" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="#fff"/>') },
+  { re: /confus|charm|dazed/i, c: "#b04da8", t: "?" },
+];
+
+function blkChips(list, max) {
+  const all = (Array.isArray(list) ? list : []).map((x) => String(x).trim()).filter(Boolean);
+  const shown = all.slice(0, max || 6);
+  const chips = shown.map((st) => {
+    const hit = BLK_STATUS.find((b) => b.re.test(st));
+    const body = hit?.i || escHtml(hit?.t || st.replace(/[^\p{L}\p{N}]/gu, "").slice(0, 2).toUpperCase() || "?");
+    return `<span class="rpg-blk-chip" style="background:${hit ? hit.c : "#5f6b77"}" title="${escAttr(st)}">${body}</span>`;
+  }).join("");
+  const more = all.length > shown.length ? `<span class="rpg-blk-more">+${all.length - shown.length}</span>` : "";
+  return chips + more;
+}
+
+function blkTileColor(name) {
+  let h = 0;
+  for (const ch of String(name || "")) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  return BLK_TILES[h % BLK_TILES.length];
+}
+
+// One character. Only the name is a tap target; the rest lets taps through.
+function blkUnitRow(view, idx, key, opts = {}) {
+  const foe = !!opts.foe, big = !!opts.big;
+  const hp = opts.hpPct ?? saoPct(view.hp_curr, view.hp_max);
+  const mp = opts.mpPct ?? saoPct(view.en?.curr, view.en?.max);
+  const hs = view.isVeh ? SAO_PALETTE.vehicle : saoHpStops(hp);
+  const full = opts.name ?? view.name;
+  const { name, title } = aloSplitTitle(full);
+  const num = (a, b) => (a === undefined || a === null || a === "") ? "\u2013" : `${escHtml(a)}/${escHtml(b)}`;
+  const initial = (String(name).replace(/^[^\p{L}\p{N}]+/u, "")[0] || "?").toUpperCase();
+  return `<div class="rpg-blk-row${big ? " big" : ""}${foe ? " foe" : ""}">
+    <div class="rpg-blk-tile" style="background:${foe ? "#a8322a" : blkTileColor(name)}">${escHtml(initial)}</div>
+    <div class="rpg-blk-head">
+      <span class="rpg-blk-name rpg-sao-jump" data-idx="${idx}" title="${escAttr(full)}">${escHtml(name)}</span>
+      ${title ? `<span class="rpg-blk-title">${escHtml(title)}</span>` : ""}
+      <span class="rpg-blk-chips">${blkChips(opts.status, big ? 8 : 6)}</span>
+    </div>
+    <div class="rpg-blk-bars">
+      ${saoBarHtml("blkhp", hp, hs[0], hs[1], `${key}:hp`)}
+      ${saoBarHtml("blkmp", mp, BLK_MP[0], BLK_MP[1], `${key}:mp`)}
+    </div>
+    <div class="rpg-blk-nums"><span>${opts.hpText ?? num(view.hp_curr, view.hp_max)}</span>
+      <span>${opts.mpText ?? num(view.en?.curr, view.en?.max)}</span></div>
+  </div>`;
+}
+
 function aloUnitRow(view, idx, key, foe) {
   const hp = saoPct(view.hp_curr, view.hp_max);
   const mp = saoPct(view.en?.curr, view.en?.max);
@@ -5555,7 +5667,7 @@ function saoHelpPanel() {
       + item("Animations",
           "Bars slide to their new value, orbs unfold when you reopen the HUD, and panels fade in. Off means everything snaps.")
       + item("Bar style",
-          "Aincrad is the stepped SAO bar. ALfheim swaps it for the ALO look: one plate with your name, HP over MP in an arrow-ended frame, and arrow-ended bars for party, NPCs, enemies and meters. The ALfheim plate has its own backing, so Bar backdrop only affects Aincrad.")
+          "Aincrad is the stepped SAO bar. ALfheim swaps it for the ALO look: one plate with your name, HP over MP in an arrow-ended frame, and arrow-ended bars for party, NPCs, enemies and meters. ALfheim (New) is the later party HUD: an emblem tile, the name with status tiles beside it, and flat HP and MP bars. Bar backdrop only affects Aincrad.")
       + item("Text contrast",
           "How far the text sits from the panel behind it. Maximum contrast also maximises the antialiasing fringe, so backing it off makes small text look cleaner.")
       + item("Font",
@@ -5628,8 +5740,9 @@ function saoSettingsHtml() {
                value="${Math.round(uiSettings.saoCardAlpha ?? 11)}"></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Bar style</span>
         <select id="rpg-sao-barstyle">
-          <option value="sao"${uiSettings.saoBarStyle !== "alo" ? " selected" : ""}>Aincrad (SAO)</option>
-          <option value="alo"${uiSettings.saoBarStyle === "alo" ? " selected" : ""}>ALfheim (ALO)</option>
+          <option value="sao"${!["alo", "blk"].includes(uiSettings.saoBarStyle) ? " selected" : ""}>Aincrad (SAO)</option>
+          <option value="alo"${uiSettings.saoBarStyle === "alo" ? " selected" : ""}>ALfheim (Classic)</option>
+          <option value="blk"${uiSettings.saoBarStyle === "blk" ? " selected" : ""}>ALfheim (New)</option>
         </select></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Font</span>
         <select id="rpg-sao-font">
@@ -5735,7 +5848,10 @@ function renderSaoSkin() {
       const mpText = demo ? "240/500" : `${escHtml(en.curr)}/${escHtml(en.max)}`;
       const shownName = escHtml(demo ? "Name" : pName);
 
-      const playerBlock = uiSettings.saoBarStyle === "alo"
+      const playerBlock = uiSettings.saoBarStyle === "blk"
+        ? blkUnitRow(pView, 0, "p", { big: true, hpPct, mpPct, hpText, mpText,
+            name: demo ? "Name" : pName, status: rpgState.status_effects })
+        : uiSettings.saoBarStyle === "alo"
         // ALfheim: one plate, name on the left, HP over MP in one arrow frame
         ? (() => {
             const t = aloSplitTitle(demo ? "Name" : pName);
@@ -5762,7 +5878,7 @@ function renderSaoSkin() {
           </div>
         </div>`;
 
-      vitals = `<div class="rpg-sao-vitals${uiSettings.saoBarStyle === "alo" ? " alo" : ""}${animKind === "restore" && !uiSettings.barsOnMin ? " fadein" : ""}" data-drag="vitals">
+      vitals = `<div class="rpg-sao-vitals${uiSettings.saoBarStyle === "alo" ? " alo" : uiSettings.saoBarStyle === "blk" ? " alo blk" : ""}${animKind === "restore" && !uiSettings.barsOnMin ? " fadein" : ""}" data-drag="vitals">
         ${playerBlock}`;
 
       if (pMeters.length) {
@@ -5781,9 +5897,12 @@ function renderSaoSkin() {
           list.map((u, i) => {
             const v = saoUnitView(u);
             const k = `${type}:${normBondName(u?.name) || i}`;
-            return (alo
-              ? aloUnitRow(v, charIndexFor(type, i), k, false)
-              : saoSlimRow(v.name, v.hp_curr, v.hp_max, saoUnitStops(v), charIndexFor(type, i), false, k))
+            const idx = charIndexFor(type, i);
+            return (uiSettings.saoBarStyle === "blk"
+              ? blkUnitRow(v, idx, k, { status: u?.status_effects })
+              : alo
+              ? aloUnitRow(v, idx, k, false)
+              : saoSlimRow(v.name, v.hp_curr, v.hp_max, saoUnitStops(v), idx, false, k))
               + saoMeterRows(v, k);
           }).join("") + `</div></div>`;
       };
@@ -5800,6 +5919,10 @@ function renderSaoSkin() {
         enemies.map((u, i) => {
           const v = saoUnitView(u);
           const k = `enemy:${normBondName(u?.name) || ""}:${i}`;
+          if (uiSettings.saoBarStyle === "blk") {
+            if (!v.isVeh && !v.name) v.name = `Enemy ${i + 1}`;
+            return blkUnitRow(v, charIndexFor("enemy", i), k, { foe: true, status: u?.status_effects }) + saoMeterRows(v, k);
+          }
           if (uiSettings.saoBarStyle === "alo") {
             if (!v.isVeh && !v.name) v.name = `Enemy ${i + 1}`;
             return aloUnitRow(v, charIndexFor("enemy", i), k, true) + saoMeterRows(v, k);
@@ -5874,6 +5997,8 @@ function renderSaoSkin() {
     saoBindJumps();
     requestAnimationFrame(() => {
       saoFitName(); saoPaintBars(); saoPlacePanels();
+      const vs = container.querySelector(".rpg-sao-vitals");
+      if (vs) vs.classList.toggle("scrolls", vs.scrollHeight > vs.clientHeight + 1);
       saoRestoreScroll(container);
       saoBindJumps();
       saoBindDragging(); saoDrawGhosts();
@@ -6184,7 +6309,8 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-alo-nums i{font-style:normal; opacity:.6; margin-right:2px}
 
 .rpg-alo-row{margin-bottom:calc(5px * var(--rpg-sao-ui, 1))}
-.rpg-alo-unit{cursor:pointer; display:block}
+.rpg-alo-unit{display:block}
+.rpg-alo-label{cursor:pointer}
 /* width:0 + min-width:100% lets the label fill the row without widening it,
    so a long name is cut off at the bars' width instead of stretching them */
 .rpg-alo-label{width:0; min-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
@@ -6199,6 +6325,60 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-alo-unitnums{display:flex; flex-direction:column; justify-content:center;
   height:calc(18px * var(--rpg-sao-ui, 1)); font-size:calc(9px * var(--rpg-sao-ui, 1)); line-height:1.15; color:#c8c4ba; white-space:nowrap}
 .rpg-alo-unitnums span:first-child{color:#dcd8cf; font-weight:600}
+
+
+/* ---- ALfheim (New) ---- */
+.rpg-blk-row{
+  --bt:calc(30px * var(--rpg-sao-ui, 1)); --bl:calc(150px * var(--rpg-sao-ui, 1)); --bh:calc(10px * var(--rpg-sao-ui, 1)); --bm:calc(6px * var(--rpg-sao-ui, 1));
+  display:grid; grid-template-columns:var(--bt) auto auto; grid-template-rows:auto auto;
+  column-gap:calc(6px * var(--rpg-sao-ui, 1)); align-items:end; margin-bottom:calc(7px * var(--rpg-sao-ui, 1))}
+.rpg-blk-row.big{--bt:calc(38px * var(--rpg-sao-ui, 1)); --bl:calc(220px * var(--rpg-sao-ui, 1)); --bh:calc(13px * var(--rpg-sao-ui, 1)); --bm:calc(8px * var(--rpg-sao-ui, 1));
+  margin-bottom:calc(10px * var(--rpg-sao-ui, 1))}
+.rpg-blk-tile{grid-column:1; grid-row:1 / 3; align-self:end; box-sizing:border-box;
+  width:var(--bt); height:var(--bt); border-radius:calc(6px * var(--rpg-sao-ui, 1));
+  border:calc(2px * var(--rpg-sao-ui, 1)) solid rgba(236,240,245,.88); box-shadow:0 1px 3px rgba(0,0,0,.45);
+  display:grid; place-items:center; color:#fff; font-weight:800;
+  font-size:calc(var(--bt) * .46); text-shadow:0 1px 2px rgba(0,0,0,.35)}
+/* width:0 + min-width:100% keeps a long name from widening the row */
+.rpg-blk-head{grid-column:2 / 4; grid-row:1; display:flex; align-items:center; gap:calc(6px * var(--rpg-sao-ui, 1));
+  width:0; min-width:100%; overflow:hidden; margin-bottom:calc(2px * var(--rpg-sao-ui, 1))}
+.rpg-blk-name{flex:0 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  font-size:calc(11.5px * var(--rpg-sao-ui, 1)); font-weight:700; letter-spacing:.4px; color:#f2f0ea;
+  text-shadow:0 1px 2px rgba(0,0,0,.75); cursor:pointer}
+.rpg-blk-row.big .rpg-blk-name{font-size:calc(13px * var(--rpg-sao-ui, 1))}
+.rpg-blk-name:hover{text-decoration:underline; text-underline-offset:2px}
+.rpg-blk-row.foe .rpg-blk-name{color:#f2a99d}
+.rpg-blk-title{flex:0 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  font-size:calc(9px * var(--rpg-sao-ui, 1)); color:#bdb9af; text-shadow:0 1px 2px rgba(0,0,0,.7)}
+.rpg-blk-chips{display:flex; gap:calc(1px * var(--rpg-sao-ui, 1)); flex:0 0 auto; align-items:center}
+.rpg-blk-chip{display:grid; place-items:center; width:calc(19px * var(--rpg-sao-ui, 1)); height:calc(12px * var(--rpg-sao-ui, 1));
+  clip-path:polygon(28% 0, 100% 0, 72% 100%, 0 100%); color:#fff;
+  font-size:calc(7.5px * var(--rpg-sao-ui, 1)); font-weight:800; letter-spacing:.2px}
+.rpg-blk-row.big .rpg-blk-chip{width:calc(22px * var(--rpg-sao-ui, 1)); height:calc(14px * var(--rpg-sao-ui, 1))}
+.rpg-blk-chip svg{width:calc(9px * var(--rpg-sao-ui, 1)); height:calc(9px * var(--rpg-sao-ui, 1)); display:block}
+.rpg-blk-more{font-size:calc(9px * var(--rpg-sao-ui, 1)); color:#cfcbc1; margin-left:2px}
+.rpg-blk-bars{grid-column:2; grid-row:2; display:flex; flex-direction:column; gap:calc(2px * var(--rpg-sao-ui, 1))}
+.rpg-sao-bar.blkhp{flex:none; width:var(--bl); height:var(--bh)}
+.rpg-sao-bar.blkmp{flex:none; width:var(--bl); height:var(--bm)}
+.rpg-blk-row .rpg-sao-bar svg{filter:drop-shadow(0 1px 1px rgba(0,0,0,.35))}
+.rpg-blk-nums{grid-column:3; grid-row:2; display:flex; flex-direction:column; justify-content:space-between;
+  align-self:stretch; font-size:calc(9px * var(--rpg-sao-ui, 1)); line-height:1.1; color:#c8c4ba; white-space:nowrap;
+  text-shadow:0 1px 2px rgba(0,0,0,.7)}
+.rpg-blk-nums span:first-child{color:#e2ded5; font-weight:600}
+.rpg-blk-row.big .rpg-blk-nums{font-size:calc(10px * var(--rpg-sao-ui, 1))}
+
+/* ---- tap through the bars ----
+   Only names and the collapse arrows catch taps; everything else in the
+   stack lets them fall through to whatever is underneath. The one exception
+   is a stack long enough to scroll, which has to catch touches to scroll. */
+#rpg-hud-container .rpg-sao-vitals,
+#rpg-hud-container .rpg-sao-vitals *{pointer-events:none}
+#rpg-hud-container .rpg-sao-vitals.scrolls{pointer-events:auto}
+#rpg-hud-container .rpg-sao-vitals button.rpg-sao-tag,
+#rpg-hud-container .rpg-sao-vitals .rpg-sao-caret,
+#rpg-hud-container .rpg-sao-vitals .rpg-alo-label,
+#rpg-hud-container .rpg-sao-vitals .rpg-alo-uname,
+#rpg-hud-container .rpg-sao-vitals .rpg-blk-name{pointer-events:auto}
 
 /* the stack sizes to its widest plate instead of a fixed width, so meters and
    other grid rows need explicit bar lengths to keep from collapsing */
