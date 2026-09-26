@@ -4776,7 +4776,7 @@ const BLK_STATUS = [
   { re: /burn|fire|flame|scorch/i, c: "#d7263d", i: s16('<path d="M8 1.5c.5 2.5 3.5 3.8 3.5 7.2a3.5 3.5 0 0 1-7 0c0-1.4.6-2.4 1.4-3.2.1 1.3.8 2 1.6 2.3C7.3 5.8 7.4 3.6 8 1.5Z" fill="#fff"/>') },
   { re: /stun|paraly|shock|static/i, c: "#e0a21c", i: s16('<path d="M9 1.5 4 9h3.2l-.7 5.5L12 6.8H8.8L9 1.5Z" fill="#fff"/>') },
   { re: /freez|frozen|frost|chill|slow/i, c: "#2f8fc9", i: s16(stroke("M8 2v12M2.8 5l10.4 6M2.8 11l10.4-6", 1.6)) },
-  { re: /regen|heal|restor|mend/i, c: "#3f9e57", i: s16(stroke("M8 3.2v9.6M3.2 8h9.6", 2.4)) },
+  { re: /regen|\bheal(?:ing|ed|s)?\b|restor|mend/i, c: "#3f9e57", i: s16(stroke("M8 3.2v9.6M3.2 8h9.6", 2.4)) },
   { re: /shield|barrier|protect|guard|veil|ward|aegis/i, c: "#3b7fb8", i: s16('<path d="M8 1.8 13 3.6v4.1c0 3.1-2.2 5.3-5 6.5-2.8-1.2-5-3.4-5-6.5V3.6Z" fill="#fff"/>') },
   { re: /haste|quick|speed|swift|agil/i, c: "#1f9aa6", i: s16(stroke("M3 4l4 4-4 4M8 4l4 4-4 4")) },
   { re: /strength|might|power|empower|rage|berserk|\bup\b|boost/i, c: "#e08a1c", i: s16(stroke("M8 13V3.5M4 7.5l4-4 4 4")) },
@@ -4787,15 +4787,67 @@ const BLK_STATUS = [
   { re: /confus|charm|dazed/i, c: "#b04da8", t: "?" },
 ];
 
+// words that mean "no status", which shouldn't be drawn as a tile at all
+const BLK_NO_STATUS = /^(healthy|normal|none|fine|ok(ay)?|stable|unharmed|n\/a|-|\u2013|\u2014)$/i;
+
+// Everything affecting one character: their Status list plus any running
+// BUFF / DEBUFF timers they own (a timer with no owner is the player's).
+// The same effect from both places is shown once, with the timer's time left
+// added to its tooltip. Cooldowns, events and doom clocks aren't statuses.
+function blkEffects(statusList, ownerName) {
+  const byKey = new Map();
+  const keyOf = (label) => {
+    const n = BLK_STATUS.findIndex((b) => b.re.test(label));
+    return n >= 0 ? `icon${n}` : label.toLowerCase();
+  };
+
+  (Array.isArray(statusList) ? statusList : []).forEach((x) => {
+    const label = String(x).trim();
+    if (!label || BLK_NO_STATUS.test(label)) return;
+    const k = keyOf(label);
+    if (!byKey.has(k)) byKey.set(k, { label, tip: label });
+  });
+
+  const me = ownerName ? normBondName(ownerName) : "";
+  const playerKey = normBondName(rpgState?.name);
+  (Array.isArray(rpgState?.timers) ? rpgState.timers : []).forEach((t) => {
+    const kind = String(t?.kind || "").toUpperCase();
+    if (kind !== "BUFF" && kind !== "DEBUFF") return;
+    const owner = String(t?.owner || "").trim();
+    const ownerKey = normBondName(owner);
+    const mine = ownerName
+      ? ownerKey === me
+      : (!owner || /\{\{\s*user\s*\}\}/i.test(owner) || (playerKey && ownerKey === playerKey));
+    if (!mine) return;
+
+    const info = timerInfo(t);
+    if (info.done) return;
+    const label = String(t?.name || "").trim();
+    if (!label) return;
+    const k = keyOf(label);
+    const left = `${label} \u00B7 ${info.label}`;
+    if (byKey.has(k)) byKey.get(k).tip += ` \u00B7 ${info.label}`;
+    else byKey.set(k, { label, tip: left, kind });
+  });
+
+  return [...byKey.values()];
+}
+
 function blkChips(list, max) {
-  const all = (Array.isArray(list) ? list : []).map((x) => String(x).trim()).filter(Boolean);
+  const all = (Array.isArray(list) ? list : [])
+    .map((x) => (typeof x === "string" ? { label: x.trim(), tip: x.trim() } : x))
+    .filter((x) => x && x.label && !BLK_NO_STATUS.test(x.label));
   const shown = all.slice(0, max || 6);
   const chips = shown.map((st) => {
-    const hit = BLK_STATUS.find((b) => b.re.test(st));
-    const body = hit?.i || escHtml(hit?.t || st.replace(/[^\p{L}\p{N}]/gu, "").slice(0, 2).toUpperCase() || "?");
-    return `<span class="rpg-blk-chip" style="background:${hit ? hit.c : "#5f6b77"}" title="${escAttr(st)}">${body}</span>`;
+    const hit = BLK_STATUS.find((b) => b.re.test(st.label));
+    // unrecognised timer effects still say which way they cut
+    const fallback = st.kind === "DEBUFF" ? "#a86a1c" : st.kind === "BUFF" ? "#3a8f5c" : "#5f6b77";
+    const body = hit?.i || escHtml(hit?.t || st.label.replace(/[^\p{L}\p{N}]/gu, "").slice(0, 2).toUpperCase() || "?");
+    return `<span class="rpg-blk-chip" style="background:${hit ? hit.c : fallback}" title="${escAttr(st.tip || st.label)}">${body}</span>`;
   }).join("");
-  const more = all.length > shown.length ? `<span class="rpg-blk-more">+${all.length - shown.length}</span>` : "";
+  const more = all.length > shown.length
+    ? `<span class="rpg-blk-more" title="${escAttr(all.slice(shown.length).map((x) => x.tip || x.label).join(", "))}">+${all.length - shown.length}</span>`
+    : "";
   return chips + more;
 }
 
@@ -5851,7 +5903,7 @@ function renderSaoSkin() {
 
       const playerBlock = uiSettings.saoBarStyle === "blk"
         ? blkUnitRow(pView, 0, "p", { big: true, hpPct, mpPct, hpText, mpText,
-            name: demo ? "Name" : pName, status: rpgState.status_effects })
+            name: demo ? "Name" : pName, status: blkEffects(rpgState.status_effects, null) })
         : uiSettings.saoBarStyle === "alo"
         // ALfheim: one plate, name on the left, HP over MP in one arrow frame
         ? (() => {
@@ -5900,7 +5952,7 @@ function renderSaoSkin() {
             const k = `${type}:${normBondName(u?.name) || i}`;
             const idx = charIndexFor(type, i);
             return (uiSettings.saoBarStyle === "blk"
-              ? blkUnitRow(v, idx, k, { status: u?.status_effects })
+              ? blkUnitRow(v, idx, k, { status: blkEffects(u?.status_effects, u?.name) })
               : alo
               ? aloUnitRow(v, idx, k, false)
               : saoSlimRow(v.name, v.hp_curr, v.hp_max, saoUnitStops(v), idx, false, k))
@@ -5922,7 +5974,7 @@ function renderSaoSkin() {
           const k = `enemy:${normBondName(u?.name) || ""}:${i}`;
           if (uiSettings.saoBarStyle === "blk") {
             if (!v.isVeh && !v.name) v.name = `Enemy ${i + 1}`;
-            return blkUnitRow(v, charIndexFor("enemy", i), k, { foe: true, status: u?.status_effects }) + saoMeterRows(v, k);
+            return blkUnitRow(v, charIndexFor("enemy", i), k, { foe: true, status: blkEffects(u?.status_effects, u?.name) }) + saoMeterRows(v, k);
           }
           if (uiSettings.saoBarStyle === "alo") {
             if (!v.isVeh && !v.name) v.name = `Enemy ${i + 1}`;
@@ -6332,20 +6384,23 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-blk-row{
   --bt:calc(30px * var(--rpg-sao-ui, 1)); --bl:calc(150px * var(--rpg-sao-ui, 1)); --bb:calc(8px * var(--rpg-sao-ui, 1));
   position:relative; display:grid; grid-template-columns:var(--bt) auto auto; grid-template-rows:auto auto;
-  column-gap:0; align-items:end; margin-bottom:calc(7px * var(--rpg-sao-ui, 1))}
+  column-gap:0; align-items:center; margin-bottom:calc(7px * var(--rpg-sao-ui, 1))}
 .rpg-blk-row.big{--bt:calc(38px * var(--rpg-sao-ui, 1)); --bl:calc(220px * var(--rpg-sao-ui, 1)); --bb:calc(10px * var(--rpg-sao-ui, 1));
   margin-bottom:calc(10px * var(--rpg-sao-ui, 1))}
 
-/* translucent plate behind the name, starting behind the tile, fading out */
-.rpg-blk-plate{grid-column:1 / 4; grid-row:1; align-self:stretch; z-index:0;
+/* translucent plate behind the name: starts a little in from the tile's left
+   edge and fades out by the time it reaches the end of the bars */
+.rpg-blk-plate{grid-column:1 / 3; grid-row:1; align-self:stretch; z-index:0;
+  margin-left:calc(var(--bt) * .22);
   border-radius:calc(5px * var(--rpg-sao-ui, 1)) 0 0 calc(5px * var(--rpg-sao-ui, 1));
   background:linear-gradient(90deg, rgba(214,222,230,.26) 0, rgba(214,222,230,.18) 45%, rgba(214,222,230,0) 100%)}
 
-.rpg-blk-tile{grid-column:1; grid-row:1 / 3; align-self:end; position:relative; z-index:2; box-sizing:border-box;
+/* centred on the bars, so HP meets MP at the tile's middle */
+.rpg-blk-tile{grid-column:1; grid-row:2; align-self:center; position:relative; z-index:2; box-sizing:border-box;
   width:var(--bt); height:var(--bt); border-radius:calc(6px * var(--rpg-sao-ui, 1));
   border:calc(2px * var(--rpg-sao-ui, 1)) solid rgba(236,240,245,.88); box-shadow:0 1px 3px rgba(0,0,0,.45);
   display:grid; place-items:center; color:#fff; font-weight:800;
-  font-size:calc(var(--bt) * .46); text-shadow:0 1px 2px rgba(0,0,0,.35); margin-bottom:calc(-2px * var(--rpg-sao-ui, 1))}
+  font-size:calc(var(--bt) * .46); text-shadow:0 1px 2px rgba(0,0,0,.35)}
 /* width:0 + min-width:100% keeps a long name from widening the row */
 .rpg-blk-head{grid-column:2 / 4; grid-row:1; position:relative; z-index:1;
   display:flex; align-items:center; gap:calc(6px * var(--rpg-sao-ui, 1));
@@ -6367,12 +6422,12 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-blk-more{font-size:calc(9px * var(--rpg-sao-ui, 1)); color:#cfcbc1; margin-left:2px}
 
 /* HP and MP the same height, touching, and running out of the tile's edge */
-.rpg-blk-bars{grid-column:2; grid-row:2; display:flex; flex-direction:column; gap:0;
+.rpg-blk-bars{grid-column:2; grid-row:2; align-self:center; display:flex; flex-direction:column; gap:0;
   position:relative; z-index:1; margin-left:calc(-3px * var(--rpg-sao-ui, 1))}
 .rpg-sao-bar.blkhp, .rpg-sao-bar.blkmp{flex:none; width:var(--bl); height:var(--bb)}
 .rpg-blk-row .rpg-sao-bar svg{filter:none}
 .rpg-blk-nums{grid-column:3; grid-row:2; display:flex; flex-direction:column; justify-content:space-between;
-  align-self:stretch; padding-left:calc(6px * var(--rpg-sao-ui, 1));
+  align-self:center; height:calc(var(--bb) * 2); padding-left:calc(6px * var(--rpg-sao-ui, 1));
   font-size:calc(9px * var(--rpg-sao-ui, 1)); line-height:1; color:#c8c4ba; white-space:nowrap;
   text-shadow:0 1px 2px rgba(0,0,0,.7)}
 .rpg-blk-nums span:first-child{color:#e2ded5; font-weight:600}
