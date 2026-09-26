@@ -348,7 +348,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.10";
+const HUD_BUILD = "2026-09-26.12";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -2187,6 +2187,22 @@ function commitBondsEdit() {
   }
 
   rpgState.bonds = cleaned;
+
+  // Party members and NPCs carry their own |Bond:| value, and the block writer
+  // copies those INTO the ledger before writing. Left alone, a character's old
+  // value would be copied straight back over the edit (only people not in the
+  // party or NPC list kept their new value). So bring the live values in line
+  // with the edit first, and drop the live value of any bond that was removed.
+  const removedKeys = new Set(removed.map((b) => normBondName(b.name)));
+  [...(rpgState.party || []), ...(rpgState.npcs || [])].forEach((u) => {
+    const key = normBondName(u?.name);
+    if (!key) return;
+    const edited = cleaned.find((b) => normBondName(b.name) === key);
+    const hasLive = u.bond !== undefined && u.bond !== null && String(u.bond).trim() !== "";
+    if (edited && hasLive) u.bond = edited.bond;
+    else if (!edited && removedKeys.has(key)) delete u.bond;
+  });
+
   bondsEditMode = false;
   bondsSnapshot = [];
   renderRPG();
@@ -2332,6 +2348,11 @@ function renderTimersTab() {
             <span style="flex:0 0 auto; color:${st.color};">
               ${escHtml(info.label)}
               ${delta ? `<span style="font-size:0.75em; color:#888;"> ${escHtml(delta)}</span>` : ""}
+              ${info.mode === "charges" && !info.done
+                ? `<button class="rpg-c-tuse" data-key="${escAttr(timerKey(t))}" title="Use one charge"
+                     style="margin-left:4px; padding:0 5px; font-size:0.85em; line-height:1.4; cursor:pointer;
+                            background:#333; color:#ddd; border:1px solid #666; border-radius:2px;">\u22121</button>`
+                : ""}
             </span>
           </div>
           ${bar}
@@ -2990,6 +3011,13 @@ function renderClassicSkin() {
     document.body.appendChild(container);
   }
 
+  // Classic redraws through three separate paths (minimised, settings, main)
+  // with no shared ending, so positions are saved here and put back in a
+  // microtask: after this synchronous render finishes, before the next paint,
+  // so there's no visible jump.
+  saoSaveScroll(container);
+  queueMicrotask(() => saoRestoreScroll(container));
+
   const BOX_RADIUS = "0px";
   const BAR_RADIUS = "4px";
   const FONT_FAMILY = uiSettings.fontFamily || "'Courier New', Courier, monospace";
@@ -3203,7 +3231,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           <button id="rpg-settings-close" style="background:#444; border:1px solid #777; color:#fff; cursor:pointer; font-size:10px; padding:3px 10px; font-weight:bold;">CLOSE</button>
         </div>
 
-        <div style="flex:1; overflow:auto; padding-right:4px;">
+        <div data-scroll-key="c:settings" style="flex:1; overflow:auto; padding-right:4px;">
           <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Actions</div>
 
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-bottom:12px;">
@@ -3347,7 +3375,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         </div>
       </div>
 
-      <div id="rpg-tab-strip" style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid #555; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
+      <div id="rpg-tab-strip" data-scroll-key="c:strip" style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid #555; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
         <div id="tab-party" style="${tabStyle("party")}">Party</div>
 		<div id="tab-bonds" style="${tabStyle("bonds")}">Bonds</div>
 	    <div id="tab-timers" style="${tabStyle("timers")}">Timers</div>
@@ -3357,10 +3385,12 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         <div id="tab-mast" style="${tabStyle("mastery")}">Mastery</div>
         <div id="tab-quest" style="${tabStyle("quests")}">Quest</div>
         <div id="tab-env" style="${tabStyle("env")}">Environment</div>
+        <div id="tab-log" style="${tabStyle("log")}">Log</div>
       </div>
 
-      <div style="height: 110px; overflow-y: auto; font-size: 0.8em; padding:5px; background:rgba(0,0,0,0.3); scrollbar-gutter:stable;">
+      <div data-scroll-key="c:body:${activeTab}" style="height: 110px; overflow-y: auto; font-size: 0.8em; padding:5px; background:rgba(0,0,0,0.3); scrollbar-gutter:${activeTab === "log" ? "auto" : "stable"};">
         ${activeTab === "party" ? renderPartyTab() : ""}
+        ${activeTab === "log" ? classicLogHtml() : ""}
 		${activeTab === "bonds" ? renderBondsTab() : ""}
 		${activeTab === "timers" ? renderTimersTab() : ""}
         ${activeTab === "inventory" ? makeList(inv, "No Items") : ""}
@@ -3536,6 +3566,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     bind("tab-mast", () => switchTab("mastery"));
     bind("tab-quest", () => switchTab("quests"));
     bind("tab-env", () => switchTab("env"));
+    bind("tab-log", () => switchTab("log"));
+    classicBindLog();
 	  
 	if (isSettingsOpen) {
 	  bind("rpg-settings-close", toggleSettings);
@@ -3727,8 +3759,12 @@ function tDiffVitals(out, label, a, b, who) {
       text: `${pre}${eb.label || "MP"} ${e0} \u2192 ${e1}${eb.max ? "/" + eb.max : ""} (${tSigned(e1 - e0)})` });
   }
 
-  const sa = new Set((a?.status_effects || []).map((x) => String(x).trim()).filter(Boolean));
-  const sb = new Set((b?.status_effects || []).map((x) => String(x).trim()).filter(Boolean));
+  // "Healthy", "None" and the like mean no status, so going from Poisoned to
+  // Healthy is logged as losing Poisoned, not also as gaining Healthy
+  const realStatus = (list) => new Set((list || []).map((x) => String(x).trim())
+    .filter((x) => x && !BLK_NO_STATUS.test(x)));
+  const sa = realStatus(a?.status_effects);
+  const sb = realStatus(b?.status_effects);
   sb.forEach((x) => { if (!sa.has(x)) out.push({ tone: "bad", text: `${pre}+ ${x}`, u: { f: "status", who, item: x, added: true } }); });
   sa.forEach((x) => { if (!sb.has(x)) out.push({ tone: "good", text: `${pre}\u2212 ${x}`, u: { f: "status", who, item: x, added: false } }); });
 
@@ -5625,7 +5661,10 @@ function afterTurnEdit(ctx, idx) {
   alertIdx = idx;
   invalidateHistoryMemory();
   turnLogCache = { sig: "", turns: [] };
-  try { checkMessage(true); } catch {}
+  // A plain scan, not a manual one: a manual scan writes the whole live state
+  // back into the message, which would overwrite the block this edit just set
+  // (and break redo, which checks the message is still exactly what we wrote).
+  try { checkMessage(); } catch {}
   renderRPG();
 }
 
@@ -5703,6 +5742,75 @@ function saoRedoLastTurn() {
   turnUndo = null;
   afterTurnEdit(ctx, idx);
   if (window.toastr) window.toastr.info("Turn restored.");
+}
+
+// Classic's Log tab: the same turn log, undo and per-change undo as the SAO
+// Quests orb, drawn with classic's inline styles for its dark panel. Its tab
+// body drops scrollbar-gutter:stable: with it, Chromium left the good/bad
+// bullets unpainted, and a log that almost always scrolls gains nothing from it.
+function classicLogHtml() {
+  let chat = [], ctx = null;
+  try { ctx = SillyTavern.getContext(); chat = ctx?.chat || []; } catch {}
+  const turns = buildTurnLog(chat);
+  const redo = saoCanRedo(ctx);
+  const btn = "padding:1px 7px; font-size:0.9em; cursor:pointer; background:#333; color:#ddd; border:1px solid #666; border-radius:2px;";
+  const tools = (turns.length || redo)
+    ? `<div style="display:flex; gap:5px; justify-content:flex-end; margin-bottom:5px;">
+        ${turns.length ? `<button id="rpg-c-undo" style="${btn}" title="Revert everything the latest turn changed">\u21B6 Undo last turn</button>` : ""}
+        ${redo ? `<button id="rpg-c-redo" style="${btn}">\u21B7 Redo</button>` : ""}
+      </div>`
+    : "";
+  if (!turns.length) {
+    return tools + `<div style="opacity:0.5; font-style:italic;">Nothing yet. Each reply that carries an rpg_state adds a turn here.</div>`;
+  }
+
+  const dot = { good: "#66bb6a", bad: "#ef5350", neutral: "#888" };
+  const html = turns.slice(0, saoLogShown).map((t, ti) => `
+    <div style="padding:4px 0 5px; border-bottom:1px solid #333;">
+      <div class="rpg-c-turnhead" data-mes="${t.idx}" title="Jump to this message"
+           style="display:flex; justify-content:space-between; gap:8px; cursor:pointer; margin-bottom:2px;">
+        <b>Turn ${t.n}</b>
+        <span style="color:#999; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0;">
+          ${escHtml(t.when)}${t.where ? " \u00B7 " + escHtml(t.where) : ""}</span>
+      </div>
+      ${t.changes.length ? t.changes.map((c, ci) => `
+        <div style="display:flex; align-items:flex-start; gap:5px; padding:1px 0;">
+          <span style="flex:1; min-width:0; overflow-wrap:anywhere;"><span style="color:${dot[c.tone] || dot.neutral}; font-weight:bold; margin-right:4px;">\u2022</span>${c.diff
+            ? `~ ${escHtml(c.diff.label)}: <b>${escHtml(c.diff.name)}</b><br><span style="color:#aaa;">${wordDiffHtml(c.diff.before, c.diff.after, "toast")}</span>`
+            : escHtml(c.text)}</span>
+          ${ti === 0 && c.u
+            ? `<button class="rpg-c-revert" data-ci="${ci}" data-text="${escAttr(c.text)}" title="Undo just this change"
+                 style="flex:0 0 auto; padding:0 4px; font-size:0.85em; cursor:pointer; background:none; color:#aaa; border:1px solid #555; border-radius:2px;">\u21B6</button>`
+            : ""}
+        </div>`).join("")
+        : `<div style="opacity:0.5; font-style:italic;">No changes.</div>`}
+    </div>`).join("");
+
+  const more = turns.length > saoLogShown
+    ? `<button id="rpg-c-log-more" style="${btn} width:100%; margin-top:6px;">Show older (${turns.length - saoLogShown})</button>`
+    : "";
+  return tools + html + more;
+}
+
+function classicBindLog() {
+  const one = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
+  one("rpg-c-undo", saoUndoLastTurn);
+  one("rpg-c-redo", saoRedoLastTurn);
+  one("rpg-c-log-more", () => { saoLogShown += 20; renderRPG(); });
+  document.querySelectorAll(".rpg-c-revert").forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); saoUndoChange(parseInt(el.dataset.ci, 10), el.dataset.text); };
+  });
+  document.querySelectorAll(".rpg-c-turnhead").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const mes = document.querySelector(`#chat .mes[mesid="${el.dataset.mes}"]`);
+      if (mes) mes.scrollIntoView({ behavior: "smooth", block: "center" });
+      else if (window.toastr) window.toastr.info("That message isn't loaded in the chat view.");
+    };
+  });
+  document.querySelectorAll(".rpg-c-tuse").forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); spendTimerCharge(el.dataset.key); };
+  });
 }
 
 function saoLogHtml() {
@@ -5874,7 +5982,6 @@ function saoSettingsHtml() {
     + row("rpg-sao-help", "?", saoHelpOpen ? "Hide help" : "What these do")
     + row("rpg-sao-move", "\u2725", "Move HUD pieces")
     + row("rpg-sao-reset", "\u21BA", "Reset settings")
-    + `<div class="rpg-sao-build">build ${HUD_BUILD}</div>`
     + row("rpg-sao-insert", "&#8595;", "Insert state")
     + row("rpg-sao-remind", "&#9993;", "Remind state")
     + toggle("rpg-sao-sw-alerts", "Change alerts", !!uiSettings.changeAlerts)
@@ -5917,7 +6024,8 @@ function saoSettingsHtml() {
         <select id="rpg-sao-skin">
           <option value="classic">Classic</option>
           <option value="sao" selected>SAO</option>
-        </select></div>`;
+        </select></div>`
+    + `<div class="rpg-sao-build">build ${HUD_BUILD}</div>`;
 }
 
 // ---- orbs ---------------------------------------------------------------
@@ -6918,8 +7026,8 @@ button.rpg-sao-who-name{cursor:pointer; text-decoration:underline; text-decorati
 .rpg-sao-mrow .pip{flex:0 0 22px; height:22px; border-radius:50%; background:#6b6355;
   color:#fff; display:grid; place-items:center; font-size:11px}
 .rpg-sao-mrow:hover{filter:brightness(1.06)}
-.rpg-sao-build{font-size:10px; text-align:right; padding:4px 6px 0; color:rgba(255,255,255,.55);
-  text-shadow:0 1px 2px rgba(0,0,0,.7); letter-spacing:.5px}
+.rpg-sao-build{margin-top:4px; padding:4px 11px; background:var(--rpg-sao-panel);
+  font-size:10px; letter-spacing:.5px; text-align:right; color:var(--rpg-sao-ink-dim); opacity:.8}
 .rpg-sao-mrow.toggle{cursor:default; justify-content:space-between; gap:6px}
 .rpg-sao-mrow select{font-family:inherit; font-size:12px; background:var(--rpg-sao-chip);
   border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink); padding:2px 4px}
