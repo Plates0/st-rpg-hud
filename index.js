@@ -348,7 +348,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.13";
+const HUD_BUILD = "2026-09-26.14";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -1294,6 +1294,9 @@ function syncLiveBondsIntoLedger(state) {
   live.forEach((u) => {
     if (!u || !u.name) return;
     if (u.bond === undefined || u.bond === null || u.bond === "") return;
+    // a bond you deleted stays out of the ledger even though the character
+    // keeps their own |Bond:| value
+    if (bondBlocklist.has(normBondName(u.name))) return;
     upsertBond(state.bonds, u.name, parseBondValue(u.bond));
   });
 }
@@ -2189,19 +2192,19 @@ function commitBondsEdit() {
   rpgState.bonds = cleaned;
 
   // Party members and NPCs carry their own |Bond:| value, and the block writer
-  // copies those INTO the ledger before writing. Left alone, a character's old
-  // value would be copied straight back over the edit (only people not in the
-  // party or NPC list kept their new value). So bring the live values in line
-  // with the edit first, and drop the live value of any bond that was removed.
-  const removedKeys = new Set(removed.map((b) => normBondName(b.name)));
+  // copies those INTO the ledger before writing. An edited value is pushed onto
+  // the character's line too, or their old value would be copied straight back
+  // over the edit. A removed bond leaves the character's own value alone: the
+  // name is blocked instead, BEFORE writing, which keeps it out of the ledger.
   [...(rpgState.party || []), ...(rpgState.npcs || [])].forEach((u) => {
     const key = normBondName(u?.name);
     if (!key) return;
     const edited = cleaned.find((b) => normBondName(b.name) === key);
     const hasLive = u.bond !== undefined && u.bond !== null && String(u.bond).trim() !== "";
     if (edited && hasLive) u.bond = edited.bond;
-    else if (!edited && removedKeys.has(key)) delete u.bond;
   });
+  const names = removed.map((b) => b.name);
+  if (names.length) blockBonds(names);
 
   bondsEditMode = false;
   bondsSnapshot = [];
@@ -2211,11 +2214,10 @@ function commitBondsEdit() {
   if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after bond edit");
   if (!removed.length) return;
 
-  const names = removed.map((b) => b.name);
-  blockBonds(names);   // stop the next scan re-adding them from live |Bond:| values
   const scrub = confirm(
     `Also remove ${names.length === 1 ? "it" : "them"} from ALL earlier messages?\n\n` +
-    `If you skip this, the AI can still see them in older blocks. They stay blocked either way.\n\n` +
+    `If you skip this, the AI can still see them in older Bonds lists. They stay blocked either way, ` +
+    `and the characters keep their own Bond values.\n\n` +
     `This edits your chat history and cannot be undone.`
   );
   if (scrub) {
@@ -2493,22 +2495,8 @@ function stripBondsFromText(text, keys) {
         return `|Bonds:${kept.join(";")}|`;
       });
 
-      // now the per-entity values, walking statefully because Name and Bond
-      // may sit on different lines
-      let curName = "";
-      let inPlayer = false;
-      newBody = newBody.split("\n").map((raw) => {
-        const line = raw.trim();
-        if (!line) return raw;
-        if (line.startsWith("[")) { inPlayer = /player/i.test(line); curName = ""; return raw; }
-        if (line.startsWith(">")) return raw;
-        const nm = line.match(/\|Name:\s*([^|]*)/i);
-        if (nm) curName = nm[1].trim();
-        if (inPlayer || !curName) return raw;
-        if (!keys.has(normBondName(curName))) return raw;
-        return raw.replace(/\|Bond:\s*[^|]*\|/gi, "");
-      }).join("\n");
-
+      // Characters' own |Bond:| values are left alone: only the ledger is
+      // scrubbed. The name is blocked, which keeps it out of the ledger.
       return open + newBody + close;
     }
   );
@@ -5172,9 +5160,13 @@ function saoStatusPanel() {
         ${picked ? `<button class="rpg-sao-mini" id="rpg-sao-tilecolor-auto" data-key="${escAttr(tKey)}" title="Back to the automatic colour">\u21BA auto</button>` : ""}
       </b></div>`;
     }
-    if ((type === "party" || type === "npc") && !isVehicle && root?.bond !== undefined) {
-      const b = parseBondValue(root.bond);
-      h += `<div class="rpg-sao-vline"><span>Bond</span><b>${b >= 101 ? "&#8734;" : b} / 100</b></div>`;
+    if ((type === "party" || type === "npc") && !isVehicle) {
+      const has = root?.bond !== undefined && root?.bond !== null && String(root.bond).trim() !== "";
+      const b = has ? parseBondValue(root.bond) : null;
+      const blocked = bondBlocklist.has(normBondName(root?.name));
+      h += `<div class="rpg-sao-vline rpg-sao-livebond"><span>Bond${blocked ? ` <i title="Kept off the Bonds list">(hidden)</i>` : ""}</span><b>
+        <input type="text" inputmode="numeric" id="rpg-sao-livebond" value="${b === null ? "" : b >= 101 ? "\u221E" : b}"
+          placeholder="none" title="0\u2013100, or \u221E. Leave empty for no bond. Enter to save."> / 100</b></div>`;
     }
     const stats = display.stats || {};
     const keys = Object.keys(stats);
@@ -6392,6 +6384,31 @@ function saoBind() {
   bind("rpg-sao-help", () => { saoHelpOpen = !saoHelpOpen; renderRPG(); });
   bind("rpg-sao-log-more", () => { saoLogShown += 20; renderRPG(); });
 
+  // a character's own |Bond:|, edited from their Stats tab
+  const liveBond = document.getElementById("rpg-sao-livebond");
+  if (liveBond) {
+    liveBond.onclick = (e) => e.stopPropagation();
+    liveBond.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") liveBond.blur(); };
+    liveBond.onchange = () => {
+      const { root } = getActiveData();
+      if (!root) return;
+      const raw = liveBond.value.trim();
+      if (raw === "") {
+        delete root.bond;
+      } else {
+        const v = clamp(Math.round(parseBondValue(raw)), 0, 101);
+        root.bond = v;
+        // keep the Bonds list in step, unless you took this name off it
+        if (!bondBlocklist.has(normBondName(root.name))) {
+          if (!Array.isArray(rpgState.bonds)) rpgState.bonds = [];
+          upsertBond(rpgState.bonds, root.name, v);
+        }
+      }
+      writeStateBackToChatMessage(rpgState);
+      renderRPG();
+    };
+  }
+
   const tilePick = document.getElementById("rpg-sao-tilecolor");
   if (tilePick) {
     const key = tilePick.dataset.key;
@@ -6956,6 +6973,10 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
   font:inherit; font-size:12px; padding:3px 5px; color:var(--rpg-sao-ink);
   background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
 .rpg-sao-tilecolor b{display:flex; align-items:center; gap:6px}
+.rpg-sao-livebond b{display:flex; align-items:center; gap:4px}
+.rpg-sao-livebond i{font-style:normal; font-weight:400; font-size:10px; color:var(--rpg-sao-ink-dim)}
+.rpg-sao-livebond input{width:44px; text-align:right; font:inherit; font-size:12px; padding:2px 5px;
+  color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
 .rpg-sao-tilecolor input[type=color]{width:30px; height:22px; padding:0; cursor:pointer;
   border:1px solid var(--rpg-sao-rule); border-radius:3px; background:none}
 .rpg-sao-mrow-edit input[type=color]{width:26px; height:24px; padding:0; border:1px solid var(--rpg-sao-rule);
