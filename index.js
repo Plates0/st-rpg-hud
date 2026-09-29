@@ -348,7 +348,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.16";
+const HUD_BUILD = "2026-09-26.17";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -364,6 +364,7 @@ const defaultUiSettings = {
   saoSnap: true,          // snap a dragged piece to the others' edges and centres
   meterColors: {},        // meter name (lowercase) -> "#rrggbb", overrides the auto colour
   tileColors: {},         // ALfheim (New) tile colours you've picked: "@player" or a name key -> "#rrggbb"
+  oocEditNotes: true,     // Edit state -> Save leaves an (OOC: ...) note in the block listing what you changed
   saoUiScale: 100,        // % size of the bar cluster; a desktop usually wants ~130
   saoTextShadow: false,   // shadow behind the text that sits straight on the chat
   saoTextBacking: false,  // translucent card behind that text instead        // "classic" | "sao"
@@ -2681,7 +2682,31 @@ function findLatestRpgMessageIndex(chat) {
   return -1;
 }
 
-function writeStateBackToChatMessage(stateObj) {
+// ---- OOC note for manual edits ----
+// Edit state -> Save leaves one line in the block telling the AI what you
+// changed by hand, so it treats the new values as canon instead of explaining
+// or undoing them. It's written "(OOC: ...)": the parser takes any line
+// starting with "[" as a section header, which would scramble what follows,
+// while a line with no pipes is skipped. Older blocks carrying it drop out of
+// the AI's view through your own regex after a few messages.
+const OOC_PREFIX = "(OOC: The user manually edited the state: ";
+const OOC_SUFFIX = " Treat these as canon. Don't reply to or mention this note, and don't copy it into your next <rpg_state>.)";
+const OOC_LINE_RE = /^[ \t]*\(OOC:[^\n]*\)[ \t]*$/gim;
+
+function oocNoteFor(changes) {
+  return `${OOC_PREFIX}${changes.join("; ")}.${OOC_SUFFIX}`;
+}
+
+// what an existing HUD note in this block already lists, to merge new edits in
+function oocNoteChanges(blockText) {
+  const line = (String(blockText || "").match(OOC_LINE_RE) || []).find((l) => l.trim().startsWith(OOC_PREFIX));
+  if (!line) return [];
+  const body = line.trim().slice(OOC_PREFIX.length);
+  const end = body.lastIndexOf("." + OOC_SUFFIX);
+  return (end >= 0 ? body.slice(0, end) : body).split("; ").map((x) => x.trim()).filter(Boolean);
+}
+
+function writeStateBackToChatMessage(stateObj, opts = {}) {
   const context = SillyTavern.getContext();
   const chat = context?.chat;
   if (!Array.isArray(chat) || chat.length === 0) return false;
@@ -2697,7 +2722,17 @@ function writeStateBackToChatMessage(stateObj) {
   const regex = /<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i;
 
   // Uses the exact same builder to prevent mismatched keys!
-  const finalString = buildPipeString(stateObj);
+  let finalString = buildPipeString(stateObj);
+
+  // The builder writes state, not notes, so an (OOC: ...) line already in the
+  // block would vanish on any rewrite (a bond edit, a move...) before the AI
+  // ever saw it. Carry existing notes over; a new note from Edit state
+  // replaces the HUD's own earlier one.
+  const oldBlock = (msg.mes.match(regex) || [""])[0];
+  let notes = (oldBlock.match(OOC_LINE_RE) || []).map((l) => l.trim());
+  if (opts.oocNote) notes = notes.filter((l) => !l.startsWith(OOC_PREFIX)).concat(opts.oocNote);
+  if (notes.length) finalString = finalString.replace(/<\/rpg_state>\s*$/i, `${notes.join("\n")}\n</rpg_state>`);
+
   msg.mes = msg.mes.replace(regex, finalString);
 
   try { window.saveChat?.(); } catch (e) { console.warn("RPG HUD: saveChat failed", e); }
@@ -2917,6 +2952,7 @@ function scrubLegacyBondKeys(obj) {
 }
 
 function saveEditor() {
+  const before = JSON.parse(JSON.stringify(rpgState));   // for the OOC note
   const { root, display, isVehicle } = getActiveData();
   const getEl = (id) => document.getElementById(id);
 
@@ -3015,7 +3051,22 @@ function saveEditor() {
 
   renderRPG();
 
-  const ok = writeStateBackToChatMessage(rpgState);
+  // Tell the AI what was changed by hand. Edits made before it has replied
+  // are merged into one note, which sits in the same (latest) block.
+  let oocNote = null;
+  if (uiSettings.oocEditNotes !== false) {
+    const changes = diffTurn(before, rpgState).map((c) => c.text);
+    if (changes.length) {
+      let earlier = [];
+      try {
+        const m = SillyTavern.getContext()?.chat?.[lastRpgMsgIndex]?.mes;
+        earlier = oocNoteChanges((String(m || "").match(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i) || [""])[0]);
+      } catch {}
+      oocNote = oocNoteFor([...earlier, ...changes.filter((c) => !earlier.includes(c))]);
+    }
+  }
+
+  const ok = writeStateBackToChatMessage(rpgState, oocNote ? { oocNote } : {});
   if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> (no message found?)");
 }
 
@@ -3274,6 +3325,10 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 			 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
     			<span title="Automatically reminds the AI of stats on every message">Auto-Inject Prompt</span>
    			 <input type="checkbox" id="rpg-settings-autoinject" ${autoInjectState ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
+		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="Edit -> Save leaves an (OOC: ...) note in the block telling the AI what you changed by hand">Note Edits for AI</span>
+   			 <input type="checkbox" id="rpg-settings-oocnotes" ${uiSettings.oocEditNotes !== false ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
 		  </div>
 		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
     			<span title="Warn when an item/skill/passive loses its description">Change Alerts</span>
@@ -3603,6 +3658,11 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	
 	  bind("rpg-settings-reset", resetRPG);
 	  bind("rpg-settings-remove", removeActiveCharacter);
+	  const oocEl = document.getElementById("rpg-settings-oocnotes");
+	  if (oocEl) {
+	    oocEl.onclick = (e) => e.stopPropagation();
+	    oocEl.onchange = () => { uiSettings.oocEditNotes = oocEl.checked; saveUiSettings(); };
+	  }
 	  bind("rpg-settings-move", () => {
 	    const to = document.getElementById("rpg-settings-move-to")?.value;
 	    if (to) moveActiveCharacter(to);
@@ -5975,6 +6035,8 @@ function saoHelpPanel() {
           "Drag the bars, the orb column and the clock wherever you like. Buttons stop responding while you're arranging, so a tap can't fire by accident. Reset puts them back.")
       + item("Turn log",
           "In the Quests orb, the Log tab lists what changed each turn \u2014 HP, items, bonds, where you went, how much time passed. It's worked out from your chat history rather than stored, so it follows swipes and edits and covers old chats too. Tap a turn to jump to its message. Undo last turn reverts everything the newest turn changed; the \u21B6 beside a single change in the newest turn reverts just that one. Redo puts either back.")
+      + item("Note edits for AI",
+          "When on, saving from Edit state adds one (OOC: ...) line to the block listing exactly what you changed, and asks the AI to treat it as canon without replying to it. Several edits before the AI answers are merged into one note. Other HUD edits keep the note in place. Edits made directly in the panels don't add one.")
       + item("Charges",
           "A timer written as 2/2x, 2x or \u201c2 uses\u201d counts uses instead of turns, for effects like \u201cblock the next 2 attacks\u201d. It never ticks down on its own; the AI lowers it when it's used, or tap \u22121 in the timer list.")
       + item("Meters",
@@ -6031,6 +6093,7 @@ function saoSettingsHtml() {
     + row("rpg-sao-remind", "&#9993;", "Remind state")
     + toggle("rpg-sao-sw-alerts", "Change alerts", !!uiSettings.changeAlerts)
     + toggle("rpg-sao-sw-inject", "Auto-inject", !!autoInjectState)
+    + toggle("rpg-sao-sw-ooc", "Note edits for AI", uiSettings.oocEditNotes !== false)
     + toggle("rpg-sao-sw-bars", "Keep bars when minimised", !!uiSettings.barsOnMin)
     + toggle("rpg-sao-sw-shadow", "Text shadow", !!uiSettings.saoTextShadow)
     + toggle("rpg-sao-sw-backing", "Text backing", !!uiSettings.saoTextBacking)
@@ -6518,6 +6581,11 @@ function saoBind() {
   bind("rpg-sao-insert", insertLastStateIntoNarrative);
   bind("rpg-sao-remind", remindStateInLastMessage);
   bind("rpg-sao-sw-alerts", () => { uiSettings.changeAlerts = !uiSettings.changeAlerts; saveUiSettings(); renderRPG(); });
+  bind("rpg-sao-sw-ooc", () => {
+    uiSettings.oocEditNotes = uiSettings.oocEditNotes === false;
+    saveUiSettings();
+    renderRPG();
+  });
   bind("rpg-sao-sw-inject", () => {
     autoInjectState = !autoInjectState;
     const box = document.getElementById("rpg-settings-autoinject");
