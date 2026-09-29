@@ -348,7 +348,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.14";
+const HUD_BUILD = "2026-09-26.16";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -1692,6 +1692,35 @@ function confirmDanger(title, detail) {
   if (!a) return false;
   const b = confirm(`⚠️ FINAL WARNING\n\nProceed with:\n${detail}\n\nClick OK to confirm permanently.`);
   return b;
+}
+
+// Move the selected character between Party, NPCs and Enemies: take their
+// entry out of one section of the block and append it to another, then write
+// the block back. The selection follows them to their new place, so the view
+// doesn't land on whoever slid into their old slot. Everything on their entry
+// (HP, stats, items, vehicle) moves with them. One thing the block itself
+// decides: enemies carry no Bond on their line, so an enemy's bond lives only
+// on the Bonds list.
+const MOVE_KEYS = { party: "party", npc: "npcs", enemy: "enemies" };
+const MOVE_LABELS = { party: "Party", npc: "NPCs", enemy: "Enemies" };
+
+function moveActiveCharacter(toType) {
+  const info = getActivePointerInfo();
+  const fromKey = MOVE_KEYS[info.type], toKey = MOVE_KEYS[toType];
+  if (!fromKey || !toKey || info.type === toType) return false;
+  const from = rpgState[fromKey];
+  if (!Array.isArray(from) || !from[info.idx]) return false;
+
+  const [unit] = from.splice(info.idx, 1);
+  if (!Array.isArray(rpgState[toKey])) rpgState[toKey] = [];
+  rpgState[toKey].push(unit);
+  charIndex = charIndexFor(toType, rpgState[toKey].length - 1);
+
+  renderRPG();
+  const wrote = writeStateBackToChatMessage(rpgState);
+  if (!wrote) console.warn("RPG HUD: couldn't write back <rpg_state> after moving a character");
+  if (window.toastr) window.toastr.info(`${displayName(unit?.name, "Character")} moved to ${MOVE_LABELS[toType]}.`);
+  return true;
 }
 
 function removeActiveCharacter(e) {
@@ -3225,6 +3254,17 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-bottom:12px;">
              <button id="rpg-settings-edit" style="background:#333; border:1px solid #4FC3F7; color:#4FC3F7; cursor:pointer; padding:8px 10px; font-weight:bold;">✏️ Edit</button>
              <button id="rpg-settings-remove" style="background:#333; border:1px solid #ff9800; color:#ffcc80; cursor:pointer; padding:8px 10px; font-weight:bold;">🗑️ Remove</button>
+             ${(() => {
+               const info = getActivePointerInfo();
+               if (!MOVE_KEYS[info.type]) return "";
+               const opts = Object.keys(MOVE_KEYS).filter((t) => t !== info.type)
+                 .map((t) => `<option value="${t}">${MOVE_LABELS[t]}</option>`).join("");
+               return `<div style="grid-column:1 / span 2; display:flex; gap:6px; align-items:center;">
+                 <span style="font-size:0.8em; color:#aaa; white-space:nowrap;">Move ${escHtml(displayName(info.name, "character"))} to</span>
+                 <select id="rpg-settings-move-to" style="flex:1; min-width:0; background:#222; border:1px solid #555; color:#ddd; padding:6px;">${opts}</select>
+                 <button id="rpg-settings-move" style="background:#333; border:1px solid #bbb; color:#eee; cursor:pointer; padding:6px 10px; font-weight:bold;">Move</button>
+               </div>`;
+             })()}
              <button id="rpg-settings-clear-npcs" style="background:#333; border:1px solid #00e5ff; color:#b3f5ff; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 NPCs</button>
 
              <button id="rpg-settings-clear-enemies" style="background:#333; border:1px solid #ff5252; color:#ffd0d0; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 Enemies</button>
@@ -3563,6 +3603,12 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	
 	  bind("rpg-settings-reset", resetRPG);
 	  bind("rpg-settings-remove", removeActiveCharacter);
+	  bind("rpg-settings-move", () => {
+	    const to = document.getElementById("rpg-settings-move-to")?.value;
+	    if (to) moveActiveCharacter(to);
+	  });
+	  const mvSel = document.getElementById("rpg-settings-move-to");
+	  if (mvSel) mvSel.onclick = (e) => e.stopPropagation();
 	  bind("rpg-settings-clear-npcs", (e) => clearArray("npc", e));
 	  bind("rpg-settings-clear-enemies", (e) => clearArray("enemy", e));
 	  bind("rpg-settings-clear-party", (e) => clearArray("party", e));
@@ -5128,8 +5174,9 @@ function saoMeterRows(view, owner) {
 function saoDivider(label, key, color) {
   if (!color && key === "npcs") color = "#bcd4e8";
   const open = !saoCollapsed[key];
-  return `<div class="rpg-sao-div" ${color ? `style="color:${color}"` : ""}>${escHtml(label)}
-    <button class="rpg-sao-caret" data-k="${key}" aria-expanded="${open}">${open ? "&#9662;" : "&#9656;"}</button>
+  return `<div class="rpg-sao-div" ${color ? `style="color:${color}"` : ""}><span class="rpg-sao-divlabel" data-k="${key}"
+      title="${open ? "Collapse" : "Expand"}">${escHtml(label)}</span>
+    <button class="rpg-sao-caret" data-k="${key}" aria-expanded="${open}" aria-label="${open ? "Collapse" : "Expand"} ${escAttr(label)}">${open ? "&#9662;" : "&#9656;"}</button>
   </div>`;
 }
 
@@ -5167,6 +5214,12 @@ function saoStatusPanel() {
       h += `<div class="rpg-sao-vline rpg-sao-livebond"><span>Bond${blocked ? ` <i title="Kept off the Bonds list">(hidden)</i>` : ""}</span><b>
         <input type="text" inputmode="numeric" id="rpg-sao-livebond" value="${b === null ? "" : b >= 101 ? "\u221E" : b}"
           placeholder="none" title="0\u2013100, or \u221E. Leave empty for no bond. Enter to save."> / 100</b></div>`;
+    }
+    if (MOVE_KEYS[type]) {
+      h += `<div class="rpg-sao-vline rpg-sao-move"><span>Move to</span><b>` +
+        Object.keys(MOVE_KEYS).filter((t) => t !== type).map((t) =>
+          `<button class="rpg-sao-mini rpg-sao-moveto" data-to="${t}">${MOVE_LABELS[t]}</button>`).join("") +
+        `</b></div>`;
     }
     const stats = display.stats || {};
     const keys = Object.keys(stats);
@@ -6310,7 +6363,9 @@ function saoBind() {
     renderRPG();
   };
 
-  on(".rpg-sao-caret", (el) => {
+  on(".rpg-sao-moveto", (el) => moveActiveCharacter(el.dataset.to));
+
+  on(".rpg-sao-caret, .rpg-sao-divlabel", (el) => {
     const k = el.dataset.k;
     saoCollapsed[k] = !saoCollapsed[k];
     renderRPG();
@@ -6720,6 +6775,7 @@ const SAO_CSS = `<style id="rpg-sao-style">
 #rpg-hud-container .rpg-sao-vitals.scrolls{pointer-events:auto}
 #rpg-hud-container .rpg-sao-vitals button.rpg-sao-tag,
 #rpg-hud-container .rpg-sao-vitals .rpg-sao-caret,
+#rpg-hud-container .rpg-sao-vitals .rpg-sao-divlabel,
 #rpg-hud-container .rpg-sao-vitals .rpg-alo-label,
 #rpg-hud-container .rpg-sao-vitals .rpg-alo-uname,
 #rpg-hud-container .rpg-sao-vitals .rpg-blk-name{pointer-events:auto}
@@ -6784,8 +6840,20 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
   color:#cdc8bb; display:flex; align-items:center; gap:7px}
 .rpg-sao-div::after{content:""; flex:1; height:1px;
   background:linear-gradient(90deg,rgba(220,215,200,.4),transparent)}
-.rpg-sao-caret{background:none; border:0; color:inherit; cursor:pointer; padding:0 2px;
-  font-size:10px; order:3}
+.rpg-sao-caret{background:none; border:0; color:inherit; cursor:pointer; order:3;
+  font-size:10px; position:relative; z-index:3;
+  /* 10x12 was far too small to hit with a finger. The padding makes a much
+     bigger tap area; matching negative margins keep the arrow where it was.
+     It grows mostly leftwards, since the stack clips anything past its right edge. */
+  padding:11px 4px 11px 20px; margin:-11px -2px -11px -18px;
+  -webkit-tap-highlight-color:transparent}
+.rpg-sao-divlabel{cursor:pointer; -webkit-tap-highlight-color:transparent;
+  padding:6px 8px 6px 0; margin:-6px -8px -6px 0}
+/* touch screens get bigger still */
+@media (pointer:coarse){
+  .rpg-sao-caret{padding:14px 6px 14px 30px; margin:-14px -4px -14px -28px; font-size:12px}
+  .rpg-sao-divlabel{padding:10px 12px 10px 0; margin:-10px -12px -10px 0}
+}
 
 .rpg-sao-foes{margin-top:2px}
 .rpg-sao-foes .rpg-sao-div{color:#f0b6ab}
@@ -6973,6 +7041,7 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
   font:inherit; font-size:12px; padding:3px 5px; color:var(--rpg-sao-ink);
   background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
 .rpg-sao-tilecolor b{display:flex; align-items:center; gap:6px}
+.rpg-sao-move b{display:flex; gap:5px; flex-wrap:wrap; justify-content:flex-end}
 .rpg-sao-livebond b{display:flex; align-items:center; gap:4px}
 .rpg-sao-livebond i{font-style:normal; font-weight:400; font-size:10px; color:var(--rpg-sao-ink-dim)}
 .rpg-sao-livebond input{width:44px; text-align:right; font:inherit; font-size:12px; padding:2px 5px;
