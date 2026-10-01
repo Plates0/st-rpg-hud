@@ -348,7 +348,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.17";
+const HUD_BUILD = "2026-09-26.18";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -6700,11 +6700,17 @@ const SAO_CSS = `<style id="rpg-sao-style">
 
 /* The whole left stack scrolls rather than running off the bottom of the
    screen. The reserved strip matches the clock's, so it clears the chat box. */
+/* The collapse arrows' enlarged tap areas reach a little below their row.
+   On the bottom row (all groups collapsed) that overhang made the whole stack
+   scrollable, and a scrollable stack catches touches, so tap-through stopped
+   working too. This room holds the overhang; it's empty and lets taps through. */
+.rpg-sao-vitals{padding-bottom:16px; box-sizing:content-box}
 .rpg-sao-vitals{position:absolute; left:calc(8px + var(--sao-vitals-x, 0px));
   width:min(calc(322px * var(--rpg-sao-ui, 1)), calc(100vw - 130px));
   top:calc(env(safe-area-inset-top, 0px) + 12px + var(--sao-vitals-y, 0px));
+  /* the last 16px is the bottom padding above, so the box ends where it always did */
   max-height:calc(100svh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)
-                  - var(--rpg-sao-clock-lift, 84px) - 24px);
+                  - var(--rpg-sao-clock-lift, 84px) - 24px - 16px);
   overflow-y:auto; overflow-x:hidden; padding-right:4px;
   scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.28) transparent}
 .rpg-sao-vitals::-webkit-scrollbar{width:5px}
