@@ -189,6 +189,78 @@ function escTextarea(s) {
     .replace(/>/g, "&gt;");
 }
 
+// "400 (350+50)" -> { val: "400", math: "350+50" }, the same split
+// renderInlineValue makes for the Status panel's dropdowns
+function splitMathValue(raw) {
+  if (typeof raw === "string" && raw.includes("(")) {
+    const parts = raw.match(/^(.+?)\s*\((.*)\)$/);
+    if (parts) return { val: parts[1].trim(), math: parts[2].trim() };
+  }
+  return { val: raw, math: null };
+}
+
+// A number beside a bar. Plain values print as they are. One with a breakdown
+// shows just its value plus the same small arrow the Status panel uses, and
+// is the one thing in that row you can tap: it pops the breakdown up. (A real
+// dropdown can't open there: the bar stack clips anything that spills out.)
+function barNum(raw) {
+  const { val, math } = splitMathValue(raw);
+  if (!math) return escHtml(val);
+  return `<span class="rpg-mathnum" data-val="${escAttr(val)}" data-math="${escAttr(math)}"` +
+    ` title="${escAttr(val)} = ${escAttr(math)}">${escHtml(val)}<i>\u25BE</i></span>`;
+}
+
+// The number a bar should use: the value in front of any "(breakdown)".
+// Stripping every non-digit instead turned "400 (350+50)" into 40035050,
+// which drew every bar with an equation in its max as empty.
+function barValue(raw) {
+  const { val } = splitMathValue(typeof raw === "string" ? raw : String(raw ?? ""));
+  return parseFloat(String(val ?? "").replace(/[^\d.\-]/g, ""));
+}
+
+function barPair(curr, max) {
+  if (curr === undefined || curr === null || curr === "") return "\u2013";
+  return `${barNum(curr)}/${barNum(max)}`;
+}
+
+let mathPopEl = null, mathPopTimer = null;
+(() => {
+  const st = document.createElement("style");
+  st.textContent = `.rpg-mathpop{position:fixed; z-index:2147483000; max-width:240px; padding:6px 9px;
+    font:12px/1.35 system-ui, sans-serif; color:#e6e3da; background:rgba(12,14,18,.92);
+    border:1px solid rgba(255,255,255,.18); border-radius:5px; box-shadow:0 4px 14px rgba(0,0,0,.45);
+    pointer-events:auto; white-space:normal}
+  .rpg-mathpop b{color:#fff}`;
+  document.head.appendChild(st);
+})();
+function hideMathPop() {
+  if (mathPopEl) { mathPopEl.remove(); mathPopEl = null; }
+  clearTimeout(mathPopTimer);
+}
+function showMathPop(anchor) {
+  const again = mathPopEl && mathPopEl.dataset.for === anchor.dataset.math + anchor.dataset.val;
+  hideMathPop();
+  if (again) return;                                   // a second tap closes it
+  const pop = document.createElement("div");
+  pop.className = "rpg-mathpop";
+  pop.dataset.for = anchor.dataset.math + anchor.dataset.val;
+  pop.innerHTML = `<b>${escHtml(anchor.dataset.val)}</b> = ${escHtml(anchor.dataset.math)}`;
+  // On the page itself, not inside the HUD: the HUD redraws often and its bar
+  // stack clips overflow. Fixed, so it sits by the number wherever that is.
+  document.body.appendChild(pop);
+  const q = anchor.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+  const left = Math.max(6, Math.min(q.left + q.width / 2 - w / 2, window.innerWidth - w - 6));
+  const top = q.bottom + 6 + h > window.innerHeight - 6 ? q.top - h - 6 : q.bottom + 6;
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+  mathPopEl = pop;
+  mathPopTimer = setTimeout(hideMathPop, 6000);
+}
+// any tap elsewhere closes it
+document.addEventListener("pointerdown", (e) => {
+  if (mathPopEl && !e.target.closest?.(".rpg-mathnum, .rpg-mathpop")) hideMathPop();
+}, true);
+
 function renderInlineValue(rawValue) {
   let val = rawValue;
   let math = null;
@@ -348,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.18";
+const HUD_BUILD = "2026-09-26.19";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -3792,7 +3864,7 @@ function rpgTurnsOf(chat) {
   return out;
 }
 
-const tNum = (v) => { const n = parseFloat(String(v ?? "").replace(/[^\d.\-]/g, "")); return Number.isFinite(n) ? n : null; };
+const tNum = (v) => { const n = barValue(v); return Number.isFinite(n) ? n : null; };
 const tSigned = (n) => (n > 0 ? `+${n}` : `${n}`);
 const tNameKey = (u) => normBondName(u?.name);
 
@@ -3844,13 +3916,13 @@ function tDiffVitals(out, label, a, b, who) {
   const hp0 = tNum(a?.hp_curr), hp1 = tNum(b?.hp_curr);
   if (hp0 !== null && hp1 !== null && hp0 !== hp1) {
     out.push({ tone: hp1 < hp0 ? "bad" : "good", u: { f: "hp", who },
-      text: `${pre}HP ${hp0} \u2192 ${hp1}${b?.hp_max ? "/" + b.hp_max : ""} (${tSigned(hp1 - hp0)})` });
+      text: `${pre}HP ${hp0} \u2192 ${hp1}${b?.hp_max ? "/" + splitMathValue(String(b.hp_max)).val : ""} (${tSigned(hp1 - hp0)})` });
   }
   const ea = getEnergy(a || {}, false), eb = getEnergy(b || {}, false);
   const e0 = tNum(ea.curr), e1 = tNum(eb.curr);
   if (e0 !== null && e1 !== null && e0 !== e1) {
     out.push({ tone: "neutral", u: { f: "mp", who },
-      text: `${pre}${eb.label || "MP"} ${e0} \u2192 ${e1}${eb.max ? "/" + eb.max : ""} (${tSigned(e1 - e0)})` });
+      text: `${pre}${eb.label || "MP"} ${e0} \u2192 ${e1}${eb.max ? "/" + splitMathValue(String(eb.max)).val : ""} (${tSigned(e1 - e0)})` });
   }
 
   // "Healthy", "None" and the like mean no status, so going from Poisoned to
@@ -4526,8 +4598,8 @@ function saoHpStops(p) {
 }
 
 function saoPct(currRaw, maxRaw) {
-  const a = parseFloat(String(currRaw ?? "").replace(/[^\d.\-]/g, ""));
-  const b = parseFloat(String(maxRaw ?? "").replace(/[^\d.\-]/g, ""));
+  const a = barValue(currRaw);
+  const b = barValue(maxRaw);
   if (!isFinite(a) || !isFinite(b) || b <= 0) return 0;
   return clamp((a / b) * 100, 0, 100);
 }
@@ -5091,7 +5163,7 @@ function blkUnitRow(view, idx, key, opts = {}) {
   const hs = view.isVeh ? SAO_PALETTE.vehicle : saoHpStops(hp);
   const full = opts.name ?? view.name;
   const { name, title } = aloSplitTitle(full);
-  const num = (a, b) => (a === undefined || a === null || a === "") ? "\u2013" : `${escHtml(a)}/${escHtml(b)}`;
+  const num = barPair;
   const initial = (String(name).replace(/^[^\p{L}\p{N}]+/u, "")[0] || "?").toUpperCase();
   return `<div class="rpg-blk-row${big ? " big" : ""}${foe ? " foe" : ""}">
     <div class="rpg-blk-plate"></div>
@@ -5117,7 +5189,7 @@ function aloUnitRow(view, idx, key, foe) {
   const mp = saoPct(view.en?.curr, view.en?.max);
   const hs = saoUnitStops(view);
   const { name, title } = aloSplitTitle(view.name);
-  const num = (a, b) => (a === undefined || a === null || a === "") ? "\u2013" : `${escHtml(a)}/${escHtml(b)}`;
+  const num = barPair;
   return `<div class="rpg-alo-row">
     <div class="rpg-alo-unit rpg-sao-jump${foe ? " foe" : ""}" data-idx="${idx}" title="${escAttr(view.name)}">
       <div class="rpg-alo-label"><span class="rpg-alo-uname">${escHtml(name)}</span>${
@@ -5186,7 +5258,7 @@ function saoSlimRow(name, curr, max, stops, jumpIdx, foe, key) {
     ? `<span class="${cls}">${escHtml(name)}</span>`
     : `<button class="${cls} rpg-sao-jump" data-idx="${jumpIdx}" title="Open ${escAttr(name)}">${escHtml(name)}</button>`;
   return `<div class="rpg-sao-row">${tag}${saoBarHtml("slim", p, stops[0], stops[1], key)}
-    <span class="rpg-sao-num">${escHtml(curr)}/${escHtml(max)}</span></div>`;
+    <span class="rpg-sao-num">${barPair(curr, max)}</span></div>`;
 }
 
 // A unit in an active vehicle is displayed as the vehicle, the way the
@@ -5227,7 +5299,7 @@ function saoMeterRows(view, owner) {
     const c = saoMeterColor(m.name);
     return `<div class="rpg-sao-row sub"><span class="rpg-sao-tag">${escHtml(m.name)}</span>`
       + saoBarHtml("slim", saoPct(m.curr, m.max), c[0], c[1], `${owner || "?"}/m:${normBondName(m.name)}`)
-      + `<span class="rpg-sao-num">${escHtml(m.curr)}/${escHtml(m.max)}</span></div>`;
+      + `<span class="rpg-sao-num">${barPair(m.curr, m.max)}</span></div>`;
   }).join("");
 }
 
@@ -6223,8 +6295,8 @@ function renderSaoSkin() {
     // --- vitals ---
     let vitals = "";
     if (showBars) {
-      const hpText = demo ? "720/1000" : `${escHtml(pView.hp_curr)}/${escHtml(pView.hp_max)}`;
-      const mpText = demo ? "240/500" : `${escHtml(en.curr)}/${escHtml(en.max)}`;
+      const hpText = demo ? "720/1000" : barPair(pView.hp_curr, pView.hp_max);
+      const mpText = demo ? "240/500" : barPair(en.curr, en.max);
       const shownName = escHtml(demo ? "Name" : pName);
 
       if (uiSettings.saoBarStyle === "blk") {
@@ -6426,6 +6498,7 @@ function saoBind() {
     renderRPG();
   };
 
+  on(".rpg-mathnum", (el) => showMathPop(el));
   on(".rpg-sao-moveto", (el) => moveActiveCharacter(el.dataset.to));
 
   on(".rpg-sao-caret, .rpg-sao-divlabel", (el) => {
@@ -6772,7 +6845,7 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-alo-barline{display:flex; align-items:center; gap:calc(6px * var(--rpg-sao-ui, 1))}
 .rpg-alo-unitnums{display:flex; flex-direction:column; justify-content:center;
   height:calc(18px * var(--rpg-sao-ui, 1)); font-size:calc(9px * var(--rpg-sao-ui, 1)); line-height:1.15; color:#c8c4ba; white-space:nowrap}
-.rpg-alo-unitnums span:first-child{color:#dcd8cf; font-weight:600}
+.rpg-alo-unitnums > span:first-child{color:#dcd8cf; font-weight:600}
 
 
 /* ---- ALfheim (New) ---- */
@@ -6837,7 +6910,7 @@ const SAO_CSS = `<style id="rpg-sao-style">
   align-self:center; height:calc(var(--bb) * 2); padding-left:calc(6px * var(--rpg-sao-ui, 1));
   font-size:calc(9px * var(--rpg-sao-ui, 1)); line-height:1; color:#c8c4ba; white-space:nowrap;
   text-shadow:0 1px 2px rgba(0,0,0,.7)}
-.rpg-blk-nums span:first-child{color:#e2ded5; font-weight:600}
+.rpg-blk-nums > span:first-child{color:#e2ded5; font-weight:600}
 .rpg-blk-row.big .rpg-blk-nums{font-size:calc(10px * var(--rpg-sao-ui, 1))}
 
 /* ---- tap through the bars ----
@@ -6850,6 +6923,7 @@ const SAO_CSS = `<style id="rpg-sao-style">
 #rpg-hud-container .rpg-sao-vitals button.rpg-sao-tag,
 #rpg-hud-container .rpg-sao-vitals .rpg-sao-caret,
 #rpg-hud-container .rpg-sao-vitals .rpg-sao-divlabel,
+#rpg-hud-container .rpg-sao-vitals .rpg-mathnum,
 #rpg-hud-container .rpg-sao-vitals .rpg-alo-label,
 #rpg-hud-container .rpg-sao-vitals .rpg-alo-uname,
 #rpg-hud-container .rpg-sao-vitals .rpg-blk-name{pointer-events:auto}
@@ -7115,6 +7189,8 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
   font:inherit; font-size:12px; padding:3px 5px; color:var(--rpg-sao-ink);
   background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
 .rpg-sao-tilecolor b{display:flex; align-items:center; gap:6px}
+.rpg-mathnum{cursor:pointer; -webkit-tap-highlight-color:transparent}
+.rpg-mathnum i{font-style:normal; font-size:.72em; opacity:.7; margin-left:1px}
 .rpg-sao-move b{display:flex; gap:5px; flex-wrap:wrap; justify-content:flex-end}
 .rpg-sao-livebond b{display:flex; align-items:center; gap:4px}
 .rpg-sao-livebond i{font-style:normal; font-weight:400; font-size:10px; color:var(--rpg-sao-ink-dim)}
