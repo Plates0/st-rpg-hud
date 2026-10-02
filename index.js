@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.19";
+const HUD_BUILD = "2026-09-26.21";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -437,6 +437,7 @@ const defaultUiSettings = {
   meterColors: {},        // meter name (lowercase) -> "#rrggbb", overrides the auto colour
   tileColors: {},         // ALfheim (New) tile colours you've picked: "@player" or a name key -> "#rrggbb"
   oocEditNotes: true,     // Edit state -> Save leaves an (OOC: ...) note in the block listing what you changed
+  restoreLostDesc: false, // put back a description the AI dropped entirely (keeps its other changes)
   saoUiScale: 100,        // % size of the bar cluster; a desktop usually wants ~130
   saoTextShadow: false,   // shadow behind the text that sits straight on the chat
   saoTextBacking: false,  // translucent card behind that text instead        // "classic" | "sao"
@@ -545,7 +546,9 @@ function listToMap(list) {
   const m = new Map();
   (Array.isArray(list) ? list : []).forEach((i) => {
     const text = String(typeof i === "object" ? (i?.name ?? "") : (i ?? "")).trim();
-    const key = entryBaseName(text).toLowerCase();
+    // keyed by the part before any description, so rewording "Lucky Coin, a
+    // bent copper piece" reads as a change, not a removal plus an addition
+    const key = entryBaseName(descSplit(text).head).toLowerCase();
     if (!key || m.has(key)) return;
     m.set(key, text);
   });
@@ -683,6 +686,152 @@ let alertKey = null;
 let alertSig = "";
 let alertIdx = -1;
 
+// ---- restoring descriptions the AI dropped entirely ----
+// An entry is "Name (Cost) Effect, description [Status]". When a new reply
+// keeps an item but its entry has no description left at all, the old
+// description is put back onto the NEW head, so real changes (+10 -> +15 ATK,
+// a new cost) stay. A description that's only trimmed or reworded is left to
+// the alert. Masteries aren't touched: their text is a progress counter.
+// Split "Name (Cost) Effect, description" at the first separator that isn't
+// inside brackets: a comma, full stop, semicolon or dash followed by a space.
+function descSplit(text) {
+  const core = stripStatusTags(text).replace(/\s+([,.;])/g, "$1");
+  let depth = 0;
+  for (let i = 0; i < core.length; i++) {
+    const c = core[i];
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if ((c === ")" || c === "]" || c === "}") && depth > 0) depth--;
+    else if (depth === 0) {
+      if ((c === "," || c === "." || c === ";") && core[i + 1] === " ") return { head: core.slice(0, i).trim(), tail: core.slice(i) };
+      if ((c === "\u2014" || c === "\u2013" || c === "-") && core[i - 1] === " " && core[i + 1] === " ") return { head: core.slice(0, i).trim(), tail: core.slice(i - 1) };
+    }
+  }
+  return { head: core.trim(), tail: "" };
+}
+
+// Only when the new entry has no description at all and the old one did:
+// the new head (name, cost, effect, tags) is kept, the old description added.
+function restoredEntry(oldText, newText) {
+  const o = descSplit(oldText), n = descSplit(newText);
+  if (n.tail) return null;                                      // still has a description of its own
+  if (o.tail.replace(/^[\s,.;\u2013\u2014-]+/, "").length < 8) return null;  // nothing worth restoring
+  const tags = (String(newText).match(/\[[^\]]*\]/g) || []).join(" ");
+  const head = n.head.replace(/[\s.,;:]+$/, "");
+  return head + o.tail + (tags ? " " + tags : "");
+}
+
+// Everyone whose items, skills and passives are watched: the player first,
+// then party, NPCs and enemies, each with an id that's stable between turns.
+function listOwners(state) {
+  const out = [{ id: "@player", name: "", who: null, ent: state }];
+  ["party", "npcs", "enemies"].forEach((group) => (state?.[group] || []).forEach((u) => {
+    const key = normBondName(u?.name);
+    if (key) out.push({ id: `${group}:${key}`, name: displayName(u.name, "?"), who: { group, key }, ent: u });
+  }));
+  return out;
+}
+
+function findDescriptionRestores(prev, next) {
+  const out = [];
+  const prevOwners = new Map(listOwners(prev).map((o) => [o.id, o]));
+  listOwners(next).forEach((owner) => {
+    const was = prevOwners.get(owner.id);
+    if (!was) return;                                   // new to the scene: nothing to compare
+    WATCHED_LISTS.filter((w) => w.key !== "masteries").forEach(({ key, label }) => {
+      const before = new Map();
+      (was.ent?.[key] || []).forEach((x) => { const t = String(x).trim(); if (t) before.set(tItemKey(t), t); });
+      (owner.ent?.[key] || []).forEach((x) => {
+        const t = String(x).trim();
+        const old = before.get(tItemKey(t));
+        if (!old || old === t) return;
+        const fixed = restoredEntry(old, t);
+        if (fixed && fixed !== t) out.push({ key, label, from: t, to: fixed, who: owner.who, owner: owner.name });
+      });
+    });
+  });
+  return out;
+}
+
+// Replace exactly those entries, each only on its own character's lines,
+// leaving every other byte the AI wrote as it was. Lines are walked in order,
+// tracking the section ([Player], [Party], [NPCs], [Enemies]) and the current
+// |Name:|, so two characters carrying the same item can't be mixed up.
+// Vehicle lines (">") are skipped.
+function applyDescriptionRestores(mes, fixes) {
+  const blockMatch = String(mes).match(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i);
+  if (!blockMatch) return { mes, done: [] };
+  const block = blockMatch[0];
+  const lines = block.split("\n");
+  const owners = [];                      // per line: "@player", "party:kira", ... or null
+  let section = null, unit = null;
+  lines.forEach((ln) => {
+    const h = ln.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (h) {
+      const t = h[1].toLowerCase();
+      section = /player/.test(t) ? "player" : /party/.test(t) ? "party" : /npc/.test(t) ? "npcs" : /enem/.test(t) ? "enemies" : null;
+      unit = null; owners.push(null); return;
+    }
+    const nm = ln.match(/\|\s*Name\s*:\s*([^|]*)\|/i);
+    if (nm && section && section !== "player") unit = normBondName(nm[1]);
+    if (ln.trim().startsWith(">")) { owners.push(null); return; }
+    owners.push(section === "player" ? "@player" : section && unit ? `${section}:${unit}` : null);
+  });
+
+  const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const done = [];
+  fixes.forEach((f) => {
+    const id = f.who ? `${f.who.group}:${f.who.key}` : "@player";
+    const re = new RegExp(`([:;][ \\t]*)${esc(f.from)}([ \\t]*)(?=[;|])`);
+    for (let i = 0; i < lines.length; i++) {
+      if (owners[i] !== id || !re.test(lines[i])) continue;
+      lines[i] = lines[i].replace(re, (m, a, b) => a + f.to + b);
+      done.push(f);
+      break;
+    }
+  });
+  if (!done.length) return { mes, done };
+  return { mes: String(mes).replace(block, lines.join("\n")), done };
+}
+
+// The block can be complete while text after it is still streaming in, so
+// wait until the message has stopped changing. If the block itself changed
+// in the meantime (a swipe, a regenerate), drop it: the new version gets its
+// own check.
+let restoreTimer = null;
+function scheduleDescriptionRestore(idx, inner, fixes, waited = 0) {
+  clearTimeout(restoreTimer);
+  let ctx;
+  try { ctx = SillyTavern.getContext(); } catch { return; }
+  const snapshot = ctx?.chat?.[idx]?.mes;
+  restoreTimer = setTimeout(() => {
+    const msg = ctx?.chat?.[idx];
+    if (!msg || rpgInnerFromMessage(msg.mes) !== inner) return;
+    if (msg.mes !== snapshot) {
+      if (waited < 120000) scheduleDescriptionRestore(idx, inner, fixes, waited + 1500);
+      return;
+    }
+    const before = msg.mes;
+    const { mes, done } = applyDescriptionRestores(before, fixes);
+    if (!done.length) return;
+    setMessageText(msg, mes);
+    afterTurnEdit(ctx, idx);
+    if (window.toastr) {
+      const names = done.map((f) => `${f.owner ? escHtml(f.owner) + " \u00B7 " : ""}${escHtml(f.label)}: <b>${escHtml(tItemName(f.to))}</b>`).join("<br>");
+      window.toastr.info(`${names}<br><span style="opacity:.75">Tap to undo.</span>`,
+        `\u{1F4DD} Restored ${done.length === 1 ? "a lost description" : done.length + " lost descriptions"}`, {
+          escapeHtml: false,
+          onclick: () => {
+            const m = SillyTavern.getContext()?.chat?.[idx];
+            if (!m || m.mes !== mes) return;                 // changed since: leave it
+            setMessageText(m, before);
+            afterTurnEdit(SillyTavern.getContext(), idx);
+            if (window.toastr) window.toastr.info("Restore undone: the AI's version is back.");
+          },
+        });
+    }
+  }, 1500);
+}
+
 function maybeReportListChanges() {
   let ctx = null;
   try { ctx = SillyTavern.getContext(); } catch {}
@@ -699,7 +848,8 @@ function maybeReportListChanges() {
   if (sig === alertSig) return;                                                     // same message
   const wentBack = idx < alertIdx;                                                  // a deletion
   alertSig = sig; alertIdx = idx;
-  if (wentBack || !uiSettings.changeAlerts) return;
+  if (wentBack) return;
+  if (!uiSettings.changeAlerts && !uiSettings.restoreLostDesc) return;
 
   let prevInner = null;
   for (let i = idx - 1; i >= 0 && !prevInner; i--) {
@@ -711,7 +861,25 @@ function maybeReportListChanges() {
   const a = coreStateOf(prevInner), b = coreStateOf(inner);
   if (!a || !b) return;
 
-  const diffs = diffLists(snapshotLists(a), snapshotLists(b));
+  let restoring = [];
+  if (uiSettings.restoreLostDesc) {
+    restoring = findDescriptionRestores(a, b);
+    if (restoring.length) scheduleDescriptionRestore(idx, inner, restoring);
+  }
+  if (!uiSettings.changeAlerts) return;
+
+  // every character, not just the player; each change carries whose it is
+  const prevOwners = new Map(listOwners(a).map((o) => [o.id, o]));
+  const diffs = [];
+  listOwners(b).forEach((owner) => {
+    const was = prevOwners.get(owner.id);
+    if (!was) return;
+    diffLists(snapshotLists(was.ent), snapshotLists(owner.ent)).forEach((d) => {
+      // anything about to be restored isn't worth an alert
+      if (restoring.some((f) => f.from === d.name && (f.who ? `${f.who.group}:${f.who.key}` : "@player") === owner.id)) return;
+      diffs.push({ ...d, kind: d.label, label: owner.name ? `${owner.name} \u00B7 ${d.label}` : d.label });
+    });
+  });
   if (!diffs.length) return;
   console.log("RPG HUD: list changes", diffs);
 
@@ -724,7 +892,7 @@ function maybeReportListChanges() {
   const progressless = (t) => String(t ?? "").replace(/:\s*-?\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?/g, "").trim();
   const hits = diffs
     .filter((d) => (d.type === "lost" || d.type === "changed") && d.before)
-    .filter((d) => d.label !== "Mastery")
+    .filter((d) => d.kind !== "Mastery")
     .filter((d) => progressless(d.before) !== progressless(d.name))
     .filter((d) => (wordDiff(d.before, d.name) || [{ op: "-" }]).some((o) => o.op === "-"))
     .map((d) => ({ ...d, serious: isMeaningfulLoss(d.before, d.name) }))
@@ -3399,6 +3567,10 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
    			 <input type="checkbox" id="rpg-settings-autoinject" ${autoInjectState ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
 		  </div>
 		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="When the AI drops an item, skill or passive's description entirely, put it back (keeping its other changes)">Restore Lost Descriptions</span>
+   			 <input type="checkbox" id="rpg-settings-restoredesc" ${uiSettings.restoreLostDesc ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
+		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
     			<span title="Edit -> Save leaves an (OOC: ...) note in the block telling the AI what you changed by hand">Note Edits for AI</span>
    			 <input type="checkbox" id="rpg-settings-oocnotes" ${uiSettings.oocEditNotes !== false ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
 		  </div>
@@ -3730,6 +3902,11 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	
 	  bind("rpg-settings-reset", resetRPG);
 	  bind("rpg-settings-remove", removeActiveCharacter);
+	  const rdEl = document.getElementById("rpg-settings-restoredesc");
+	  if (rdEl) {
+	    rdEl.onclick = (e) => e.stopPropagation();
+	    rdEl.onchange = () => { uiSettings.restoreLostDesc = rdEl.checked; saveUiSettings(); };
+	  }
 	  const oocEl = document.getElementById("rpg-settings-oocnotes");
 	  if (oocEl) {
 	    oocEl.onclick = (e) => e.stopPropagation();
@@ -3879,7 +4056,8 @@ function tItemName(text) {
 }
 
 function tItemKey(text) {
-  return entryBaseName(text)
+  // the name, in front of any ", description" (commas inside brackets don't count)
+  return entryBaseName(descSplit(text).head)
     .replace(/:\s*-?\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?.*$/, "")   // "Sword: 45/100"
     .replace(/\s[+\-\u2212]\s?\d.*$/, "")                              // "Sword +10 ATK"
     .trim().toLowerCase();
@@ -3948,17 +4126,20 @@ function tDiffVitals(out, label, a, b, who) {
   ma.forEach((m, key) => { if (!mbKeys.has(key)) out.push({ tone: "neutral", text: `${pre}\u2212 ${m.name}`, u: { f: "meter", who, key } }); });
 }
 
-function tDiffLists(out, a, b) {
+// One character's items, skills, passives and masteries. `owner` is shown in
+// front for anyone but the player, and `who` says whose list an undo touches.
+function tDiffLists(out, a, b, owner = "", who = null) {
   WATCHED_LISTS.forEach(({ key, label }) => {
+    const tag = owner ? `${owner} \u00B7 ${label}` : label;
     const A = tListMap(a?.[key]), B = tListMap(b?.[key]);
     B.forEach((text, k) => {
-      if (!A.has(k)) { out.push({ tone: "good", text: `+ ${label}: ${text}`, u: { f: "list", key, k } }); return; }
+      if (!A.has(k)) { out.push({ tone: "good", text: `+ ${tag}: ${text}`, u: { f: "list", key, k, who } }); return; }
       const before = A.get(k);
       if (before === text || stripStatusTags(before) === stripStatusTags(text)) return;
-      out.push({ tone: "neutral", text: `~ ${label}: ${stripStatusTags(before)} \u2192 ${stripStatusTags(text)}`, u: { f: "list", key, k },
-        diff: { label, name: tItemName(text), before: stripStatusTags(before), after: stripStatusTags(text) } });
+      out.push({ tone: "neutral", text: `~ ${tag}: ${stripStatusTags(before)} \u2192 ${stripStatusTags(text)}`, u: { f: "list", key, k, who },
+        diff: { label: tag, name: tItemName(text), before: stripStatusTags(before), after: stripStatusTags(text) } });
     });
-    A.forEach((text, k) => { if (!B.has(k)) out.push({ tone: "bad", text: `\u2212 ${label}: ${text}`, u: { f: "list", key, k } }); });
+    A.forEach((text, k) => { if (!B.has(k)) out.push({ tone: "bad", text: `\u2212 ${tag}: ${text}`, u: { f: "list", key, k, who } }); });
   });
 }
 
@@ -4001,6 +4182,7 @@ function diffTurn(a, b) {
         return;
       }
       tDiffVitals(out, name, A.get(key), u, { group, key });
+      tDiffLists(out, A.get(key), u, name, { group, key });
     });
     A.forEach((u, key) => {
       if (!B.has(key)) out.push({ tone: group === "enemies" ? "good" : "neutral",
@@ -4077,8 +4259,10 @@ function applyTurnUndo(b, a, u) {
       break;
     }
     case "list": {
-      const list = Array.isArray(b[u.key]) ? b[u.key] : (b[u.key] = []);
-      putBack(list, (x) => tItemKey(tItemText(x)) === u.k, (a[u.key] || []).find((x) => tItemKey(tItemText(x)) === u.k));
+      // the player's list, or the character's named by who
+      if (!tb) break;
+      const list = Array.isArray(tb[u.key]) ? tb[u.key] : (tb[u.key] = []);
+      putBack(list, (x) => tItemKey(tItemText(x)) === u.k, (ta?.[u.key] || []).find((x) => tItemKey(tItemText(x)) === u.k));
       break;
     }
     case "unit": {
@@ -6107,6 +6291,8 @@ function saoHelpPanel() {
           "Drag the bars, the orb column and the clock wherever you like. Buttons stop responding while you're arranging, so a tap can't fire by accident. Reset puts them back.")
       + item("Turn log",
           "In the Quests orb, the Log tab lists what changed each turn \u2014 HP, items, bonds, where you went, how much time passed. It's worked out from your chat history rather than stored, so it follows swipes and edits and covers old chats too. Tap a turn to jump to its message. Undo last turn reverts everything the newest turn changed; the \u21B6 beside a single change in the newest turn reverts just that one. Redo puts either back.")
+      + item("Restore lost descriptions",
+          "Works for everyone: you, party members, NPCs and enemies. When a reply keeps an item, skill or passive but drops its description entirely, the old description is put back onto the new entry, so other changes (+10 to +15 ATK, a new cost) stay. A description that was only trimmed or reworded is left alone. A toast says what was restored; tap it to undo. Masteries are never touched.")
       + item("Note edits for AI",
           "When on, saving from Edit state adds one (OOC: ...) line to the block listing exactly what you changed, and asks the AI to treat it as canon without replying to it. Several edits before the AI answers are merged into one note. Other HUD edits keep the note in place. Edits made directly in the panels don't add one.")
       + item("Charges",
@@ -6166,6 +6352,7 @@ function saoSettingsHtml() {
     + toggle("rpg-sao-sw-alerts", "Change alerts", !!uiSettings.changeAlerts)
     + toggle("rpg-sao-sw-inject", "Auto-inject", !!autoInjectState)
     + toggle("rpg-sao-sw-ooc", "Note edits for AI", uiSettings.oocEditNotes !== false)
+    + toggle("rpg-sao-sw-restore", "Restore lost descriptions", !!uiSettings.restoreLostDesc)
     + toggle("rpg-sao-sw-bars", "Keep bars when minimised", !!uiSettings.barsOnMin)
     + toggle("rpg-sao-sw-shadow", "Text shadow", !!uiSettings.saoTextShadow)
     + toggle("rpg-sao-sw-backing", "Text backing", !!uiSettings.saoTextBacking)
@@ -6654,6 +6841,11 @@ function saoBind() {
   bind("rpg-sao-insert", insertLastStateIntoNarrative);
   bind("rpg-sao-remind", remindStateInLastMessage);
   bind("rpg-sao-sw-alerts", () => { uiSettings.changeAlerts = !uiSettings.changeAlerts; saveUiSettings(); renderRPG(); });
+  bind("rpg-sao-sw-restore", () => {
+    uiSettings.restoreLostDesc = !uiSettings.restoreLostDesc;
+    saveUiSettings();
+    renderRPG();
+  });
   bind("rpg-sao-sw-ooc", () => {
     uiSettings.oocEditNotes = uiSettings.oocEditNotes === false;
     saveUiSettings();
