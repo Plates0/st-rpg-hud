@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.21";
+const HUD_BUILD = "2026-09-26.22";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -428,7 +428,8 @@ const defaultUiSettings = {
   autoAddBonds: true,     // add party/NPC |Bond:| values to the ledger automatically
   saoPanelLight: 92,      // panel lightness %, lower = dimmer but still solid
   saoCardAlpha: 11,       // % wash behind the player's HP/MP bars; higher = lighter
-  saoFont: "preset",      // "preset" | "sans" | "squarish"
+  saoFont: "preset",      // "preset" | "sans" | "squarish" | "saira" | "teko" | "exo" | "custom"
+  saoCustomFont: "",      // with "custom": any Google Fonts family name
   saoBarStyle: "sao",     // "sao" stepped bars | "alo" arrow-ended ALfheim bars
   saoInk: 70,             // text contrast against the panel, 0 = faint, 100 = maximum
   saoAnimate: true,       // bar tweening, orb unfold, panel and clock fades
@@ -4383,18 +4384,56 @@ const SAO_FONTS = {
   // far less antialiasing than a humanist sans, so they render cleaner small.
   squarish: "'Rajdhani','Bahnschrift','DIN Alternate','Avenir Next Condensed'," +
             "'Futura','Century Gothic','Segoe UI',sans-serif",
+  // narrow and squared, closest to the ALfheim (New) names
+  saira: "'Saira Condensed','Rajdhani','Bahnschrift','DIN Alternate','Avenir Next Condensed','Segoe UI',sans-serif",
+  // narrower and more stylised still
+  teko: "'Teko','Saira Condensed','Rajdhani','Bahnschrift','Avenir Next Condensed','Segoe UI',sans-serif",
+  // clean and slightly futuristic, suits Aincrad
+  exo: "'Exo 2','Rajdhani','Segoe UI',system-ui,sans-serif",
 };
+
+// What each web font needs fetched. Weights listed only where the family is
+// known to have them: Google refuses the whole request if one is missing.
+const SAO_WEBFONTS = {
+  squarish: "Rajdhani:wght@500;600;700",
+  saira: "Saira+Condensed:wght@500;600;700",
+  teko: "Teko:wght@400;500;600",
+  exo: "Exo+2:wght@500;600;700",
+};
+
+// Custom: any Google Fonts family you type. Letters, digits and spaces only,
+// since it goes into both a URL and a CSS font-family.
+function saoCustomFontName() {
+  return String(uiSettings.saoCustomFont || "").replace(/[^A-Za-z0-9 ]/g, "").replace(/\s+/g, " ").trim().slice(0, 40);
+}
+
+function saoFontStack() {
+  if (uiSettings.saoFont === "custom") {
+    const n = saoCustomFontName();
+    return n ? `'${n}',${SAO_FONTS.squarish}` : SAO_FONTS.squarish;
+  }
+  return SAO_FONTS[uiSettings.saoFont] || uiSettings.fontFamily || SAO_FONTS.sans;
+}
 
 // Rajdhani isn't installed anywhere by default, so fetch it once when asked.
 // If there's no network the stack above falls through to a local face.
 function saoEnsureWebFont() {
-  if (uiSettings.saoFont !== "squarish") return;
-  if (document.getElementById("rpg-sao-webfont")) return;
-  const link = document.createElement("link");
-  link.id = "rpg-sao-webfont";
-  link.rel = "stylesheet";
-  link.href = "https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap";
-  document.head.appendChild(link);
+  let family = SAO_WEBFONTS[uiSettings.saoFont];
+  if (uiSettings.saoFont === "custom") {
+    const n = saoCustomFontName();
+    family = n ? n.replace(/ /g, "+") : null;    // regular weight only: every family has it
+  }
+  if (!family) return;
+  const href = `https://fonts.googleapis.com/css2?family=${family}&display=swap`;
+  let link = document.getElementById("rpg-sao-webfont");
+  if (link && link.getAttribute("href") === href) return;
+  if (!link) {
+    link = document.createElement("link");
+    link.id = "rpg-sao-webfont";
+    link.rel = "stylesheet";
+    document.head.appendChild(link);
+  }
+  link.href = href;
 }
 
 function saoPanelVars() {
@@ -6383,10 +6422,19 @@ function saoSettingsHtml() {
         </select></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Font</span>
         <select id="rpg-sao-font">
-          <option value="preset"${!SAO_FONTS[uiSettings.saoFont] ? " selected" : ""}>Follow preset</option>
+          <option value="preset"${!SAO_FONTS[uiSettings.saoFont] && uiSettings.saoFont !== "custom" ? " selected" : ""}>Follow preset</option>
           <option value="sans"${uiSettings.saoFont === "sans" ? " selected" : ""}>Sans</option>
-          <option value="squarish"${uiSettings.saoFont === "squarish" ? " selected" : ""}>Squarish</option>
+          <option value="squarish"${uiSettings.saoFont === "squarish" ? " selected" : ""}>Squarish (Rajdhani)</option>
+          <option value="saira"${uiSettings.saoFont === "saira" ? " selected" : ""}>Saira Condensed</option>
+          <option value="teko"${uiSettings.saoFont === "teko" ? " selected" : ""}>Teko</option>
+          <option value="exo"${uiSettings.saoFont === "exo" ? " selected" : ""}>Exo 2</option>
+          <option value="custom"${uiSettings.saoFont === "custom" ? " selected" : ""}>Custom\u2026</option>
         </select></div>`
+    + (uiSettings.saoFont === "custom"
+      ? `<div class="rpg-sao-mrow toggle rpg-sao-customfont"><input id="rpg-sao-customfont" type="text"
+           value="${escAttr(saoCustomFontName())}" placeholder="Any Google Font, e.g. Orbitron"
+           spellcheck="false" autocomplete="off"></div>`
+      : "")
     + `<div class="rpg-sao-mrow toggle"><span>Skin</span>
         <select id="rpg-sao-skin">
           <option value="classic">Classic</option>
@@ -6451,7 +6499,7 @@ function renderSaoSkin() {
     (uiSettings.saoTextShadow ? "rpg-sao-sh " : "") +
     (uiSettings.saoTextBacking ? "rpg-sao-bk" : "") + anim;
   container.style.cssText += `
-    font-family:${SAO_FONTS[uiSettings.saoFont] || uiSettings.fontFamily || SAO_FONTS.sans};
+    font-family:${saoFontStack()};
     font-size:${0.9 * (uiSettings.fontScale || 1)}em;`;
   container.onclick = null;
 
@@ -6936,6 +6984,20 @@ function saoBind() {
     fontSel.onclick = (e) => e.stopPropagation();
   }
 
+  // custom font: applied on Enter or when the box loses focus
+  const customFont = document.getElementById("rpg-sao-customfont");
+  if (customFont) {
+    const apply = () => {
+      if (customFont.value === saoCustomFontName()) return;
+      uiSettings.saoCustomFont = customFont.value;
+      saveUiSettings();
+      renderRPG();
+    };
+    customFont.onclick = (e) => e.stopPropagation();
+    customFont.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); apply(); } };
+    customFont.onblur = apply;
+  }
+
   const skinSel = document.getElementById("rpg-sao-skin");
   if (skinSel) {
     skinSel.onchange = () => setSkin(skinSel.value);
@@ -7384,6 +7446,8 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-mathnum{cursor:pointer; -webkit-tap-highlight-color:transparent}
 .rpg-mathnum i{font-style:normal; font-size:.72em; opacity:.7; margin-left:1px}
 .rpg-sao-move b{display:flex; gap:5px; flex-wrap:wrap; justify-content:flex-end}
+.rpg-sao-customfont input{width:100%; box-sizing:border-box; font:inherit; font-size:12px; padding:4px 6px;
+  color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
 .rpg-sao-livebond b{display:flex; align-items:center; gap:4px}
 .rpg-sao-livebond i{font-style:normal; font-weight:400; font-size:10px; color:var(--rpg-sao-ink-dim)}
 .rpg-sao-livebond input{width:44px; text-align:right; font:inherit; font-size:12px; padding:2px 5px;
