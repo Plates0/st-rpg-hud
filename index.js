@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.22";
+const HUD_BUILD = "2026-09-26.23";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -1197,6 +1197,12 @@ function renderIndicatorDotHtml(status, title) {
 // Closing or switching a chat changes what "latest message" means, so the
 // first reading in any chat is a baseline, never an alert. A missing block is
 // only worth announcing when a new message just arrived in this same chat.
+// set when SillyTavern reports a freshly generated reply (MESSAGE_RECEIVED)
+let replyReceivedAt = 0;
+function replyEventsSupported() {
+  try { return !!event_types?.MESSAGE_RECEIVED; } catch { return false; }
+}
+
 let lastIndicatorKey = null;
 let lastIndicatorLen = 0;
 // A streaming reply has no block until the end, so "missing" is only real once
@@ -1250,8 +1256,16 @@ function updateLatestStatusAndToast(chat) {
     // only something that just happened: a new reply, or a block that was
     // there a moment ago going missing (a swipe or regenerate without one).
     // Simply opening a chat whose last message lacks a block is neither.
-    const fresh = grew || (changed && prev === "valid");
+    // Only a reply the AI just generated can be "missing" its block. Growth
+    // alone isn't proof: opening or refreshing a chat grows it from nothing,
+    // which fired this toast on every refresh. SillyTavern's MESSAGE_RECEIVED
+    // fires for generated replies (swipes included) and never for messages
+    // loaded from disk. Without that event, fall back to growth.
+    const fresh = replyEventsSupported()
+      ? (replyReceivedAt > 0 && Date.now() - replyReceivedAt < 120000)
+      : (grew || (changed && prev === "valid"));
     if (fresh) {
+      replyReceivedAt = 0;
       notagWatch = { key, idx: len - 1, len: textLen, since: Date.now(), done: false };
     } else if (!notagWatch || notagWatch.key !== key || notagWatch.idx !== len - 1) {
       // nothing being watched
@@ -1264,6 +1278,7 @@ function updateLatestStatusAndToast(chat) {
     }
   } else {
     notagWatch = null;
+    if (latest.status === "valid") replyReceivedAt = 0;   // that reply had its block
   }
   return latest;
 }
@@ -6068,6 +6083,61 @@ function afterTurnEdit(ctx, idx) {
   renderRPG();
 }
 
+// ---- locked changes ----
+// A lock keeps one change of the newest turn through "Undo last turn": the
+// rest of the turn is undone around it. Locks belong to one turn (chat + the
+// message it lives in), so a new reply starts with none, and they're saved
+// per chat so a refresh keeps them. A change is identified by what it
+// touched (its undo note), not its wording.
+const LOCKS_KEY = "rpgHud:turnLocks";
+const lockId = (u) => JSON.stringify(u, Object.keys(u).sort().concat(["group", "key"]));
+
+function lockScope(ctx, idx) { return `${currentChatKey(ctx)}|${idx}`; }
+
+function loadLocks(scope) {
+  try {
+    const all = JSON.parse(localStorage.getItem(LOCKS_KEY) || "{}");
+    return new Set(Array.isArray(all[scope]) ? all[scope] : []);
+  } catch { return new Set(); }
+}
+
+function saveLocks(scope, set) {
+  try {
+    const all = JSON.parse(localStorage.getItem(LOCKS_KEY) || "{}");
+    if (set.size) all[scope] = [...set]; else delete all[scope];
+    const keys = Object.keys(all);                     // keep the store small
+    keys.slice(0, Math.max(0, keys.length - 30)).forEach((k) => delete all[k]);
+    localStorage.setItem(LOCKS_KEY, JSON.stringify(all));
+  } catch {}
+}
+
+function newestTurnLocks(ctx) {
+  const turns = rpgTurnsOf(ctx?.chat);
+  if (turns.length < 2) return { scope: null, set: new Set() };
+  const scope = lockScope(ctx, turns[turns.length - 1].idx);
+  return { scope, set: loadLocks(scope) };
+}
+
+function toggleLock(id) {
+  let ctx;
+  try { ctx = SillyTavern.getContext(); } catch { return; }
+  const { scope, set } = newestTurnLocks(ctx);
+  if (!scope) return;
+  if (set.has(id)) set.delete(id); else set.add(id);
+  saveLocks(scope, set);
+  renderRPG();
+}
+
+// the newest turn's changes that are locked
+function lockedChanges(ctx) {
+  const turns = rpgTurnsOf(ctx?.chat);
+  if (turns.length < 2) return [];
+  const { set } = newestTurnLocks(ctx);
+  if (!set.size) return [];
+  const last = turns[turns.length - 1], prev = turns[turns.length - 2];
+  return diffTurn(prev.state, last.state).filter((c) => c.u && set.has(lockId(c.u)));
+}
+
 function saoUndoLastTurn() {
   let ctx;
   try { ctx = SillyTavern.getContext(); } catch { return; }
@@ -6076,23 +6146,35 @@ function saoUndoLastTurn() {
   const last = turns[turns.length - 1], prev = turns[turns.length - 2];
   const msg = ctx.chat[last.idx];
 
+  const keep = lockedChanges(ctx);
   const ok = confirm(
     "Undo the latest turn?\n\n" +
-    "Its rpg_state goes back to exactly how it was the turn before, reverting " +
-    "every change that turn made. The story text isn't touched.\n\n" +
+    (keep.length
+      ? `Every change that turn made is reverted except the ${keep.length} you locked:\n` +
+        keep.slice(0, 8).map((c) => "  \u2022 " + c.text).join("\n") + (keep.length > 8 ? "\n  \u2022 \u2026" : "") + "\n\n"
+      : "Its rpg_state goes back to exactly how it was the turn before, reverting every change that turn made. ") +
+    "The story text isn't touched.\n\n" +
     "You can redo it until the chat changes."
   );
   if (!ok) return;
 
   const before = msg.mes;
-  const after = before.replace(/(<rpg_state\b[^>]*>)[\s\S]*?(<\/rpg_state>)/i,
-    (m, open, close) => `${open}\n${prev.inner}\n${close}`);
+  let after;
+  if (keep.length) {
+    // start from the turn before, then carry each locked change forward
+    const next = tClone(prev.state);
+    keep.forEach((c) => applyTurnUndo(next, last.state, c.u));
+    after = before.replace(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i, buildPipeString(next));
+  } else {
+    after = before.replace(/(<rpg_state\b[^>]*>)[\s\S]*?(<\/rpg_state>)/i,
+      (m, open, close) => `${open}\n${prev.inner}\n${close}`);
+  }
   if (after === before) return;
 
   setMessageText(msg, after);
   turnUndo = { key: currentChatKey(ctx), idx: last.idx, before, after };
   afterTurnEdit(ctx, last.idx);
-  if (window.toastr) window.toastr.info("Latest turn undone.");
+  if (window.toastr) window.toastr.info(keep.length ? `Latest turn undone, keeping ${keep.length} locked change${keep.length === 1 ? "" : "s"}.` : "Latest turn undone.");
 }
 
 // Revert one change from the newest turn: reparse that turn's block, put the
@@ -6156,7 +6238,7 @@ function classicLogHtml() {
   const btn = "padding:1px 7px; font-size:0.9em; cursor:pointer; background:#333; color:#ddd; border:1px solid #666; border-radius:2px;";
   const tools = (turns.length || redo)
     ? `<div style="display:flex; gap:5px; justify-content:flex-end; margin-bottom:5px;">
-        ${turns.length ? `<button id="rpg-c-undo" style="${btn}" title="Revert everything the latest turn changed">\u21B6 Undo last turn</button>` : ""}
+        ${turns.length ? `<button id="rpg-c-undo" style="${btn}" title="Revert everything the latest turn changed, except what you've locked">\u21B6 Undo last turn${(() => { const n = lockedChanges(ctx).length; return n ? ` \u00B7 keep ${n}` : ""; })()}</button>` : ""}
         ${redo ? `<button id="rpg-c-redo" style="${btn}">\u21B7 Redo</button>` : ""}
       </div>`
     : "";
@@ -6165,6 +6247,7 @@ function classicLogHtml() {
   }
 
   const dot = { good: "#66bb6a", bad: "#ef5350", neutral: "#888" };
+  const locks = newestTurnLocks(ctx).set;
   const html = turns.slice(0, saoLogShown).map((t, ti) => `
     <div style="padding:4px 0 5px; border-bottom:1px solid #333;">
       <div class="rpg-c-turnhead" data-mes="${t.idx}" title="Jump to this message"
@@ -6179,7 +6262,11 @@ function classicLogHtml() {
             ? `~ ${escHtml(c.diff.label)}: <b>${escHtml(c.diff.name)}</b><br><span style="color:#aaa;">${wordDiffHtml(c.diff.before, c.diff.after, "toast")}</span>`
             : escHtml(c.text)}</span>
           ${ti === 0 && c.u
-            ? `<button class="rpg-c-revert" data-ci="${ci}" data-text="${escAttr(c.text)}" title="Undo just this change"
+            ? `<button class="rpg-c-lock" data-lid="${escAttr(lockId(c.u))}" title="${locks.has(lockId(c.u)) ? "Locked: kept by Undo last turn. Tap to unlock." : "Lock: keep this when undoing the whole turn"}"
+                 style="flex:0 0 auto; display:grid; place-items:center; width:20px; padding:2px 0; cursor:pointer; border-radius:2px;
+                        background:${locks.has(lockId(c.u)) ? "rgba(255,193,7,0.18)" : "none"}; color:${locks.has(lockId(c.u)) ? "#ffc107" : "#888"};
+                        border:1px solid ${locks.has(lockId(c.u)) ? "#ffc107" : "#555"};">${locks.has(lockId(c.u)) ? LOCK_ICON.on : LOCK_ICON.off}</button>
+               <button class="rpg-c-revert" data-ci="${ci}" data-text="${escAttr(c.text)}" title="Undo just this change"
                  style="flex:0 0 auto; padding:0 4px; font-size:0.85em; cursor:pointer; background:none; color:#aaa; border:1px solid #555; border-radius:2px;">\u21B6</button>`
             : ""}
         </div>`).join("")
@@ -6197,6 +6284,9 @@ function classicBindLog() {
   one("rpg-c-undo", saoUndoLastTurn);
   one("rpg-c-redo", saoRedoLastTurn);
   one("rpg-c-log-more", () => { saoLogShown += 20; renderRPG(); });
+  document.querySelectorAll(".rpg-c-lock").forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); toggleLock(el.dataset.lid); };
+  });
   document.querySelectorAll(".rpg-c-revert").forEach((el) => {
     el.onclick = (e) => { e.stopPropagation(); saoUndoChange(parseInt(el.dataset.ci, 10), el.dataset.text); };
   });
@@ -6213,6 +6303,11 @@ function classicBindLog() {
   });
 }
 
+const LOCK_ICON = {
+  on: '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><rect x="3" y="7" width="10" height="7.5" rx="1.3" fill="currentColor"/><path d="M5.2 7V5.2a2.8 2.8 0 0 1 5.6 0V7" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>',
+  off: '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><rect x="3" y="7" width="10" height="7.5" rx="1.3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.2 7V5.2a2.8 2.8 0 0 1 5.4-1" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>',
+};
+
 function saoLogHtml() {
   let chat = [];
   try { chat = SillyTavern.getContext()?.chat || []; } catch {}
@@ -6222,7 +6317,7 @@ function saoLogHtml() {
   const redo = saoCanRedo(ctx);
   const tools = (turns.length || redo)
     ? `<div class="rpg-sao-logtools">
-        ${turns.length ? `<button class="rpg-sao-mini" id="rpg-sao-undo" title="Revert everything the latest turn changed">\u21B6 Undo last turn</button>` : ""}
+        ${turns.length ? `<button class="rpg-sao-mini" id="rpg-sao-undo" title="Revert everything the latest turn changed, except what you've locked">\u21B6 Undo last turn${(() => { const n = lockedChanges(ctx).length; return n ? ` \u00B7 keep ${n}` : ""; })()}</button>` : ""}
         ${redo ? `<button class="rpg-sao-mini" id="rpg-sao-redo">\u21B7 Redo</button>` : ""}
       </div>`
     : "";
@@ -6230,6 +6325,7 @@ function saoLogHtml() {
     return tools + `<p class="rpg-sao-empty">Nothing yet. Each reply that carries an rpg_state adds a turn here.</p>`;
   }
 
+  const locks = newestTurnLocks(ctx).set;
   const html = turns.slice(0, saoLogShown).map((t, ti) => `
     <div class="rpg-sao-turn${ti === 0 ? " newest" : ""}">
       <button class="rpg-sao-turnhead" data-mes="${t.idx}" title="Jump to this message">
@@ -6237,11 +6333,12 @@ function saoLogHtml() {
         <span class="w">${escHtml(t.when)}${t.where ? " \u00B7 " + escHtml(t.where) : ""}</span>
       </button>
       ${t.changes.length
-        ? `<ul class="rpg-sao-changes">${t.changes.map((c, ci) => `<li class="${c.tone}">
+        ? `<ul class="rpg-sao-changes">${t.changes.map((c, ci) => `<li class="${c.tone}${ti === 0 && c.u && locks.has(lockId(c.u)) ? " locked" : ""}">
             <span>${c.diff
               ? `~ ${escHtml(c.diff.label)}: <b>${escHtml(c.diff.name)}</b><br><span class="rpg-wd">${wordDiffHtml(c.diff.before, c.diff.after, "log")}</span>`
               : escHtml(c.text)}</span>${ti === 0 && c.u
-              ? `<button class="rpg-sao-revert" data-ci="${ci}" data-text="${escAttr(c.text)}" title="Undo just this change">\u21B6</button>`
+              ? `<span class="rpg-sao-chgbtns"><button class="rpg-sao-lock${locks.has(lockId(c.u)) ? " on" : ""}" data-lid="${escAttr(lockId(c.u))}"
+                   title="${locks.has(lockId(c.u)) ? "Locked: kept by Undo last turn. Tap to unlock." : "Lock: keep this when undoing the whole turn"}">${locks.has(lockId(c.u)) ? LOCK_ICON.on : LOCK_ICON.off}</button><button class="rpg-sao-revert" data-ci="${ci}" data-text="${escAttr(c.text)}" title="Undo just this change">\u21B6</button></span>`
               : ""}</li>`).join("")}</ul>`
         : `<p class="rpg-sao-empty small">No changes.</p>`}
     </div>`).join("");
@@ -6329,7 +6426,7 @@ function saoHelpPanel() {
       + item("Move HUD pieces",
           "Drag the bars, the orb column and the clock wherever you like. Buttons stop responding while you're arranging, so a tap can't fire by accident. Reset puts them back.")
       + item("Turn log",
-          "In the Quests orb, the Log tab lists what changed each turn \u2014 HP, items, bonds, where you went, how much time passed. It's worked out from your chat history rather than stored, so it follows swipes and edits and covers old chats too. Tap a turn to jump to its message. Undo last turn reverts everything the newest turn changed; the \u21B6 beside a single change in the newest turn reverts just that one. Redo puts either back.")
+          "In the Quests orb, the Log tab lists what changed each turn \u2014 HP, items, bonds, where you went, how much time passed. It's worked out from your chat history rather than stored, so it follows swipes and edits and covers old chats too. Tap a turn to jump to its message. Undo last turn reverts everything the newest turn changed; the \u21B6 beside a single change in the newest turn reverts just that one. The padlock beside a change locks it: Undo last turn then reverts everything except what's locked. Redo puts any of these back.")
       + item("Restore lost descriptions",
           "Works for everyone: you, party members, NPCs and enemies. When a reply keeps an item, skill or passive but drops its description entirely, the old description is put back onto the new entry, so other changes (+10 to +15 ATK, a new cost) stay. A description that was only trimmed or reworded is left alone. A toast says what was restored; tap it to undo. Masteries are never touched.")
       + item("Note edits for AI",
@@ -6860,6 +6957,7 @@ function saoBind() {
   });
   bind("rpg-sao-undo", saoUndoLastTurn);
   on(".rpg-sao-revert", (el) => saoUndoChange(parseInt(el.dataset.ci, 10), el.dataset.text));
+  on(".rpg-sao-lock", (el) => toggleLock(el.dataset.lid));
   bind("rpg-sao-redo", saoRedoLastTurn);
   bind("rpg-sao-move", () => {
     saoLayoutMode = true;
@@ -7378,6 +7476,13 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-wd{font-size:11.5px; color:var(--rpg-sao-ink-dim)}
 .rpg-wd-del{color:#b23a2a; text-decoration:line-through; background:rgba(178,58,42,.08); padding:0 1px}
 .rpg-wd-ins{color:#2f7a26; text-decoration:none; font-weight:700; background:rgba(47,122,38,.08); padding:0 1px}
+.rpg-sao-chgbtns{flex:0 0 auto; display:flex; gap:3px}
+.rpg-sao-lock{flex:0 0 auto; width:20px; height:18px; padding:0; margin-top:-1px; cursor:pointer;
+  display:grid; place-items:center; border-radius:2px; color:var(--rpg-sao-ink-dim);
+  background:transparent; border:1px solid var(--rpg-sao-rule); opacity:.55}
+.rpg-sao-lock:hover{opacity:1; color:var(--rpg-sao-ink)}
+.rpg-sao-lock.on{opacity:1; color:#8a6a12; border-color:#b3903f; background:rgba(179,144,63,.14)}
+.rpg-sao-changes li.locked{background:rgba(179,144,63,.10); box-shadow:inset 2px 0 0 #b3903f}
 .rpg-sao-revert{flex:0 0 auto; width:20px; height:18px; padding:0; margin-top:-1px; cursor:pointer;
   font-size:11px; line-height:1; border-radius:2px; color:var(--rpg-sao-ink-dim);
   background:transparent; border:1px solid var(--rpg-sao-rule); opacity:.55}
@@ -8324,6 +8429,7 @@ $(document).on('change', '#rpg-settings-autoinject', function() {
   const evt = event_types?.[name];
   if (!evt) return;
   eventSource.on(evt, () => {
+    if (name === "MESSAGE_RECEIVED") replyReceivedAt = Date.now();
     // an edit or deletion can change history underneath the cached ledger
     if (name === "MESSAGE_UPDATED" || name === "MESSAGE_EDITED" || name === "MESSAGE_DELETED") {
       invalidateHistoryMemory();
@@ -8332,6 +8438,11 @@ $(document).on('change', '#rpg-settings-autoinject', function() {
     setTimeout(() => checkMessage(), 150);
   });
 });
+
+// Opening another chat (or refreshing into one) is never a new reply.
+if (event_types?.CHAT_CHANGED) {
+  eventSource.on(event_types.CHAT_CHANGED, () => { replyReceivedAt = 0; notagWatch = null; });
+}
 
 // --- 8. BOOT ---
 jQuery(() => {
