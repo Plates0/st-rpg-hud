@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.26";
+const HUD_BUILD = "2026-09-26.27";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -5843,10 +5843,10 @@ const ITEM_KINDS = [
   ["food",   /\b(food|bread|rations?|meat|apple|fruit|stew|cheese|jerky|berr(y|ies)|fish|cake|pie|drink|water|ale|wine|tea|soup|meal)\b/],
   ["key",    /\b(key|keycard|keys)\b/],
   ["book",   /\b(scroll|book|tome|map|letter|note|journal|grimoire|manual|page|diary|contract)\b/],
-  ["ring",   /\b(ring|amulet|necklace|pendant|bracelet|earrings?|charm|talisman|brooch|circlet|crown|halo|locket)\b/],
+  ["ring",   /\b(ring|amulet|necklace|pendant|bracelet|earrings?|charm|talisman|brooch|circlet|crown|halo|locket|keychain|keyring|trinket|bauble|accessory|accessories|pin|badge|emblem|anklet|tiara|choker|strap)\b/],
   ["gem",    /\b(gem|jewel|ruby|emerald|sapphire|diamond|ore|ingot|shard|stone|pearl|materials?|hide|pelt|scales?|fang|claw|bone|crystals)\b/],
   ["coin",   /\b(coins?|gold|purse|pouch|money|col)\b/],
-  ["bag",    /\b(rope|torch|lantern|pickaxe|shovel|lockpicks?|tools?|kit|compass|tent|bedroll|bag|backpack|satchel|flint|whetstone)\b/],
+  ["bag",    /\b(rope|torch|lantern|pickaxe|shovel|lockpicks?|tools?|kit|compass|tent|bedroll|bag|backpack|satchel|flint|whetstone|sheath|scabbard|holster|case)\b/],
 ];
 const SKILL_KINDS = [
   ["heal",   /\b(heal\w*|cure|regen\w*|restor\w*|mend\w*|revive|resurrect\w*|holy)\b/],
@@ -5858,10 +5858,25 @@ const SKILL_KINDS = [
   ["shield", /\b(guard\w*|shield\w*|barrier|protect\w*|ward\w*|parry|block\w*|fortif\w*|resist\w*|armou?r)\b/],
 ];
 
+// Items: what kind of thing is it? Names put the main noun last ("Sword Charm
+// Keychain" is a keychain, "Iron Sword" a sword), so:
+//   1. a type in brackets wins: "Angel Halo (Blade)" is a sword
+//   2. then the name's last word, quantities and stat bonuses aside
+//   3. then any word, in category order ("Ring of Fire" ends on "Fire")
+// [...] notes are ignored entirely: "Keychain [Attached to Katana]" is a keychain.
 function listIconKind(listKey, text) {
-  const name = String(descSplit(text).head || text).toLowerCase();
   if (listKey === "inventory") {
-    for (const [kind, re] of ITEM_KINDS) if (re.test(name)) return kind;
+    const head = String(descSplit(text).head || text).toLowerCase();
+    const paren = (head.match(/\(([^)]*)\)/g) || []).join(" ");
+    const base = head.replace(/\([^)]*\)/g, " ")
+      .replace(/\s[+\-\u2212]\s?\d.*$/, "")              // "+10 ATK" and on
+      .replace(/\b(x\d+|\d+x|\d+)\b/g, " ")               // "x3", "3x", bare numbers
+      .replace(/\s+/g, " ").trim();
+    const last = base.split(" ").pop() || "";
+    for (const part of [paren, last, base]) {
+      if (!part) continue;
+      for (const [kind, re] of ITEM_KINDS) if (re.test(part)) return kind;
+    }
     return "misc";
   }
   // skills and passives: the whole entry speaks to what they do
@@ -7918,12 +7933,12 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-sao-entries.with-icons li.has-ico{display:flex; gap:8px; align-items:flex-start}
 .rpg-sao-li-body{flex:1; min-width:0}
 .rpg-sao-ico{flex:0 0 auto; display:grid; place-items:center; width:24px; height:24px; padding:0; margin-top:-2px;
-  border-radius:4px; border:1px solid var(--rpg-sao-rule); background:var(--rpg-sao-chip); color:var(--rpg-sao-ink)}
+  border-radius:50%; border:1px solid var(--rpg-sao-rule); background:var(--rpg-sao-chip); color:var(--rpg-sao-ink)}
 button.rpg-sao-ico{cursor:pointer; -webkit-tap-highlight-color:transparent}
 button.rpg-sao-ico:hover{border-color:#b3903f; color:#8a6a12}
 .rpg-sao-ico svg{width:16px; height:16px; display:block; fill:none; stroke:currentColor; stroke-width:1.7;
   stroke-linecap:round; stroke-linejoin:round}
-.rpg-sao-empty .rpg-sao-ico{display:inline-grid; width:auto; padding:0 6px; height:auto; margin:0 0 0 4px}
+.rpg-sao-empty .rpg-sao-ico{display:inline-grid; width:auto; padding:0 6px; height:auto; margin:0 0 0 4px; border-radius:4px}
 .rpg-sao-ledit{display:flex; gap:6px; align-items:flex-start; margin-bottom:6px}
 .rpg-sao-ledit-text{flex:1; min-width:0; box-sizing:border-box; resize:vertical; font:inherit; font-size:12px; line-height:1.35;
   padding:4px 6px; color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
