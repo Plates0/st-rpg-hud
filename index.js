@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.27";
+const HUD_BUILD = "2026-09-26.28";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -5815,6 +5815,9 @@ const LIST_ICONS = {
   gem:     ico("M5.5 9.5l3.2-5h6.6l3.2 5L12 20.5z M5.5 9.5h13 M9.5 9.5 12 20.5l2.5-11"),
   coin:    ico("", '<circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="4"/>'),
   bag:     ico("M5.5 8.5h13l1.2 12H4.3z M9 8.5V7a3 3 0 0 1 6 0v1.5"),
+  phone:   ico("M8 2.5h8a1.6 1.6 0 0 1 1.6 1.6v15.8a1.6 1.6 0 0 1-1.6 1.6H8a1.6 1.6 0 0 1-1.6-1.6V4.1A1.6 1.6 0 0 1 8 2.5z M10.5 18.3h3"),
+  laptop:  ico("M5.5 5.5h13v9h-13z M2.8 18.5h18.4l-1.7-4H4.5z"),
+  camera:  ico("M4 8.2h3.4l1.6-2.6h6l1.6 2.6H20v10.6H4z", '<circle cx="12" cy="13.4" r="3.4"/>'),
   misc:    ico("M9 9.2a3 3 0 1 1 4.6 2.5c-1 .6-1.6 1.3-1.6 2.6 M12 17.6v.4"),
   // skills and passives
   fire:    ico("M12 3c.9 3.1 5 5 5 10.2a5 5 0 0 1-10 0c0-3 1.8-4.2 2-6.2 1.1.9 1.9 2 2 3.3 1.2-2.1 1.3-4.6 1-7.3z"),
@@ -5836,6 +5839,11 @@ const ITEM_KINDS = [
   ["hammer", /\b(hammer|mace|maul|club|flail|morningstar|warhammer|cudgel)\b/],
   ["bow",    /\b(bow|crossbow|longbow|shortbow|arrows?|bolts?|quiver)\b/],
   ["gun",    /\b(gun|pistol|rifle|revolver|musket|shotgun|blaster|sniper|carbine|ammo|bullets?)\b/],
+  // electronics. Left out on purpose, since they usually mean something else in
+  // fantasy: "tablet" (stone, medicine), "cell" (prison), "chip", "notebook"
+  ["phone",  /\b(phone|smartphone|cellphone|iphone|mobile|radio|walkie|walkie-talkie|communicator|comms?|pager|beeper|pda|handset|headset|earpiece|transceiver|transmitter|receiver|scanner|tracker|gadget|device|smartwatch)\b/],
+  ["laptop", /\b(laptop|computer|pc|terminal|console|datapad|monitor|keyboard|usb|drive|disk|disc|server|hard drive|flash drive)\b/],
+  ["camera", /\b(camera|camcorder|polaroid|binoculars|telescope|spyglass)\b/],
   ["staff",  /\b(staff|wand|rod|scepter|sceptre|orb|focus)\b/],
   ["shield", /\b(shield|buckler|aegis)\b/],
   ["armor",  /\b(armou?r|mail|plate|helm|helmet|gauntlets?|greaves|boots|cloak|robes?|coat|shirt|dress|jacket|tunic|hood|gloves|cape|vest|pants|trousers|uniform|outfit|clothes|clothing|garb|leathers?|hat|mask|belt)\b/],
@@ -5843,7 +5851,7 @@ const ITEM_KINDS = [
   ["food",   /\b(food|bread|rations?|meat|apple|fruit|stew|cheese|jerky|berr(y|ies)|fish|cake|pie|drink|water|ale|wine|tea|soup|meal)\b/],
   ["key",    /\b(key|keycard|keys)\b/],
   ["book",   /\b(scroll|book|tome|map|letter|note|journal|grimoire|manual|page|diary|contract)\b/],
-  ["ring",   /\b(ring|amulet|necklace|pendant|bracelet|earrings?|charm|talisman|brooch|circlet|crown|halo|locket|keychain|keyring|trinket|bauble|accessory|accessories|pin|badge|emblem|anklet|tiara|choker|strap)\b/],
+  ["ring",   /\b(ring|amulet|necklace|pendant|bracelet|earrings?|charm|talisman|brooch|circlet|crown|halo|locket|keychain|keyring|trinket|bauble|accessory|accessories|pin|badge|emblem|anklet|tiara|choker|strap|watch|wristwatch)\b/],
   ["gem",    /\b(gem|jewel|ruby|emerald|sapphire|diamond|ore|ingot|shard|stone|pearl|materials?|hide|pelt|scales?|fang|claw|bone|crystals)\b/],
   ["coin",   /\b(coins?|gold|purse|pouch|money|col)\b/],
   ["bag",    /\b(rope|torch|lantern|pickaxe|shovel|lockpicks?|tools?|kit|compass|tent|bedroll|bag|backpack|satchel|flint|whetstone|sheath|scabbard|holster|case)\b/],
