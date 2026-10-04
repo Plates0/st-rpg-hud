@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.23";
+const HUD_BUILD = "2026-09-26.26";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -439,6 +439,8 @@ const defaultUiSettings = {
   tileColors: {},         // ALfheim (New) tile colours you've picked: "@player" or a name key -> "#rrggbb"
   oocEditNotes: true,     // Edit state -> Save leaves an (OOC: ...) note in the block listing what you changed
   restoreLostDesc: false, // put back a description the AI dropped entirely (keeps its other changes)
+  fixWeekdays: true,      // a weekday written in Time: that doesn't match the date gets corrected
+  listEditHistory: 0,     // list edits from the Status orb also rewrite this many earlier replies (0-20)
   saoUiScale: 100,        // % size of the bar cluster; a desktop usually wants ~130
   saoTextShadow: false,   // shadow behind the text that sits straight on the chat
   saoTextBacking: false,  // translucent card behind that text instead        // "classic" | "sao"
@@ -794,12 +796,55 @@ function applyDescriptionRestores(mes, fixes) {
   return { mes: String(mes).replace(block, lines.join("\n")), done };
 }
 
-// The block can be complete while text after it is still streaming in, so
-// wait until the message has stopped changing. If the block itself changed
-// in the meantime (a swipe, a regenerate), drop it: the new version gets its
-// own check.
+// ---- correcting a written weekday ----
+// If Time: carries a weekday ("Mon Jan 7 1023,09:00") that the real calendar
+// disagrees with, the right one is swapped in, in the AI's own style: "Mon"
+// stays three letters, "Monday" stays whole, capitals are kept. Only when the
+// date can really be placed: a Jan..Dec month and a written year. Otherwise
+// it's left alone rather than "corrected" against a guess.
+function weekdayFixFor(inner) {
+  const f = String(inner || "").match(/\|\s*Time\s*:\s*([^|]*)\|/i);
+  if (!f) return null;
+  const parts = f[1].split(",");
+  let written = "";
+  if (parts.length > 2 && WEEKDAY_RE.test(parts[0].trim())) written = parts.shift().trim();
+  const dp = (parts[0] || "").trim().split(/\s+/);
+  if (dp.length > 2 && WEEKDAY_RE.test(dp[0])) written = dp.shift();
+  written = written.replace(/[.,]/g, "");
+  if (!written) return null;
+  const [month, day, year] = dp;
+  if (!/^\d{1,4}$/.test(year || "")) return null;               // no written year: can't be sure
+  const correct = worldWeekday({ month, day, year }, true);
+  if (!correct) return null;                                    // not a calendar month
+  if (correct.slice(0, 3).toLowerCase() === written.slice(0, 3).toLowerCase()) return null;
+  const long = /^(sun|mon|tues|wednes|thurs|fri|satur)day$/i.test(written);
+  let to = long ? correct : correct.slice(0, 3);
+  if (written === written.toUpperCase()) to = to.toUpperCase();
+  else if (written === written.toLowerCase()) to = to.toLowerCase();
+  return { from: written, to, date: `${month} ${day} ${year}` };
+}
+
+// swap just the weekday word inside Time:, nothing else
+function applyWeekdayFix(mes, fix) {
+  const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let hit = false;
+  const out = String(mes).replace(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i, (block) =>
+    block.replace(/(\|\s*Time\s*:\s*)([^|]*)\|/i, (m0, pre, val) => {
+      const nv = val.replace(new RegExp(`^(\\s*)${esc(fix.from)}(?![A-Za-z])`), (x, sp) => { hit = true; return sp + fix.to; });
+      return pre + nv + "|";
+    }));
+  return hit ? out : mes;
+}
+
+// ---- one pass after a reply settles ----
+// Restoring descriptions and correcting the weekday both edit the reply, so
+// they run together: separately, whichever went first would change the
+// message and make the other give up. The block can be complete while text
+// after it is still streaming in, so this waits until the message has stopped
+// changing. If the block itself changed meanwhile (a swipe, a regenerate),
+// it's dropped: the new version gets its own check.
 let restoreTimer = null;
-function scheduleDescriptionRestore(idx, inner, fixes, waited = 0) {
+function schedulePostReplyFixes(idx, inner, fixes, waited = 0) {
   clearTimeout(restoreTimer);
   let ctx;
   try { ctx = SillyTavern.getContext(); } catch { return; }
@@ -808,28 +853,39 @@ function scheduleDescriptionRestore(idx, inner, fixes, waited = 0) {
     const msg = ctx?.chat?.[idx];
     if (!msg || rpgInnerFromMessage(msg.mes) !== inner) return;
     if (msg.mes !== snapshot) {
-      if (waited < 120000) scheduleDescriptionRestore(idx, inner, fixes, waited + 1500);
+      if (waited < 120000) schedulePostReplyFixes(idx, inner, fixes, waited + 1500);
       return;
     }
     const before = msg.mes;
-    const { mes, done } = applyDescriptionRestores(before, fixes);
-    if (!done.length) return;
+    let mes = before;
+    let weekdayDone = null;
+    if (fixes.weekday) {
+      const m2 = applyWeekdayFix(mes, fixes.weekday);
+      if (m2 !== mes) { mes = m2; weekdayDone = fixes.weekday; }
+    }
+    let done = [];
+    if (fixes.restores?.length) ({ mes, done } = applyDescriptionRestores(mes, fixes.restores));
+    if (mes === before) return;
     setMessageText(msg, mes);
     afterTurnEdit(ctx, idx);
-    if (window.toastr) {
-      const names = done.map((f) => `${f.owner ? escHtml(f.owner) + " \u00B7 " : ""}${escHtml(f.label)}: <b>${escHtml(tItemName(f.to))}</b>`).join("<br>");
-      window.toastr.info(`${names}<br><span style="opacity:.75">Tap to undo.</span>`,
-        `\u{1F4DD} Restored ${done.length === 1 ? "a lost description" : done.length + " lost descriptions"}`, {
-          escapeHtml: false,
-          onclick: () => {
-            const m = SillyTavern.getContext()?.chat?.[idx];
-            if (!m || m.mes !== mes) return;                 // changed since: leave it
-            setMessageText(m, before);
-            afterTurnEdit(SillyTavern.getContext(), idx);
-            if (window.toastr) window.toastr.info("Restore undone: the AI's version is back.");
-          },
-        });
-    }
+    if (!window.toastr) return;
+
+    const lines = [];
+    if (weekdayDone) lines.push(`Weekday: <b>${escHtml(weekdayDone.from)}</b> \u2192 <b>${escHtml(weekdayDone.to)}</b> (${escHtml(weekdayDone.date)})`);
+    done.forEach((f) => lines.push(`${f.owner ? escHtml(f.owner) + " \u00B7 " : ""}${escHtml(f.label)}: <b>${escHtml(tItemName(f.to))}</b>`));
+    const title = weekdayDone && done.length ? "\u{1F4DD} Fixed the reply"
+      : weekdayDone ? "\u{1F4C5} Weekday corrected"
+      : `\u{1F4DD} Restored ${done.length === 1 ? "a lost description" : done.length + " lost descriptions"}`;
+    window.toastr.info(`${lines.join("<br>")}<br><span style="opacity:.75">Tap to undo.</span>`, title, {
+      escapeHtml: false,
+      onclick: () => {
+        const m = SillyTavern.getContext()?.chat?.[idx];
+        if (!m || m.mes !== mes) return;                       // changed since: leave it
+        setMessageText(m, before);
+        afterTurnEdit(SillyTavern.getContext(), idx);
+        if (window.toastr) window.toastr.info("Undone: the AI's version is back.");
+      },
+    });
   }, 1500);
 }
 
@@ -845,28 +901,39 @@ function maybeReportListChanges() {
   if (!inner) return;
   const sig = `${idx}|${inner}`;
 
-  if (key !== alertKey) { alertKey = key; alertSig = sig; alertIdx = idx; return; }  // baseline
+  if (key !== alertKey) {                                                           // baseline
+    alertKey = key; alertSig = sig; alertIdx = idx;
+    // Opening or refreshing a chat never edits old messages. But if this first
+    // block is one the AI has only just written (SillyTavern says so; loading
+    // a chat never does), its weekday can still be checked: there's nothing
+    // earlier to compare descriptions with, but a date needs no comparison.
+    if (uiSettings.fixWeekdays !== false && Date.now() - lastReplyAt < 15000 && idx === chat.length - 1) {
+      const weekday = weekdayFixFor(inner);
+      if (weekday) schedulePostReplyFixes(idx, inner, { weekday, restores: [] });
+    }
+    return;
+  }
   if (sig === alertSig) return;                                                     // same message
   const wentBack = idx < alertIdx;                                                  // a deletion
   alertSig = sig; alertIdx = idx;
   if (wentBack) return;
-  if (!uiSettings.changeAlerts && !uiSettings.restoreLostDesc) return;
+  const fixWd = uiSettings.fixWeekdays !== false;
+  if (!uiSettings.changeAlerts && !uiSettings.restoreLostDesc && !fixWd) return;
+
+  // the weekday needs no earlier turn, so it's checked even on a first reply
+  const weekday = fixWd ? weekdayFixFor(inner) : null;
 
   let prevInner = null;
   for (let i = idx - 1; i >= 0 && !prevInner; i--) {
     const m = chat[i];
     if (m && !m.is_user) prevInner = rpgInnerFromMessage(m.mes);
   }
-  if (!prevInner) return;
-
-  const a = coreStateOf(prevInner), b = coreStateOf(inner);
-  if (!a || !b) return;
+  const a = prevInner ? coreStateOf(prevInner) : null, b = coreStateOf(inner);
 
   let restoring = [];
-  if (uiSettings.restoreLostDesc) {
-    restoring = findDescriptionRestores(a, b);
-    if (restoring.length) scheduleDescriptionRestore(idx, inner, restoring);
-  }
+  if (uiSettings.restoreLostDesc && a && b) restoring = findDescriptionRestores(a, b);
+  if (weekday || restoring.length) schedulePostReplyFixes(idx, inner, { weekday, restores: restoring });
+  if (!a || !b) return;
   if (!uiSettings.changeAlerts) return;
 
   // every character, not just the player; each change carries whose it is
@@ -1197,8 +1264,10 @@ function renderIndicatorDotHtml(status, title) {
 // Closing or switching a chat changes what "latest message" means, so the
 // first reading in any chat is a baseline, never an alert. A missing block is
 // only worth announcing when a new message just arrived in this same chat.
-// set when SillyTavern reports a freshly generated reply (MESSAGE_RECEIVED)
+// set when SillyTavern reports a freshly generated reply (MESSAGE_RECEIVED);
+// replyReceivedAt is used up by the missing-block check, lastReplyAt isn't
 let replyReceivedAt = 0;
+let lastReplyAt = 0;
 function replyEventsSupported() {
   try { return !!event_types?.MESSAGE_RECEIVED; } catch { return false; }
 }
@@ -1587,6 +1656,28 @@ const TIMER_PERSISTENT_KINDS = ["EVENT", "DOOM"];
 const TIMER_MONTHS = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
 const TIMER_MONTH_DAYS = [31,28,31,30,31,30,31,31,30,31,30,31];
 const YEAR_MINUTES = 365 * 1440;
+
+// Day of the week for the in-story date. If the block says one ("Mon Jan 6
+// 1023"), that wins: the story is the authority. Otherwise it's worked out
+// from the date on the real calendar, so it always advances consistently.
+// A month that isn't Jan..Dec (a fantasy calendar) gets no weekday rather
+// than a wrong one.
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const WEEKDAY_RE = /^(sun|mon|tue|wed|thu|fri|sat)[a-z]*\.?,?$/i;
+
+function worldWeekday(t, long = false) {
+  let i = -1;
+  if (t?.weekday) i = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"].indexOf(String(t.weekday).slice(0, 3).toLowerCase());
+  if (i < 0) {
+    const y = parseInt(t?.year, 10), d = parseInt(t?.day, 10);
+    const m = TIMER_MONTHS.indexOf(String(t?.month || "").trim().slice(0, 3).toLowerCase());
+    if (!Number.isFinite(y) || !d || m < 0) return "";
+    const dt = new Date(Date.UTC(2000, 0, 1));
+    dt.setUTCFullYear(y, m, d);                // setUTCFullYear: years under 100 aren't remapped to 19xx
+    i = dt.getUTCDay();
+  }
+  return long ? WEEKDAYS[i] : WEEKDAYS[i].slice(0, 3);
+}
 
 function monthIndex(m) {
   const i = TIMER_MONTHS.indexOf(String(m || "").trim().slice(0, 3).toLowerCase());
@@ -3003,7 +3094,7 @@ function buildPipeString(stateObj) {
   let lines = ["[Global]"];
   const wt = stateObj.world_time || {};
   const yearStr = wt.year ? ` ${wt.year}` : "";
-  lines.push(`|Loc:${stateObj.location || "Unknown"}||Time:${wt.month} ${wt.day}${yearStr},${wt.clock}||Weather:${wt.weather || "Unknown"}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
+  lines.push(`|Loc:${stateObj.location || "Unknown"}||Time:${wt.weekday ? wt.weekday + " " : ""}${wt.month} ${wt.day}${yearStr},${wt.clock}||Weather:${wt.weather || "Unknown"}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
   
   const safeJoin = (arr) => Array.isArray(arr) && arr.length ? arr.map(i => typeof i === 'object' ? i.name : i).join(";") : "";
   
@@ -3583,6 +3674,10 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
    			 <input type="checkbox" id="rpg-settings-autoinject" ${autoInjectState ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
 		  </div>
 		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="If a reply writes a weekday in Time: that doesn't match the date, correct it">Fix Weekdays</span>
+   			 <input type="checkbox" id="rpg-settings-fixweekday" ${uiSettings.fixWeekdays !== false ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
+		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
     			<span title="When the AI drops an item, skill or passive's description entirely, put it back (keeping its other changes)">Restore Lost Descriptions</span>
    			 <input type="checkbox" id="rpg-settings-restoredesc" ${uiSettings.restoreLostDesc ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
 		  </div>
@@ -3678,7 +3773,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       <div style="background:rgba(255,255,255,0.05); padding:5px; border-radius:4px; margin-bottom:5px; font-size:0.85em; text-align:center;">
         <div style="color:#fff; font-weight:bold;">📍 ${escHtml(rpgState.location)}</div>
         <div style="color:#aaa; font-size:0.9em;">
-          📅 ${escHtml(time.month)} ${escHtml(time.day)}${time.year ? `, ${escHtml(time.year)}` : ""}
+          📅 ${worldWeekday(time) ? escHtml(worldWeekday(time)) + ", " : ""}${escHtml(time.month)} ${escHtml(time.day)}${time.year ? `, ${escHtml(time.year)}` : ""}
           &nbsp;|&nbsp;
           ⏰ ${escHtml(time.clock)}
           &nbsp;|&nbsp;
@@ -3918,6 +4013,11 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	
 	  bind("rpg-settings-reset", resetRPG);
 	  bind("rpg-settings-remove", removeActiveCharacter);
+	  const wdEl = document.getElementById("rpg-settings-fixweekday");
+	  if (wdEl) {
+	    wdEl.onclick = (e) => e.stopPropagation();
+	    wdEl.onchange = () => { uiSettings.fixWeekdays = wdEl.checked; saveUiSettings(); };
+	  }
 	  const rdEl = document.getElementById("rpg-settings-restoredesc");
 	  if (rdEl) {
 	    rdEl.onclick = (e) => e.stopPropagation();
@@ -4065,7 +4165,7 @@ const tNameKey = (u) => normBondName(u?.name);
 // and "Iron Sword +15 ATK" are the same item upgraded, not a swap.
 // the name alone, as written: "Iron Sword +10 ATK [X]" -> "Iron Sword"
 function tItemName(text) {
-  return entryBaseName(text)
+  return entryBaseName(descSplit(text).head)
     .replace(/:\s*-?\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?.*$/, "")
     .replace(/\s[+\-\u2212]\s?\d.*$/, "")
     .trim() || String(text ?? "").trim();
@@ -4327,7 +4427,7 @@ function buildTurnLog(chat) {
     out.push({
       idx: turns[i].idx,
       n: i,
-      when: `${wt.month || "?"} ${wt.day ?? "?"} ${wt.clock || ""}`.trim(),
+      when: `${worldWeekday(wt) ? worldWeekday(wt) + " " : ""}${wt.month || "?"} ${wt.day ?? "?"} ${wt.clock || ""}`.trim(),
       where: turns[i].state.location || "",
       changes,
     });
@@ -5611,9 +5711,14 @@ function saoStatusPanel() {
     if (saoSub === "masteries") {
       h += saoMasteriesSection(list);
     } else {
-      h += list.length
-        ? `<ul class="rpg-sao-entries">` + list.map(saoListItem).join("") + `</ul>`
-        : `<p class="rpg-sao-empty">Nothing recorded.</p>`;
+      if (saoListEdit && saoListEdit.key === saoSub) {
+        h += saoListEditorHtml(saoSub);
+      } else {
+        // icons double as the way in: tap one to edit this list
+        h += list.length
+          ? `<ul class="rpg-sao-entries with-icons">` + list.map((it) => saoListItemWithIcon(saoSub, it, true)).join("") + `</ul>`
+          : `<p class="rpg-sao-empty">Nothing recorded. <button class="rpg-sao-mini rpg-sao-ico" data-list="${saoSub}">+ Add</button></p>`;
+      }
     }
   }
   return { title: name, body: h };
@@ -5681,6 +5786,248 @@ function saoMetersSection(display) {
 
   return `<div class="rpg-sao-subhead"><span class="rpg-sao-sub">Meters</span>
       <button class="rpg-sao-mini" id="rpg-sao-m-edit">&#9998; Edit</button></div>${list}`;
+}
+
+
+// =====================================================================
+// LIST ICONS + EDITING (Status orb: Items, Skills, Passive)
+// An entry's icon comes from its name (the part before any description):
+// weapons are checked first, so "Angel Halo (Blade)" is a sword, not jewellery.
+// Tapping an icon opens that list for editing in place.
+// =====================================================================
+const ico = (d, extra = "") => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/>${extra}</svg>`;
+const LIST_ICONS = {
+  sword:   ico("M20 4v4l-9.5 9.5-4-4L16 4z M5 13l6 6 M7.5 16.5 4 20"),
+  dagger:  ico("M18 4.5v3.5l-6.5 6.5-3-3L15 5z M6.5 11.5l6 6 M8.5 15.5 5 19"),
+  spear:   ico("M4 20 14.5 9.5 M14.5 9.5l1.6-5.2 4.6-1.6-1.6 4.6z"),
+  axe:     ico("M5 20 14 11 M12.5 3.5c4.5.3 7.7 3.5 8 8l-3.2 1L11.5 6.7z"),
+  hammer:  ico("M5 20l8-8 M10.6 5.6l4.2-2.4 5.9 5.9-2.4 4.2z"),
+  bow:     ico("M5 3.5c8.3 0 15.5 7.2 15.5 15.5 M5 3.5 20.5 19 M3.5 9.5 9 4"),
+  gun:     ico("M3 8.5h16l1 2.5h-8.5l-1.3 2.5H7.6L6.6 19H3.5z M12 11v2"),
+  staff:   ico("M5 20l9.5-9.5", '<circle cx="17" cy="7" r="3.2"/>'),
+  shield:  ico("M12 3l7 2.8v5.4c0 4.4-2.9 7.8-7 9.8-4.1-2-7-5.4-7-9.8V5.8z"),
+  armor:   ico("M8 3.5h8l4 3.7-3 3V20.5H7V10.2l-3-3z M10 3.5c0 1.4.9 2.4 2 2.4s2-1 2-2.4"),
+  ring:    ico("M10 6.5l2-3 2 3-2 2z", '<circle cx="12" cy="14.5" r="5.3"/>'),
+  potion:  ico("M9.5 3h5 M10.5 3v5.2L5.7 16.8a2.6 2.6 0 0 0 2.3 3.9h8a2.6 2.6 0 0 0 2.3-3.9L13.5 8.2V3 M7.4 14.5h9.2"),
+  food:    ico("M12 7.5c-3-2-7.2 0-7.2 4.9s3 8.1 5.2 8.1c1 0 1.4-.5 2-.5s1 .5 2 .5c2.2 0 5.2-3.2 5.2-8.1S15 5.5 12 7.5z M12 7.5c0-2 1-3.3 3-4"),
+  key:     ico("M10.4 12.6 20 3 M17 6l2.2 2.2 M14.6 8.4l2.2 2.2", '<circle cx="7.6" cy="15.4" r="3.6"/>'),
+  book:    ico("M5 4.5h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z M5 17.5a3 3 0 0 1 3-3h11"),
+  gem:     ico("M5.5 9.5l3.2-5h6.6l3.2 5L12 20.5z M5.5 9.5h13 M9.5 9.5 12 20.5l2.5-11"),
+  coin:    ico("", '<circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="4"/>'),
+  bag:     ico("M5.5 8.5h13l1.2 12H4.3z M9 8.5V7a3 3 0 0 1 6 0v1.5"),
+  misc:    ico("M9 9.2a3 3 0 1 1 4.6 2.5c-1 .6-1.6 1.3-1.6 2.6 M12 17.6v.4"),
+  // skills and passives
+  fire:    ico("M12 3c.9 3.1 5 5 5 10.2a5 5 0 0 1-10 0c0-3 1.8-4.2 2-6.2 1.1.9 1.9 2 2 3.3 1.2-2.1 1.3-4.6 1-7.3z"),
+  ice:     ico("M12 3v18 M4.2 7.5l15.6 9 M4.2 16.5l15.6-9 M9.5 4.5 12 7l2.5-2.5 M9.5 19.5 12 17l2.5 2.5"),
+  bolt:    ico("M13.5 3 6 13.5h5.3L10.5 21 18 10.5h-5.3z"),
+  heal:    ico("M9.5 4h5v5.5H20v5h-5.5V20h-5v-5.5H4v-5h5.5z"),
+  dark:    ico("M15.5 4a8.2 8.2 0 1 0 4.8 13.2A6.4 6.4 0 0 1 15.5 4z"),
+  wind:    ico("M3 9h11a3 3 0 1 0-3-3 M3 14h15a3 3 0 1 1-3 3 M3 19h6"),
+  burst:   ico("M12 3l2.1 6H20l-4.8 3.6 1.9 6.9L12 15.6 6.9 19.5l1.9-6.9L4 9h5.9z"),
+  badge:   ico("M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z", '<circle cx="12" cy="12" r="2.4"/>'),
+};
+
+// first match wins, so weapons come before anything they might be mistaken for
+const ITEM_KINDS = [
+  ["dagger", /\b(dagger|knife|dirk|stiletto|kunai|tanto|shiv)\b/],
+  ["sword",  /(sword|blade|rapier|katana|sabre|saber|claymore|scimitar|cutlass|estoc|falchion|odachi|zweihander|wakizashi|longsword|greatsword)/],
+  ["spear",  /\b(spear|lance|pike|halberd|glaive|trident|naginata|polearm|javelin|partisan)\b/],
+  ["axe",    /\b(axe|hatchet|battleaxe|greataxe|tomahawk)\b/],
+  ["hammer", /\b(hammer|mace|maul|club|flail|morningstar|warhammer|cudgel)\b/],
+  ["bow",    /\b(bow|crossbow|longbow|shortbow|arrows?|bolts?|quiver)\b/],
+  ["gun",    /\b(gun|pistol|rifle|revolver|musket|shotgun|blaster|sniper|carbine|ammo|bullets?)\b/],
+  ["staff",  /\b(staff|wand|rod|scepter|sceptre|orb|focus)\b/],
+  ["shield", /\b(shield|buckler|aegis)\b/],
+  ["armor",  /\b(armou?r|mail|plate|helm|helmet|gauntlets?|greaves|boots|cloak|robes?|coat|shirt|dress|jacket|tunic|hood|gloves|cape|vest|pants|trousers|uniform|outfit|clothes|clothing|garb|leathers?|hat|mask|belt)\b/],
+  ["potion", /\b(potion|elixir|tonic|draught|vial|flask|antidote|salve|crystal|bandages?|medicine|pills?|herbs?)\b/],
+  ["food",   /\b(food|bread|rations?|meat|apple|fruit|stew|cheese|jerky|berr(y|ies)|fish|cake|pie|drink|water|ale|wine|tea|soup|meal)\b/],
+  ["key",    /\b(key|keycard|keys)\b/],
+  ["book",   /\b(scroll|book|tome|map|letter|note|journal|grimoire|manual|page|diary|contract)\b/],
+  ["ring",   /\b(ring|amulet|necklace|pendant|bracelet|earrings?|charm|talisman|brooch|circlet|crown|halo|locket)\b/],
+  ["gem",    /\b(gem|jewel|ruby|emerald|sapphire|diamond|ore|ingot|shard|stone|pearl|materials?|hide|pelt|scales?|fang|claw|bone|crystals)\b/],
+  ["coin",   /\b(coins?|gold|purse|pouch|money|col)\b/],
+  ["bag",    /\b(rope|torch|lantern|pickaxe|shovel|lockpicks?|tools?|kit|compass|tent|bedroll|bag|backpack|satchel|flint|whetstone)\b/],
+];
+const SKILL_KINDS = [
+  ["heal",   /\b(heal\w*|cure|regen\w*|restor\w*|mend\w*|revive|resurrect\w*|holy)\b/],
+  ["fire",   /\b(fire\w*|flame\w*|burn\w*|blaze|inferno|ember|scorch\w*|pyro\w*|magma|lava)\b/],
+  ["ice",    /\b(ice|icy|frost\w*|freez\w*|cold|snow|blizzard|glacia\w*|cryo\w*)\b/],
+  ["bolt",   /\b(lightning|thunder\w*|shock\w*|bolt|spark\w*|static|volt\w*|electr\w*)\b/],
+  ["dark",   /\b(dark\w*|shadow\w*|curse\w*|void|necro\w*|death|drain\w*|blood)\b/],
+  ["wind",   /\b(wind|gust|dash\w*|blink|teleport\w*|step|veil|phase|evade|evasion|dodge|haste|swift\w*|sprint)\b/],
+  ["shield", /\b(guard\w*|shield\w*|barrier|protect\w*|ward\w*|parry|block\w*|fortif\w*|resist\w*|armou?r)\b/],
+];
+
+function listIconKind(listKey, text) {
+  const name = String(descSplit(text).head || text).toLowerCase();
+  if (listKey === "inventory") {
+    for (const [kind, re] of ITEM_KINDS) if (re.test(name)) return kind;
+    return "misc";
+  }
+  // skills and passives: the whole entry speaks to what they do
+  const all = stripStatusTags(String(text)).toLowerCase();
+  for (const [kind, re] of SKILL_KINDS) if (re.test(all)) return kind;
+  return listKey === "passives" ? "badge" : "burst";
+}
+
+function listIconHtml(listKey, text, editable) {
+  const kind = listIconKind(listKey, text);
+  return editable
+    ? `<button class="rpg-sao-ico" data-list="${listKey}" title="${escAttr(kind === "misc" ? "Misc" : kind)} \u00B7 tap to edit this list">${LIST_ICONS[kind]}</button>`
+    : `<span class="rpg-sao-ico">${LIST_ICONS[kind]}</span>`;
+}
+
+// ---- the editor ----
+let saoListEdit = null;   // null, or { key, rows: [{ text, orig }] }
+
+function saoListEditorHtml(key) {
+  const label = { inventory: "Items", skills: "Skills", passives: "Passives" }[key] || key;
+  const rows = saoListEdit.rows.map((r, i) => `
+    <div class="rpg-sao-ledit">
+      <span class="rpg-sao-ico">${LIST_ICONS[listIconKind(key, r.text)]}</span>
+      <textarea class="rpg-sao-ledit-text" data-i="${i}" rows="2" spellcheck="false">${escHtml(r.text)}</textarea>
+      <button class="rpg-sao-ledit-del" data-i="${i}" title="Remove">&#10005;</button>
+    </div>`).join("");
+  const depth = Math.max(0, parseInt(uiSettings.listEditHistory, 10) || 0);
+  return `<div class="rpg-sao-meditor rpg-sao-leditor">
+      ${rows || `<p class="rpg-sao-empty">Empty. Add one below.</p>`}
+      <button class="rpg-sao-mini" id="rpg-sao-ledit-add">+ Add</button>
+      <p class="rpg-sao-hint">${depth
+        ? `Saving also updates ${depth} earlier repl${depth === 1 ? "y" : "ies"} (Settings \u2192 Edits rewrite past replies).`
+        : "Saving updates the latest reply. To also update earlier ones, see Settings \u2192 Edits rewrite past replies."}</p>
+      <div class="rpg-sao-medit-actions">
+        <button class="rpg-sao-mini" id="rpg-sao-ledit-cancel">Cancel</button>
+        <button class="rpg-sao-mini primary" id="rpg-sao-ledit-save">Save ${escHtml(label)}</button>
+      </div>
+    </div>`;
+}
+
+function saoListItemWithIcon(listKey, it, editable) {
+  return saoListItem(it).replace(/^<li>/, `<li class="has-ico">${listIconHtml(listKey, it, editable)}<div class="rpg-sao-li-body">`).replace(/<\/li>$/, "</div></li>");
+}
+
+// the active character as the block sees it: null for the player
+function activeListOwner() {
+  const info = getActivePointerInfo();
+  if (info.type === "player") return null;
+  const group = { party: "party", npc: "npcs", enemy: "enemies" }[info.type];
+  return group ? { group, key: normBondName(info.name) } : undefined;
+}
+
+// Rewrite one list field for one character in up to `depth` replies before
+// the latest: entries matched by name (not exact text, since descriptions
+// drift), changed or removed. Additions aren't pushed into the past.
+function rewriteListHistory(who, listKey, edits, depth) {
+  const field = { inventory: "INV", skills: "Skills", passives: "Passives" }[listKey];
+  if (!field || depth <= 0 || !edits.length) return 0;
+  let ctx;
+  try { ctx = SillyTavern.getContext(); } catch { return 0; }
+  const chat = ctx?.chat || [];
+  const ownerId = who ? `${who.group}:${who.key}` : "@player";
+  const byKey = new Map(edits.map((e) => [tItemKey(e.from), e]));
+  let touched = 0, seen = 0;
+  for (let i = lastRpgMsgIndex - 1; i >= 0 && seen < depth; i--) {
+    const msg = chat[i];
+    if (!msg || msg.is_user || !rpgInnerFromMessage(msg.mes)) continue;
+    seen++;
+    const blockMatch = msg.mes.match(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i);
+    const lines = blockMatch[0].split("\n");
+    let section = null, unit = null, changed = false;
+    for (let li = 0; li < lines.length; li++) {
+      const ln = lines[li];
+      const h = ln.match(/^\s*\[([^\]]+)\]\s*$/);
+      if (h) { const t = h[1].toLowerCase(); section = /player/.test(t) ? "player" : /party/.test(t) ? "party" : /npc/.test(t) ? "npcs" : /enem/.test(t) ? "enemies" : null; unit = null; continue; }
+      const nm = ln.match(/\|\s*Name\s*:\s*([^|]*)\|/i);
+      if (nm && section && section !== "player") unit = normBondName(nm[1]);
+      if (ln.trim().startsWith(">")) continue;
+      const id = section === "player" ? "@player" : section && unit ? `${section}:${unit}` : null;
+      if (id !== ownerId) continue;
+      const re = new RegExp(`(\\|\\s*${field}\\s*:)([^|]*)(\\|)`, "i");
+      if (!re.test(ln)) continue;
+      lines[li] = ln.replace(re, (m, a, val, z) => {
+        const items = val.split(";").map((x) => x.trim()).filter(Boolean);
+        const out = [];
+        items.forEach((x) => {
+          const e = byKey.get(tItemKey(x));
+          if (!e) { out.push(x); return; }
+          changed = true;
+          if (e.to) out.push(e.to);
+        });
+        return a + out.join(";") + z;
+      });
+    }
+    if (changed) {
+      setMessageText(msg, msg.mes.replace(blockMatch[0], lines.join("\n")));
+      touched++;
+    }
+  }
+  if (touched) {
+    try { window.saveChat?.(); } catch {}
+    invalidateHistoryMemory();
+    turnLogCache = { sig: "", turns: [] };
+  }
+  return touched;
+}
+
+function saoSaveListEdit() {
+  const { display, isVehicle } = getActiveData();
+  const key = saoListEdit.key;
+  const before = (Array.isArray(display[key]) ? display[key] : []).map(String);
+  // ";" and "|" would split the entry apart in the block
+  let rows = saoListEdit.rows.map((r) => ({ orig: r.orig, text: String(r.text || "").replace(/;/g, ",").replace(/\|/g, "/").replace(/\s*\n\s*/g, " ").trim() }))
+    .filter((r) => r.text);
+  const kept = new Set(rows.map((r) => r.orig).filter(Boolean));
+  let removed = before.filter((t) => !kept.has(t));
+  if (removed.length) {
+    const sure = confirm(`Remove ${removed.length === 1 ? "this entry" : "these entries"}?\n\n` +
+      removed.map((t) => "\u2022 " + tItemName(t)).join("\n") + "\n\nCancel keeps them.");
+    if (!sure) { rows = rows.concat(removed.map((t) => ({ orig: t, text: t }))); removed = []; }
+  }
+  display[key] = rows.map((r) => r.text);
+  const edits = rows.filter((r) => r.orig && r.orig !== r.text).map((r) => ({ from: r.orig, to: r.text }))
+    .concat(removed.map((t) => ({ from: t, to: null })));
+  saoListEdit = null;
+  renderRPG();
+  const ok = writeStateBackToChatMessage(rpgState);
+  if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after list edit");
+
+  const depth = Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0));
+  const who = activeListOwner();
+  if (depth && edits.length && !isVehicle && who !== undefined) {
+    const n = rewriteListHistory(who, key, edits, depth);
+    if (window.toastr) window.toastr.info(n ? `Also updated ${n} earlier repl${n === 1 ? "y" : "ies"}.` : "No earlier replies needed changing.");
+  }
+  try { checkMessage(); } catch {}
+}
+
+function saoBindListEditor() {
+  document.querySelectorAll(".rpg-sao-ico[data-list]").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const { display } = getActiveData();
+      const key = el.dataset.list;
+      saoListEdit = { key, rows: (Array.isArray(display[key]) ? display[key] : []).map((t) => ({ text: String(t), orig: String(t) })) };
+      renderRPG();
+    };
+  });
+  const box = document.querySelector(".rpg-sao-leditor");
+  if (!box || !saoListEdit) return;
+  box.querySelectorAll(".rpg-sao-ledit-text").forEach((el) => {
+    el.oninput = () => { const r = saoListEdit.rows[+el.dataset.i]; if (r) r.text = el.value; };
+    el.onclick = (e) => e.stopPropagation();
+    el.onkeydown = (e) => e.stopPropagation();
+  });
+  box.querySelectorAll(".rpg-sao-ledit-del").forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); saoListEdit.rows.splice(+el.dataset.i, 1); renderRPG(); };
+  });
+  const one = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
+  one("rpg-sao-ledit-add", () => {
+    saoListEdit.rows.push({ text: "", orig: "" });
+    renderRPG();
+    requestAnimationFrame(() => { const t = document.querySelectorAll(".rpg-sao-ledit-text"); t[t.length - 1]?.focus(); });
+  });
+  one("rpg-sao-ledit-cancel", () => { saoListEdit = null; renderRPG(); });
+  one("rpg-sao-ledit-save", saoSaveListEdit);
 }
 
 // ---- masteries: "Name: 45/100" gets a bar, same rule as the classic skin ----
@@ -6354,7 +6701,7 @@ function saoPlacePanel() {
   const env = Array.isArray(rpgState.env_effects) ? rpgState.env_effects : [];
   let h = `<div class="rpg-sao-place">${escHtml(rpgState.location || "Unknown")}</div>`;
   h += `<div class="rpg-sao-weather">${getWeatherEmoji(t.weather)} ${escHtml(t.weather || "Unknown")}
-        &#183; ${escHtml(t.clock || "??:??")}, ${escHtml(t.month || "?")} ${escHtml(t.day ?? "?")} ${escHtml(t.year || "")}</div>`;
+        &#183; ${escHtml(t.clock || "??:??")}, ${worldWeekday(t, true) ? escHtml(worldWeekday(t, true)) + ", " : ""}${escHtml(t.month || "?")} ${escHtml(t.day ?? "?")} ${escHtml(t.year || "")}</div>`;
   h += env.length
     ? env.map((e) => `<div class="rpg-sao-env">${escHtml(e)}</div>`).join("")
     : `<p class="rpg-sao-empty">No environmental effects.</p>`;
@@ -6427,6 +6774,8 @@ function saoHelpPanel() {
           "Drag the bars, the orb column and the clock wherever you like. Buttons stop responding while you're arranging, so a tap can't fire by accident. Reset puts them back.")
       + item("Turn log",
           "In the Quests orb, the Log tab lists what changed each turn \u2014 HP, items, bonds, where you went, how much time passed. It's worked out from your chat history rather than stored, so it follows swipes and edits and covers old chats too. Tap a turn to jump to its message. Undo last turn reverts everything the newest turn changed; the \u21B6 beside a single change in the newest turn reverts just that one. The padlock beside a change locks it: Undo last turn then reverts everything except what's locked. Redo puts any of these back.")
+      + item("Fix weekdays",
+          "If a reply writes a weekday in Time: (\u201cMon Jan 7 1023\u201d) that the real calendar disagrees with, it's corrected in the AI's own style, once the reply has finished. Only when the month is Jan\u2013Dec and the year is written. A toast says what changed; tap it to undo.")
       + item("Restore lost descriptions",
           "Works for everyone: you, party members, NPCs and enemies. When a reply keeps an item, skill or passive but drops its description entirely, the old description is put back onto the new entry, so other changes (+10 to +15 ATK, a new cost) stay. A description that was only trimmed or reworded is left alone. A toast says what was restored; tap it to undo. Masteries are never touched.")
       + item("Note edits for AI",
@@ -6489,6 +6838,9 @@ function saoSettingsHtml() {
     + toggle("rpg-sao-sw-inject", "Auto-inject", !!autoInjectState)
     + toggle("rpg-sao-sw-ooc", "Note edits for AI", uiSettings.oocEditNotes !== false)
     + toggle("rpg-sao-sw-restore", "Restore lost descriptions", !!uiSettings.restoreLostDesc)
+    + toggle("rpg-sao-sw-weekday", "Fix weekdays", uiSettings.fixWeekdays !== false)
+    + `<div class="rpg-sao-mrow toggle"><span title="Editing Items, Skills or Passives from the Status orb also rewrites this many earlier replies">Edits rewrite past replies</span>
+        <input id="rpg-sao-edithist" type="number" min="0" max="20" step="1" value="${Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0))}"></div>`
     + toggle("rpg-sao-sw-bars", "Keep bars when minimised", !!uiSettings.barsOnMin)
     + toggle("rpg-sao-sw-shadow", "Text shadow", !!uiSettings.saoTextShadow)
     + toggle("rpg-sao-sw-backing", "Text backing", !!uiSettings.saoTextBacking)
@@ -6765,7 +7117,7 @@ function renderSaoSkin() {
         <span class="rpg-sao-glyph">${getWeatherEmoji(t.weather)}</span>
         <span class="rpg-sao-cstack">
           <span class="hhmm">${escHtml(t.clock || "??:??")}</span>
-          <span class="date">${escHtml(t.month || "?")} ${escHtml(t.day ?? "?")} ${escHtml(t.year || "")}</span>
+          <span class="date">${worldWeekday(t) ? escHtml(worldWeekday(t)) + " " : ""}${escHtml(t.month || "?")} ${escHtml(t.day ?? "?")} ${escHtml(t.year || "")}</span>
         </span></button></div>`;
 
     if (vitals) vitals += foesHtml + `</div>`;
@@ -6814,7 +7166,7 @@ function saoBind() {
     flushInlineEdits();
     const tab = el.dataset.tab;
     const was = saoPanel;
-    saoMeterEdit = null; saoMasteryEdit = null;
+    saoMeterEdit = null; saoMasteryEdit = null; saoListEdit = null;
     saoPanel = saoPanel === tab ? null : tab;
     if (saoPanel !== "gear") saoHelpOpen = false;
     if (saoPanel && saoPanel !== was) saoAnim("panel", 220);
@@ -6842,7 +7194,7 @@ function saoBind() {
   on(".rpg-sao-jump, .rpg-sao-chip", (el) => {
     const idx = parseInt(el.dataset.idx, 10);
     if (!Number.isFinite(idx)) return;
-    saoMeterEdit = null; saoMasteryEdit = null;
+    saoMeterEdit = null; saoMasteryEdit = null; saoListEdit = null;
     charIndex = idx;
     saoSub = "stats";
     saoPanel = "status";
@@ -6850,7 +7202,7 @@ function saoBind() {
   });
 
   on(".rpg-sao-cat", (el) => {
-    saoMeterEdit = null; saoMasteryEdit = null;
+    saoMeterEdit = null; saoMasteryEdit = null; saoListEdit = null;
     const g = saoRosterGroups().filter((x) => x.key === el.dataset.cat)[0];
     if (!g) return;
     charIndex = charIndexFor(g.type, 0);
@@ -6858,7 +7210,7 @@ function saoBind() {
     renderRPG();
   });
 
-  on(".rpg-sao-subtab", (el) => { saoSub = el.dataset.sub; saoMasteryEdit = null; renderRPG(); });
+  on(".rpg-sao-subtab", (el) => { saoSub = el.dataset.sub; saoMasteryEdit = null; saoListEdit = null; renderRPG(); });
   on(".rpg-sao-qtab", (el) => { saoQuestTab = el.dataset.qtab; saoLogShown = 20; renderRPG(); });
   on(".rpg-sao-turnhead", (el) => {
     const mes = document.querySelector(`#chat .mes[mesid="${el.dataset.mes}"]`);
@@ -6893,6 +7245,7 @@ function saoBind() {
 
   saoBindMeterEditor();
   saoBindMasteryEditor();
+  saoBindListEditor();
   if (bondsEditMode) bindBondsTab();
   if (timersEditMode) bindTimersTab();
 
@@ -6987,6 +7340,17 @@ function saoBind() {
   bind("rpg-sao-insert", insertLastStateIntoNarrative);
   bind("rpg-sao-remind", remindStateInLastMessage);
   bind("rpg-sao-sw-alerts", () => { uiSettings.changeAlerts = !uiSettings.changeAlerts; saveUiSettings(); renderRPG(); });
+  const eh = document.getElementById("rpg-sao-edithist");
+  if (eh) {
+    eh.onclick = (e) => e.stopPropagation();
+    eh.onkeydown = (e) => e.stopPropagation();
+    eh.onchange = () => { uiSettings.listEditHistory = Math.max(0, Math.min(20, parseInt(eh.value, 10) || 0)); saveUiSettings(); };
+  }
+  bind("rpg-sao-sw-weekday", () => {
+    uiSettings.fixWeekdays = uiSettings.fixWeekdays === false;
+    saveUiSettings();
+    renderRPG();
+  });
   bind("rpg-sao-sw-restore", () => {
     uiSettings.restoreLostDesc = !uiSettings.restoreLostDesc;
     saveUiSettings();
@@ -7551,6 +7915,22 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-mathnum{cursor:pointer; -webkit-tap-highlight-color:transparent}
 .rpg-mathnum i{font-style:normal; font-size:.72em; opacity:.7; margin-left:1px}
 .rpg-sao-move b{display:flex; gap:5px; flex-wrap:wrap; justify-content:flex-end}
+.rpg-sao-entries.with-icons li.has-ico{display:flex; gap:8px; align-items:flex-start}
+.rpg-sao-li-body{flex:1; min-width:0}
+.rpg-sao-ico{flex:0 0 auto; display:grid; place-items:center; width:24px; height:24px; padding:0; margin-top:-2px;
+  border-radius:4px; border:1px solid var(--rpg-sao-rule); background:var(--rpg-sao-chip); color:var(--rpg-sao-ink)}
+button.rpg-sao-ico{cursor:pointer; -webkit-tap-highlight-color:transparent}
+button.rpg-sao-ico:hover{border-color:#b3903f; color:#8a6a12}
+.rpg-sao-ico svg{width:16px; height:16px; display:block; fill:none; stroke:currentColor; stroke-width:1.7;
+  stroke-linecap:round; stroke-linejoin:round}
+.rpg-sao-empty .rpg-sao-ico{display:inline-grid; width:auto; padding:0 6px; height:auto; margin:0 0 0 4px}
+.rpg-sao-ledit{display:flex; gap:6px; align-items:flex-start; margin-bottom:6px}
+.rpg-sao-ledit-text{flex:1; min-width:0; box-sizing:border-box; resize:vertical; font:inherit; font-size:12px; line-height:1.35;
+  padding:4px 6px; color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
+.rpg-sao-ledit-del{flex:0 0 auto; width:22px; height:22px; padding:0; cursor:pointer; font-size:12px; border-radius:2px;
+  background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink)}
+.rpg-sao-ledit-del:hover{color:#c0392b; border-color:#c0392b}
+#rpg-sao-edithist{width:52px; font:inherit; font-size:12px; padding:2px 4px; text-align:center}
 .rpg-sao-customfont input{width:100%; box-sizing:border-box; font:inherit; font-size:12px; padding:4px 6px;
   color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
 .rpg-sao-livebond b{display:flex; align-items:center; gap:4px}
@@ -8191,7 +8571,12 @@ function parseBlockCore(text) {
     if (data.loc !== undefined) newState.location = data.loc;
     if (data.time !== undefined) {
       const tParts = String(data.time).split(',');
+      // an optional weekday in front: "Mon Jan 6 1023,14:00" or "Mon, Jan 6 1023,14:00"
+      let weekday = "";
+      if (tParts.length > 2 && WEEKDAY_RE.test(tParts[0].trim())) weekday = tParts.shift().trim();
       const datePart = (tParts[0] || "").trim().split(/\s+/);
+      if (datePart.length > 2 && WEEKDAY_RE.test(datePart[0])) weekday = datePart.shift();
+      if (weekday) newState.world_time.weekday = weekday.replace(/[.,]/g, "");
       newState.world_time.month = datePart[0] || "Jan";
       newState.world_time.day = parseInt(datePart[1]) || 1;
       if (datePart[2] !== undefined && /^\d{1,4}$/.test(datePart[2])) {
@@ -8429,7 +8814,7 @@ $(document).on('change', '#rpg-settings-autoinject', function() {
   const evt = event_types?.[name];
   if (!evt) return;
   eventSource.on(evt, () => {
-    if (name === "MESSAGE_RECEIVED") replyReceivedAt = Date.now();
+    if (name === "MESSAGE_RECEIVED") { replyReceivedAt = Date.now(); lastReplyAt = Date.now(); }
     // an edit or deletion can change history underneath the cached ledger
     if (name === "MESSAGE_UPDATED" || name === "MESSAGE_EDITED" || name === "MESSAGE_DELETED") {
       invalidateHistoryMemory();
