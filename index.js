@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.28";
+const HUD_BUILD = "2026-09-26.29";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -5755,6 +5755,7 @@ function saoMetersSection(display) {
   if (saoMeterEdit) {
     const rows = saoMeterEdit.map((m, i) => `
       <div class="rpg-sao-mrow-edit" data-i="${i}">
+        ${reorderBtns("meter", i, saoMeterEdit.length)}
         <input type="color" class="rpg-sao-m-color" data-i="${i}" value="${escAttr(m.color)}"
           title="Colour${m.custom ? "" : " (automatic)"}">
         <input type="text" class="rpg-sao-m-name" data-i="${i}" value="${escAttr(m.name)}" placeholder="Name">
@@ -5900,13 +5901,33 @@ function listIconHtml(listKey, text, editable) {
     : `<span class="rpg-sao-ico">${LIST_ICONS[kind]}</span>`;
 }
 
+// ---- reordering rows in any of the Status orb's editors ----
+// Buttons, not dragging: they're easier to hit on a touch screen. Each editor
+// keeps its rows in a plain list, so moving one is a swap with a neighbour;
+// Save then writes them in the new order. Order isn't an edit, so it's only
+// written to the latest reply, never pushed into earlier ones.
+function reorderBtns(kind, i, n) {
+  return `<span class="rpg-sao-reorder">` +
+    `<button class="rpg-sao-mv" data-kind="${kind}" data-i="${i}" data-d="-1"${i === 0 ? " disabled" : ""} title="Move up">\u25B2</button>` +
+    `<button class="rpg-sao-mv" data-kind="${kind}" data-i="${i}" data-d="1"${i === n - 1 ? " disabled" : ""} title="Move down">\u25BC</button></span>`;
+}
+
+function reorderRows(kind) {
+  if (kind === "list") return saoListEdit?.rows || null;
+  if (kind === "mastery") return Array.isArray(saoMasteryEdit) ? saoMasteryEdit : null;
+  if (kind === "meter") return Array.isArray(saoMeterEdit) ? saoMeterEdit : null;
+  return null;
+}
+
 // ---- the editor ----
 let saoListEdit = null;   // null, or { key, rows: [{ text, orig }] }
 
 function saoListEditorHtml(key) {
   const label = { inventory: "Items", skills: "Skills", passives: "Passives" }[key] || key;
+  const n = saoListEdit.rows.length;
   const rows = saoListEdit.rows.map((r, i) => `
     <div class="rpg-sao-ledit">
+      ${reorderBtns("list", i, n)}
       <span class="rpg-sao-ico">${LIST_ICONS[listIconKind(key, r.text)]}</span>
       <textarea class="rpg-sao-ledit-text" data-i="${i}" rows="2" spellcheck="false">${escHtml(r.text)}</textarea>
       <button class="rpg-sao-ledit-del" data-i="${i}" title="Remove">&#10005;</button>
@@ -6092,6 +6113,7 @@ function saoMasteriesSection(list) {
   if (saoMasteryEdit) {
     const rows = saoMasteryEdit.map((m, i) => `
       <div class="rpg-sao-mast-edit">
+        ${reorderBtns("mastery", i, saoMasteryEdit.length)}
         <input type="text" class="rpg-sao-ms-name" data-i="${i}" value="${escAttr(m.name)}" placeholder="Name">
         <input type="text" class="rpg-sao-ms-curr" data-i="${i}" value="${escAttr(m.curr)}" inputmode="decimal" placeholder="\u2013">
         <span class="rpg-sao-m-slash">/</span>
@@ -7206,6 +7228,13 @@ function saoBind() {
   };
 
   on(".rpg-mathnum", (el) => showMathPop(el));
+  on(".rpg-sao-mv", (el) => {
+    const rows = reorderRows(el.dataset.kind);
+    const i = +el.dataset.i, j = i + (+el.dataset.d);
+    if (!rows || j < 0 || j >= rows.length) return;
+    [rows[i], rows[j]] = [rows[j], rows[i]];
+    renderRPG();
+  });
   on(".rpg-sao-moveto", (el) => moveActiveCharacter(el.dataset.to));
 
   on(".rpg-sao-caret, .rpg-sao-divlabel", (el) => {
@@ -7930,7 +7959,7 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 
 .rpg-sao-meditor{padding-top:6px}
 .rpg-sao-mrow-edit{display:grid; align-items:center; gap:4px; margin-bottom:5px;
-  grid-template-columns:26px minmax(0,1fr) 44px 8px 44px 22px 22px}
+  grid-template-columns:auto 26px minmax(0,1fr) 44px 8px 44px 22px 22px}
 .rpg-sao-mrow-edit input[type=text]{min-width:0; width:100%; box-sizing:border-box;
   font:inherit; font-size:12px; padding:3px 5px; color:var(--rpg-sao-ink);
   background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
@@ -7948,6 +7977,13 @@ button.rpg-sao-ico:hover{border-color:#b3903f; color:#8a6a12}
   stroke-linecap:round; stroke-linejoin:round}
 .rpg-sao-empty .rpg-sao-ico{display:inline-grid; width:auto; padding:0 6px; height:auto; margin:0 0 0 4px; border-radius:4px}
 .rpg-sao-ledit{display:flex; gap:6px; align-items:flex-start; margin-bottom:6px}
+.rpg-sao-reorder{flex:0 0 auto; display:flex; flex-direction:column; gap:2px}
+.rpg-sao-mv{width:18px; height:13px; padding:0; cursor:pointer; font-size:8px; line-height:1; border-radius:2px;
+  color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule);
+  -webkit-tap-highlight-color:transparent}
+.rpg-sao-mv:hover:not(:disabled){border-color:#b3903f; color:#8a6a12}
+.rpg-sao-mv:disabled{opacity:.3; cursor:default}
+@media (pointer:coarse){ .rpg-sao-mv{width:22px; height:18px; font-size:9px} }
 .rpg-sao-ledit-text{flex:1; min-width:0; box-sizing:border-box; resize:vertical; font:inherit; font-size:12px; line-height:1.35;
   padding:4px 6px; color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
 .rpg-sao-ledit-del{flex:0 0 auto; width:22px; height:22px; padding:0; cursor:pointer; font-size:12px; border-radius:2px;
@@ -7973,7 +8009,7 @@ button.rpg-sao-ico:hover{border-color:#b3903f; color:#8a6a12}
 .rpg-sao-mini.primary{background:#4e9c3f; border-color:#4e9c3f; color:#fff}
 
 .rpg-sao-mast-edit{display:grid; align-items:center; gap:4px; margin-bottom:5px;
-  grid-template-columns:minmax(0,1fr) 44px 8px 44px 22px}
+  grid-template-columns:auto minmax(0,1fr) 44px 8px 44px 22px}
 .rpg-sao-mast-edit input[type=text]{min-width:0; width:100%; box-sizing:border-box;
   font:inherit; font-size:12px; padding:3px 5px; color:var(--rpg-sao-ink);
   background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
