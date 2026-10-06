@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.29";
+const HUD_BUILD = "2026-09-26.30";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -865,6 +865,11 @@ function schedulePostReplyFixes(idx, inner, fixes, waited = 0) {
     }
     let done = [];
     if (fixes.restores?.length) ({ mes, done } = applyDescriptionRestores(mes, fixes.restores));
+    const moved = [];
+    (fixes.positions || []).forEach((f) => {
+      const m2 = editOwnerFieldInMes(mes, f.ownerId, POS_FIELDS[f.listKey], (items) => applyPositionLocks(items, f.locks));
+      if (m2 !== mes) { mes = m2; moved.push(f); }
+    });
     if (mes === before) return;
     setMessageText(msg, mes);
     afterTurnEdit(ctx, idx);
@@ -873,8 +878,12 @@ function schedulePostReplyFixes(idx, inner, fixes, waited = 0) {
     const lines = [];
     if (weekdayDone) lines.push(`Weekday: <b>${escHtml(weekdayDone.from)}</b> \u2192 <b>${escHtml(weekdayDone.to)}</b> (${escHtml(weekdayDone.date)})`);
     done.forEach((f) => lines.push(`${f.owner ? escHtml(f.owner) + " \u00B7 " : ""}${escHtml(f.label)}: <b>${escHtml(tItemName(f.to))}</b>`));
-    const title = weekdayDone && done.length ? "\u{1F4DD} Fixed the reply"
+    const LIST_LABEL = { inventory: "Items", skills: "Skills", passives: "Passives" };
+    moved.forEach((f) => lines.push(`${f.owner ? escHtml(f.owner) + " \u00B7 " : ""}${LIST_LABEL[f.listKey]}: locked positions kept`));
+    const kinds = [weekdayDone, done.length, moved.length].filter(Boolean).length;
+    const title = kinds > 1 ? "\u{1F4DD} Fixed the reply"
       : weekdayDone ? "\u{1F4C5} Weekday corrected"
+      : moved.length ? "\u{1F512} Locked positions kept"
       : `\u{1F4DD} Restored ${done.length === 1 ? "a lost description" : done.length + " lost descriptions"}`;
     window.toastr.info(`${lines.join("<br>")}<br><span style="opacity:.75">Tap to undo.</span>`, title, {
       escapeHtml: false,
@@ -932,7 +941,8 @@ function maybeReportListChanges() {
 
   let restoring = [];
   if (uiSettings.restoreLostDesc && a && b) restoring = findDescriptionRestores(a, b);
-  if (weekday || restoring.length) schedulePostReplyFixes(idx, inner, { weekday, restores: restoring });
+  const positions = b ? positionFixesFor(b) : [];
+  if (weekday || restoring.length || positions.length) schedulePostReplyFixes(idx, inner, { weekday, restores: restoring, positions });
   if (!a || !b) return;
   if (!uiSettings.changeAlerts) return;
 
@@ -5919,6 +5929,91 @@ function reorderRows(kind) {
   return null;
 }
 
+// ---- position locks ----
+// A locked entry keeps its place in its list (1st, 2nd, 3rd...). After each
+// new reply, locked entries the AI moved are put back; the unlocked ones keep
+// their own order around them. Locks are matched by name, so a reworded
+// description doesn't break one, and kept per chat:
+//   { chatKey: { ownerId: { listKey: { itemKey: position } } } }
+const POSLOCKS_KEY = "rpgHud:posLocks";
+const POS_FIELDS = { inventory: "INV", skills: "Skills", passives: "Passives" };
+
+function posLocksAll() {
+  try { return JSON.parse(localStorage.getItem(POSLOCKS_KEY) || "{}") || {}; } catch { return {}; }
+}
+function posLocksFor(ownerId, listKey) {
+  let key = "";
+  try { key = currentChatKey(SillyTavern.getContext()); } catch {}
+  return posLocksAll()?.[key]?.[ownerId]?.[listKey] || {};
+}
+function savePosLocks(ownerId, listKey, map) {
+  let key = "";
+  try { key = currentChatKey(SillyTavern.getContext()); } catch { return; }
+  const all = posLocksAll();
+  const chat = (all[key] = all[key] || {});
+  const owner = (chat[ownerId] = chat[ownerId] || {});
+  if (Object.keys(map).length) owner[listKey] = map; else delete owner[listKey];
+  if (!Object.keys(owner).length) delete chat[ownerId];
+  if (!Object.keys(chat).length) delete all[key];
+  try { localStorage.setItem(POSLOCKS_KEY, JSON.stringify(all)); } catch {}
+}
+
+// Put locked entries back at their positions; everything else keeps its order.
+function applyPositionLocks(items, locks) {
+  const locked = [], free = [];
+  items.forEach((t) => (Object.prototype.hasOwnProperty.call(locks, tItemKey(t)) ? locked : free).push(t));
+  if (!locked.length) return items.slice();
+  locked.sort((a, b) => locks[tItemKey(a)] - locks[tItemKey(b)]);
+  const out = free.slice();
+  locked.forEach((t) => out.splice(Math.min(locks[tItemKey(t)], out.length), 0, t));
+  return out;
+}
+
+const ownerIdOf = (who) => (who ? `${who.group}:${who.key}` : "@player");
+
+// Rewrite one character's list field inside a message's block, walking the
+// lines so the right character's field is the one changed.
+function editOwnerFieldInMes(mes, ownerId, field, fn) {
+  const bm = String(mes).match(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i);
+  if (!bm) return mes;
+  const lines = bm[0].split("\n");
+  let section = null, unit = null, changed = false;
+  const re = new RegExp(`(\\|\\s*${field}\\s*:)([^|]*)(\\|)`, "i");
+  for (let li = 0; li < lines.length; li++) {
+    const ln = lines[li];
+    const h = ln.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (h) { const t = h[1].toLowerCase(); section = /player/.test(t) ? "player" : /party/.test(t) ? "party" : /npc/.test(t) ? "npcs" : /enem/.test(t) ? "enemies" : null; unit = null; continue; }
+    const nm = ln.match(/\|\s*Name\s*:\s*([^|]*)\|/i);
+    if (nm && section && section !== "player") unit = normBondName(nm[1]);
+    if (ln.trim().startsWith(">")) continue;
+    const id = section === "player" ? "@player" : section && unit ? `${section}:${unit}` : null;
+    if (id !== ownerId || !re.test(ln)) continue;
+    lines[li] = ln.replace(re, (m, a, val, z) => {
+      const items = val.split(";").map((x) => x.trim()).filter(Boolean);
+      const out = fn(items);
+      if (out.join(";") === items.join(";")) return m;
+      changed = true;
+      return a + out.join(";") + z;
+    });
+  }
+  return changed ? String(mes).replace(bm[0], lines.join("\n")) : mes;
+}
+
+// lists in a new reply whose locked entries have moved
+function positionFixesFor(state) {
+  const out = [];
+  listOwners(state).forEach((owner) => {
+    Object.keys(POS_FIELDS).forEach((listKey) => {
+      const locks = posLocksFor(owner.id, listKey);
+      if (!Object.keys(locks).length) return;
+      const items = (owner.ent?.[listKey] || []).map((x) => String(x).trim()).filter(Boolean);
+      const fixed = applyPositionLocks(items, locks);
+      if (fixed.join(";") !== items.join(";")) out.push({ ownerId: owner.id, owner: owner.name, listKey, locks });
+    });
+  });
+  return out;
+}
+
 // ---- the editor ----
 let saoListEdit = null;   // null, or { key, rows: [{ text, orig }] }
 
@@ -5930,7 +6025,11 @@ function saoListEditorHtml(key) {
       ${reorderBtns("list", i, n)}
       <span class="rpg-sao-ico">${LIST_ICONS[listIconKind(key, r.text)]}</span>
       <textarea class="rpg-sao-ledit-text" data-i="${i}" rows="2" spellcheck="false">${escHtml(r.text)}</textarea>
-      <button class="rpg-sao-ledit-del" data-i="${i}" title="Remove">&#10005;</button>
+      <span class="rpg-sao-ledit-side">
+        <button class="rpg-sao-ledit-del" data-i="${i}" title="Remove">&#10005;</button>
+        <button class="rpg-sao-ledit-lock${r.locked ? " on" : ""}" data-i="${i}"
+          title="${r.locked ? "Locked to this position: the AI can't move it. Tap to unlock." : "Lock to this position"}">${r.locked ? LOCK_ICON.on : LOCK_ICON.off}</button>
+      </span>
     </div>`).join("");
   const depth = Math.max(0, parseInt(uiSettings.listEditHistory, 10) || 0);
   return `<div class="rpg-sao-meditor rpg-sao-leditor">
@@ -5947,7 +6046,10 @@ function saoListEditorHtml(key) {
 }
 
 function saoListItemWithIcon(listKey, it, editable) {
-  return saoListItem(it).replace(/^<li>/, `<li class="has-ico">${listIconHtml(listKey, it, editable)}<div class="rpg-sao-li-body">`).replace(/<\/li>$/, "</div></li>");
+  const who = activeListOwner();
+  const locked = who !== undefined && Object.prototype.hasOwnProperty.call(posLocksFor(ownerIdOf(who), listKey), tItemKey(String(it)));
+  return saoListItem(it).replace(/^<li>/, `<li class="has-ico${locked ? " pos-locked" : ""}">${listIconHtml(listKey, it, editable)}<div class="rpg-sao-li-body">`)
+    .replace(/<\/li>$/, `</div>${locked ? `<span class="rpg-sao-poslock" title="Locked to this position">${LOCK_ICON.on}</span>` : ""}</li>`);
 }
 
 // the active character as the block sees it: null for the player
@@ -6018,7 +6120,7 @@ function saoSaveListEdit() {
   const key = saoListEdit.key;
   const before = (Array.isArray(display[key]) ? display[key] : []).map(String);
   // ";" and "|" would split the entry apart in the block
-  let rows = saoListEdit.rows.map((r) => ({ orig: r.orig, text: String(r.text || "").replace(/;/g, ",").replace(/\|/g, "/").replace(/\s*\n\s*/g, " ").trim() }))
+  let rows = saoListEdit.rows.map((r) => ({ orig: r.orig, locked: !!r.locked, text: String(r.text || "").replace(/;/g, ",").replace(/\|/g, "/").replace(/\s*\n\s*/g, " ").trim() }))
     .filter((r) => r.text);
   const kept = new Set(rows.map((r) => r.orig).filter(Boolean));
   let removed = before.filter((t) => !kept.has(t));
@@ -6028,6 +6130,13 @@ function saoSaveListEdit() {
     if (!sure) { rows = rows.concat(removed.map((t) => ({ orig: t, text: t }))); removed = []; }
   }
   display[key] = rows.map((r) => r.text);
+  // position locks: each locked row's final place in the list
+  const ownerForLocks = activeListOwner();
+  if (ownerForLocks !== undefined && !isVehicle) {
+    const map = {};
+    rows.forEach((r, i) => { if (r.locked) map[tItemKey(r.text)] = i; });
+    savePosLocks(ownerIdOf(ownerForLocks), key, map);
+  }
   const edits = rows.filter((r) => r.orig && r.orig !== r.text).map((r) => ({ from: r.orig, to: r.text }))
     .concat(removed.map((t) => ({ from: t, to: null })));
   saoListEdit = null;
@@ -6050,7 +6159,10 @@ function saoBindListEditor() {
       e.stopPropagation();
       const { display } = getActiveData();
       const key = el.dataset.list;
-      saoListEdit = { key, rows: (Array.isArray(display[key]) ? display[key] : []).map((t) => ({ text: String(t), orig: String(t) })) };
+      const who = activeListOwner();
+      const locks = who === undefined ? {} : posLocksFor(ownerIdOf(who), key);
+      saoListEdit = { key, rows: (Array.isArray(display[key]) ? display[key] : []).map((t) =>
+        ({ text: String(t), orig: String(t), locked: Object.prototype.hasOwnProperty.call(locks, tItemKey(String(t))) })) };
       renderRPG();
     };
   });
@@ -6060,6 +6172,9 @@ function saoBindListEditor() {
     el.oninput = () => { const r = saoListEdit.rows[+el.dataset.i]; if (r) r.text = el.value; };
     el.onclick = (e) => e.stopPropagation();
     el.onkeydown = (e) => e.stopPropagation();
+  });
+  box.querySelectorAll(".rpg-sao-ledit-lock").forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); const r = saoListEdit.rows[+el.dataset.i]; if (r) { r.locked = !r.locked; renderRPG(); } };
   });
   box.querySelectorAll(".rpg-sao-ledit-del").forEach((el) => {
     el.onclick = (e) => { e.stopPropagation(); saoListEdit.rows.splice(+el.dataset.i, 1); renderRPG(); };
@@ -7989,6 +8104,11 @@ button.rpg-sao-ico:hover{border-color:#b3903f; color:#8a6a12}
 .rpg-sao-ledit-del{flex:0 0 auto; width:22px; height:22px; padding:0; cursor:pointer; font-size:12px; border-radius:2px;
   background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink)}
 .rpg-sao-ledit-del:hover{color:#c0392b; border-color:#c0392b}
+.rpg-sao-ledit-side{flex:0 0 auto; display:flex; flex-direction:column; gap:4px}
+.rpg-sao-ledit-lock{width:22px; height:22px; padding:0; cursor:pointer; display:grid; place-items:center; border-radius:2px;
+  background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink-dim)}
+.rpg-sao-ledit-lock.on{color:#8a6a12; border-color:#b3903f; background:rgba(179,144,63,.16)}
+.rpg-sao-poslock{flex:0 0 auto; display:grid; place-items:center; color:#8a6a12; opacity:.85; margin-top:3px}
 #rpg-sao-edithist{width:52px; font:inherit; font-size:12px; padding:2px 4px; text-align:center}
 .rpg-sao-customfont input{width:100%; box-sizing:border-box; font:inherit; font-size:12px; padding:4px 6px;
   color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
