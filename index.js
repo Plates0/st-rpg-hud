@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.30";
+const HUD_BUILD = "2026-09-26.31";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -741,11 +741,14 @@ function findDescriptionRestores(prev, next) {
     const was = prevOwners.get(owner.id);
     if (!was) return;                                   // new to the scene: nothing to compare
     WATCHED_LISTS.filter((w) => w.key !== "masteries").forEach(({ key, label }) => {
-      const before = new Map();
-      (was.ent?.[key] || []).forEach((x) => { const t = String(x).trim(); if (t) before.set(tItemKey(t), t); });
+      const prevItems = (was.ent?.[key] || []).map((x) => String(x).trim()).filter(Boolean);
+      const used = new Set();
       (owner.ent?.[key] || []).forEach((x) => {
         const t = String(x).trim();
-        const old = before.get(tItemKey(t));
+        // same-name variants: pair with the closest earlier one, each only once
+        const pi = bestEntryIndex(prevItems, tItemKey(t), t, used);
+        if (pi >= 0) used.add(pi);
+        const old = pi >= 0 ? prevItems[pi] : undefined;
         if (!old || old === t) return;
         const fixed = restoredEntry(old, t);
         if (fixed && fixed !== t) out.push({ key, label, from: t, to: fixed, who: owner.who, owner: owner.name });
@@ -4189,11 +4192,24 @@ function tItemKey(text) {
     .trim().toLowerCase();
 }
 
+// Keys for a list where a repeated name gets "#2", "#3"..., so two variants
+// of the same skill are two entries in the log rather than one.
+function tUniqueKeys(list) {
+  const seen = new Map();
+  return (Array.isArray(list) ? list : []).map((i) => {
+    const k = tItemKey(String(typeof i === "object" ? (i?.name ?? "") : (i ?? "")).trim());
+    const n = (seen.get(k) || 0) + 1;
+    seen.set(k, n);
+    return n === 1 ? k : `${k}#${n}`;
+  });
+}
+
 function tListMap(list) {
   const m = new Map();
-  (Array.isArray(list) ? list : []).forEach((i) => {
+  const keys = tUniqueKeys(list);
+  (Array.isArray(list) ? list : []).forEach((i, idx) => {
     const text = String(typeof i === "object" ? (i?.name ?? "") : (i ?? "")).trim();
-    const key = tItemKey(text);
+    const key = keys[idx];
     if (key && !m.has(key)) m.set(key, text);
   });
   return m;
@@ -4388,7 +4404,11 @@ function applyTurnUndo(b, a, u) {
       // the player's list, or the character's named by who
       if (!tb) break;
       const list = Array.isArray(tb[u.key]) ? tb[u.key] : (tb[u.key] = []);
-      putBack(list, (x) => tItemKey(tItemText(x)) === u.k, (ta?.[u.key] || []).find((x) => tItemKey(tItemText(x)) === u.k));
+      const src = ta?.[u.key] || [];
+      const bk = tUniqueKeys(list), ak = tUniqueKeys(src);
+      const i = bk.indexOf(u.k), j = ak.indexOf(u.k);
+      if (j >= 0) { if (i >= 0) list[i] = tClone(src[j]); else list.push(tClone(src[j])); }
+      else if (i >= 0) list.splice(i, 1);
       break;
     }
     case "unit": {
@@ -5726,7 +5746,11 @@ function saoStatusPanel() {
       } else {
         // icons double as the way in: tap one to edit this list
         h += list.length
-          ? `<ul class="rpg-sao-entries with-icons">` + list.map((it) => saoListItemWithIcon(saoSub, it, true)).join("") + `</ul>`
+          ? `<ul class="rpg-sao-entries with-icons">` + (() => {
+              const who = activeListOwner();
+              const lockedSet = new Set(who === undefined ? [] : lockedIndices(list.map(String), posLocksFor(ownerIdOf(who), saoSub)).map((l) => l.i));
+              return list.map((it, i) => saoListItemWithIcon(saoSub, it, true, i, lockedSet)).join("");
+            })() + `</ul>`
           : `<p class="rpg-sao-empty">Nothing recorded. <button class="rpg-sao-mini rpg-sao-ico" data-list="${saoSub}">+ Add</button></p>`;
       }
     }
@@ -5929,6 +5953,32 @@ function reorderRows(kind) {
   return null;
 }
 
+// ---- telling same-name entries apart ----
+// "Vorpal Strike (Lv1)" and "Vorpal Strike (Lv3)" share the name key
+// "vorpal strike". When a key matches more than one entry, the one whose text
+// is most like the target wins. A lone match is taken by name alone, so a
+// reworded description never breaks anything.
+function textWords(t) {
+  return new Set(stripStatusTags(String(t ?? "")).toLowerCase().split(/[^a-z0-9+*.\-]+/).filter(Boolean));
+}
+function textSimilarity(a, b) {
+  if (String(a).trim() === String(b).trim()) return 2;            // identical beats everything
+  const A = textWords(a), B = textWords(b);
+  let n = 0;
+  A.forEach((w) => { if (B.has(w)) n++; });
+  return n / Math.max(1, Math.max(A.size, B.size));
+}
+// index in items of the entry best matching (key, text), skipping taken ones
+function bestEntryIndex(items, key, text, taken = new Set()) {
+  let best = -1, score = -1;
+  items.forEach((t, i) => {
+    if (taken.has(i) || tItemKey(t) !== key) return;
+    const sc = text ? textSimilarity(t, text) : 0;
+    if (sc > score) { score = sc; best = i; }
+  });
+  return best;
+}
+
 // ---- position locks ----
 // A locked entry keeps its place in its list (1st, 2nd, 3rd...). After each
 // new reply, locked entries the AI moved are put back; the unlocked ones keep
@@ -5941,18 +5991,33 @@ const POS_FIELDS = { inventory: "INV", skills: "Skills", passives: "Passives" };
 function posLocksAll() {
   try { return JSON.parse(localStorage.getItem(POSLOCKS_KEY) || "{}") || {}; } catch { return {}; }
 }
+// Locks are a list of { key, text, pos }. The text is what tells same-name
+// variants apart; older saves were { itemKey: pos } and still load.
 function posLocksFor(ownerId, listKey) {
   let key = "";
   try { key = currentChatKey(SillyTavern.getContext()); } catch {}
-  return posLocksAll()?.[key]?.[ownerId]?.[listKey] || {};
+  const raw = posLocksAll()?.[key]?.[ownerId]?.[listKey];
+  if (Array.isArray(raw)) return raw;
+  return raw ? Object.entries(raw).map(([k, pos]) => ({ key: k, text: "", pos })) : [];
 }
-function savePosLocks(ownerId, listKey, map) {
+
+// which indices in items are locked, and to where
+function lockedIndices(items, locks) {
+  const taken = new Set(), out = [];
+  [...locks].sort((a, b) => a.pos - b.pos).forEach((l) => {
+    const i = bestEntryIndex(items, l.key, l.text, taken);
+    if (i >= 0) { taken.add(i); out.push({ i, pos: l.pos }); }
+  });
+  return out;
+}
+function savePosLocks(ownerId, listKey, list) {
+  const map = list;
   let key = "";
   try { key = currentChatKey(SillyTavern.getContext()); } catch { return; }
   const all = posLocksAll();
   const chat = (all[key] = all[key] || {});
   const owner = (chat[ownerId] = chat[ownerId] || {});
-  if (Object.keys(map).length) owner[listKey] = map; else delete owner[listKey];
+  if (map.length) owner[listKey] = map; else delete owner[listKey];
   if (!Object.keys(owner).length) delete chat[ownerId];
   if (!Object.keys(chat).length) delete all[key];
   try { localStorage.setItem(POSLOCKS_KEY, JSON.stringify(all)); } catch {}
@@ -5960,12 +6025,11 @@ function savePosLocks(ownerId, listKey, map) {
 
 // Put locked entries back at their positions; everything else keeps its order.
 function applyPositionLocks(items, locks) {
-  const locked = [], free = [];
-  items.forEach((t) => (Object.prototype.hasOwnProperty.call(locks, tItemKey(t)) ? locked : free).push(t));
+  const locked = lockedIndices(items, locks);
   if (!locked.length) return items.slice();
-  locked.sort((a, b) => locks[tItemKey(a)] - locks[tItemKey(b)]);
-  const out = free.slice();
-  locked.forEach((t) => out.splice(Math.min(locks[tItemKey(t)], out.length), 0, t));
+  const lockedSet = new Set(locked.map((l) => l.i));
+  const out = items.filter((_, i) => !lockedSet.has(i));
+  locked.sort((a, b) => a.pos - b.pos).forEach((l) => out.splice(Math.min(l.pos, out.length), 0, items[l.i]));
   return out;
 }
 
@@ -6005,7 +6069,7 @@ function positionFixesFor(state) {
   listOwners(state).forEach((owner) => {
     Object.keys(POS_FIELDS).forEach((listKey) => {
       const locks = posLocksFor(owner.id, listKey);
-      if (!Object.keys(locks).length) return;
+      if (!locks.length) return;
       const items = (owner.ent?.[listKey] || []).map((x) => String(x).trim()).filter(Boolean);
       const fixed = applyPositionLocks(items, locks);
       if (fixed.join(";") !== items.join(";")) out.push({ ownerId: owner.id, owner: owner.name, listKey, locks });
@@ -6045,9 +6109,8 @@ function saoListEditorHtml(key) {
     </div>`;
 }
 
-function saoListItemWithIcon(listKey, it, editable) {
-  const who = activeListOwner();
-  const locked = who !== undefined && Object.prototype.hasOwnProperty.call(posLocksFor(ownerIdOf(who), listKey), tItemKey(String(it)));
+function saoListItemWithIcon(listKey, it, editable, idx = -1, lockedSet = null) {
+  const locked = !!lockedSet && lockedSet.has(idx);
   return saoListItem(it).replace(/^<li>/, `<li class="has-ico${locked ? " pos-locked" : ""}">${listIconHtml(listKey, it, editable)}<div class="rpg-sao-li-body">`)
     .replace(/<\/li>$/, `</div>${locked ? `<span class="rpg-sao-poslock" title="Locked to this position">${LOCK_ICON.on}</span>` : ""}</li>`);
 }
@@ -6070,7 +6133,6 @@ function rewriteListHistory(who, listKey, edits, depth) {
   try { ctx = SillyTavern.getContext(); } catch { return 0; }
   const chat = ctx?.chat || [];
   const ownerId = who ? `${who.group}:${who.key}` : "@player";
-  const byKey = new Map(edits.map((e) => [tItemKey(e.from), e]));
   let touched = 0, seen = 0;
   for (let i = lastRpgMsgIndex - 1; i >= 0 && seen < depth; i--) {
     const msg = chat[i];
@@ -6092,13 +6154,17 @@ function rewriteListHistory(who, listKey, edits, depth) {
       if (!re.test(ln)) continue;
       lines[li] = ln.replace(re, (m, a, val, z) => {
         const items = val.split(";").map((x) => x.trim()).filter(Boolean);
-        const out = [];
-        items.forEach((x) => {
-          const e = byKey.get(tItemKey(x));
-          if (!e) { out.push(x); return; }
-          changed = true;
-          if (e.to) out.push(e.to);
+        // each edit takes the single closest same-name entry, so a variant
+        // with the same name is never edited or removed along with it
+        const taken = new Set(), plan = new Map();
+        edits.forEach((e) => {
+          const i = bestEntryIndex(items, tItemKey(e.from), e.from, taken);
+          if (i >= 0) { taken.add(i); plan.set(i, e); }
         });
+        if (!plan.size) return m;
+        changed = true;
+        const out = [];
+        items.forEach((x, i) => { const e = plan.get(i); if (!e) out.push(x); else if (e.to) out.push(e.to); });
         return a + out.join(";") + z;
       });
     }
@@ -6133,9 +6199,9 @@ function saoSaveListEdit() {
   // position locks: each locked row's final place in the list
   const ownerForLocks = activeListOwner();
   if (ownerForLocks !== undefined && !isVehicle) {
-    const map = {};
-    rows.forEach((r, i) => { if (r.locked) map[tItemKey(r.text)] = i; });
-    savePosLocks(ownerIdOf(ownerForLocks), key, map);
+    const list = [];
+    rows.forEach((r, i) => { if (r.locked) list.push({ key: tItemKey(r.text), text: r.text, pos: i }); });
+    savePosLocks(ownerIdOf(ownerForLocks), key, list);
   }
   const edits = rows.filter((r) => r.orig && r.orig !== r.text).map((r) => ({ from: r.orig, to: r.text }))
     .concat(removed.map((t) => ({ from: t, to: null })));
@@ -6160,9 +6226,9 @@ function saoBindListEditor() {
       const { display } = getActiveData();
       const key = el.dataset.list;
       const who = activeListOwner();
-      const locks = who === undefined ? {} : posLocksFor(ownerIdOf(who), key);
-      saoListEdit = { key, rows: (Array.isArray(display[key]) ? display[key] : []).map((t) =>
-        ({ text: String(t), orig: String(t), locked: Object.prototype.hasOwnProperty.call(locks, tItemKey(String(t))) })) };
+      const items = (Array.isArray(display[key]) ? display[key] : []).map(String);
+      const lockedSet = new Set(who === undefined ? [] : lockedIndices(items, posLocksFor(ownerIdOf(who), key)).map((l) => l.i));
+      saoListEdit = { key, rows: items.map((t, i) => ({ text: t, orig: t, locked: lockedSet.has(i) })) };
       renderRPG();
     };
   });
