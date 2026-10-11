@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-11.3";
+const HUD_BUILD = "2026-10-11.4";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -3878,6 +3878,18 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    display:flex; align-items:center; justify-content:center;
 	    box-sizing:border-box;
 	  ">↻</button>
+	  <button id="rpg-help-btn" title="Help" style="
+	    position:relative; background:#333; border:1px solid #777; color:#fff;
+	    cursor:pointer; width:34px; height:26px;
+	    display:flex; align-items:center; justify-content:center;
+	    box-sizing:border-box;
+	  ">?</button>
+	  <button id="rpg-log-btn" title="Update log" style="
+	    position:relative; background:#333; border:1px solid #777; color:#fff;
+	    cursor:pointer; width:34px; height:26px;
+	    display:flex; align-items:center; justify-content:center;
+	    box-sizing:border-box;
+	  ">📜${changelogUnseen() ? `<span style="position:absolute; top:-3px; right:-3px; width:8px; height:8px; border-radius:50%; background:#ff5252; box-shadow:0 0 0 2px #111;"></span>` : ""}</button>
 	</div>
 
 
@@ -3889,6 +3901,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
       ${settingsPanelHtml}
       ${errorPanelHtml}
+      ${classicInfoHtml()}
     `;
 
 {
@@ -3946,7 +3959,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     };
 
     bind("rpg-min-btn", toggleMinimize);
-    bind("rpg-settings-btn", toggleSettings);
+    bind("rpg-settings-btn", (e) => { classicInfo = null; toggleSettings(e); });
     bind("rpg-error-close", closePipeErrorPanel);
     
     const errorScroll = document.getElementById("rpg-error-scroll");
@@ -4027,6 +4040,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     bind("tab-log", () => switchTab("log"));
     classicBindLog();
     classicBindEditors();
+    classicBindInfo();
 	  
 	if (isSettingsOpen) {
 	  bind("rpg-settings-close", toggleSettings);
@@ -6610,7 +6624,7 @@ function saoQuestsPanel() {
 function saoPanelScrollKey() {
   if (saoPanel === "status") return `status:${charIndex}:${saoSub}`;
   if (saoPanel === "quests") return `quests:${saoQuestTab}`;
-  if (saoPanel === "gear" && saoHelpOpen) return "help";
+  if (saoPanel === "gear" && saoHelpOpen) return saoHelpOpen === "log" ? "whatsnew" : "help";
   return `panel:${saoPanel}`;
 }
 
@@ -6942,6 +6956,126 @@ function classicBindEditors() {
   });
 }
 
+
+// =====================================================================
+// UPDATE LOG + CLASSIC HELP
+// The update log is shared by both skins. When the build changes, the log
+// button shows a dot until the log is opened once.
+// =====================================================================
+const CHANGELOG = [
+  { build: "2026-10-11.4", items: [
+    "Classic: a ? help button and a \u{1F4DC} update log beside settings. The log is also in the SAO settings menu as What's new.",
+  ] },
+  { build: "2026-10-11.3", items: [
+    "Quests can be edited in both skins (✎): reorder, delete, add.",
+    "Item, skill and passive icons sit beside the middle of long entries instead of the top.",
+  ] },
+  { build: "2026-10-11.1–.2", items: [
+    "Classic gets the item, skill and passive icons (squared) and the same editors as SAO: tap an icon to edit.",
+    "Classic Mastery tab gets a ✎ editor, like Bonds.",
+    "Classic settings: Edits Rewrite Past Replies.",
+  ] },
+  { build: "2026-09-26.29–.31", items: [
+    "▲▼ reordering in the item/skill/passive, mastery and meter editors.",
+    "Position locks: lock an entry to its place in the list; if the AI reorders it, it's put back.",
+    "Same-name variants (Vorpal Strike Lv1 / Lv3) are told apart by locks, history rewriting, restore and the turn log.",
+  ] },
+  { build: "2026-09-26.26–.28", items: [
+    "Icons for items, skills and passives in the Status orb; tap one to edit that list.",
+    "Edits rewrite past replies (0–20): list edits also fix that many earlier replies.",
+    "Icons pick by bracket type, then the name's last word. Accessories, phones, laptops and cameras added.",
+  ] },
+  { build: "2026-09-26.24–.25", items: [
+    "Day of the week shown with the date everywhere.",
+    "Fix weekdays: a wrong weekday written in Time: is corrected to the real calendar (tap the toast to undo).",
+  ] },
+  { build: "2026-09-26.20–.23", items: [
+    "Restore lost descriptions: puts back a description the AI dropped entirely, for any character.",
+    "Description alerts and the turn log cover party, NPCs and enemies, not just you.",
+    "Turn log: lock a change so Undo last turn keeps it.",
+    "The no-state toast no longer fires on page refresh.",
+    "More fonts: Saira Condensed, Teko, Exo 2, or any Google Font.",
+  ] },
+  { build: "2026-09-26.14–.19", items: [
+    "Move characters between Party, NPCs and Enemies.",
+    "Edit state → Save leaves an (OOC: ...) note telling the AI what you changed.",
+    "Edit a character's own Bond from their Stats tab; deleting a bond no longer scrubs live bonds.",
+    "Bars with an equation in their max now fill properly; tap a number to see its breakdown.",
+    "Bigger tap targets for the collapse arrows; no stray scrolling when minimised.",
+  ] },
+  { build: "2026-09-26.1–.13", items: [
+    "ALfheim (New) bar style, with status tiles, emblem tiles and pickable tile colours.",
+    "Tap through the bars to whatever is behind them.",
+    "Classic: a Log tab with undo, a −1 button on charge timers, scroll position kept.",
+    "Bond editor now actually writes into the message.",
+    "Build stamp at the bottom of the SAO settings menu.",
+  ] },
+];
+
+const SEEN_BUILD_KEY = "rpgHud:seenBuild";
+function changelogUnseen() {
+  try { return localStorage.getItem(SEEN_BUILD_KEY) !== HUD_BUILD; } catch { return false; }
+}
+function markChangelogSeen() {
+  try { localStorage.setItem(SEEN_BUILD_KEY, HUD_BUILD); } catch {}
+}
+
+function changelogPanel() {
+  const item = (name, text) => `<div class="rpg-sao-help-item"><dt>${name}</dt><dd>${text}</dd></div>`;
+  return {
+    title: "What's new",
+    body: `<dl class="rpg-sao-help">` +
+      CHANGELOG.map((c) => item(`Build ${escHtml(c.build)}`, c.items.map((t) => "• " + escHtml(t)).join("<br>"))).join("") +
+      `</dl><p class="rpg-sao-empty">You're on build ${escHtml(HUD_BUILD)}.</p>`,
+  };
+}
+
+// ---- classic: help and log as overlays, like settings ----
+let classicInfo = null;   // null | "help" | "log"
+
+const CLASSIC_HELP = [
+  ["The dot", "Top right. Green: the latest reply has a valid state. Yellow: the block is broken (tap for details). Grey: no block."],
+  ["Tabs", "Party, Bonds, Timers, Items, Skills, Passive, Mastery, Quest, Environment and Log. Pick a character from the name dropdown to see their tabs."],
+  ["Editing lists", "In Items, Skills and Passive, tap any icon to edit that list: change text, ✕ to delete, ▲▼ to reorder, + Add. Mastery and Quest have a ✎ button instead."],
+  ["Position locks", "In the item, skill and passive editor, the padlock under ✕ pins an entry to its place. If the AI reorders the list, locked entries are put back; the rest keep their order."],
+  ["Edits Rewrite Past Replies", "Settings. List edits also fix this many earlier replies, so the AI can't copy the old version back from history. 0 means the latest reply only."],
+  ["Bonds", "✎ to edit, + to add. Deleting asks whether to also remove the name from earlier Bonds lists; characters' own Bond values are left alone."],
+  ["Timers", "Turns (2/3), deadlines (Jan 6 1023,14:00) or uses (2/2x). Charge timers have a −1 button to spend one."],
+  ["Log", "What changed each turn. Undo last turn reverts the newest turn; ↶ reverts a single change; the padlock keeps a change through Undo last turn. Redo puts it back."],
+  ["Edit state", "Settings → ✏️ Edit: edit everything about the selected character. With Note Edits for AI on, saving leaves an (OOC: ...) line telling the AI what you changed."],
+  ["Move", "Settings: move the selected character between Party, NPCs and Enemies."],
+  ["Change Alerts", "A toast when an item, skill or passive's description changes or loses detail, for anyone."],
+  ["Restore Lost Descriptions", "If the AI drops a description entirely, the old one is put back onto the new entry. Tap the toast to undo."],
+  ["Fix Weekdays", "If the AI writes a weekday in Time: that doesn't match the date, it's corrected. Tap the toast to undo."],
+  ["Scan (↻)", "Re-reads the latest reply and writes the state back into it."],
+];
+
+function classicInfoHtml() {
+  if (!classicInfo) return "";
+  const isLog = classicInfo === "log";
+  const rows = isLog
+    ? CHANGELOG.map((c) => `<div style="margin-bottom:10px;"><div style="color:#FFD700; font-weight:bold; margin-bottom:3px;">Build ${escHtml(c.build)}</div>` +
+        c.items.map((t) => `<div style="color:#ccc; padding-left:10px; text-indent:-10px; margin-bottom:2px;">• ${escHtml(t)}</div>`).join("") + `</div>`).join("")
+      + `<div style="opacity:.6; font-style:italic;">You're on build ${escHtml(HUD_BUILD)}.</div>`
+    : CLASSIC_HELP.map(([k, v]) => `<div style="margin-bottom:9px;"><div style="color:#4FC3F7; font-weight:bold;">${escHtml(k)}</div><div style="color:#ccc;">${escHtml(v)}</div></div>`).join("");
+  return `
+    <div id="rpg-info-overlay" style="position:absolute; inset:0; background:#0b0b0d; border:1px solid #333; z-index:100001;
+      display:flex; flex-direction:column; box-sizing:border-box; padding:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid #333; padding-bottom:6px;">
+        <div style="font-weight:bold; color:#ddd;">${isLog ? "\u{1F4DC} UPDATE LOG" : "❓ HELP"}</div>
+        <button id="rpg-info-close" style="background:#444; border:1px solid #777; color:#fff; cursor:pointer; font-size:10px; padding:3px 10px; font-weight:bold;">CLOSE</button>
+      </div>
+      <div data-scroll-key="c:info:${classicInfo}" style="flex:1; overflow:auto; font-size:0.8em; line-height:1.4; padding-right:4px;">${rows}</div>
+    </div>`;
+}
+
+function classicBindInfo() {
+  const one = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
+  one("rpg-help-btn", () => { classicInfo = classicInfo === "help" ? null : "help"; isSettingsOpen = false; renderRPG(); });
+  one("rpg-log-btn", () => { classicInfo = classicInfo === "log" ? null : "log"; isSettingsOpen = false; markChangelogSeen(); renderRPG(); });
+  one("rpg-info-close", () => { classicInfo = null; renderRPG(); });
+}
+
 function classicLogHtml() {
   let chat = [], ctx = null;
   try { ctx = SillyTavern.getContext(); chat = ctx?.chat || []; } catch {}
@@ -7194,7 +7328,8 @@ function saoSettingsHtml() {
     + row("rpg-sao-clear-party", "&#9634;", "Clear party")
     + row("rpg-sao-rescan", "&#8635;", "Rescan now")
     + row("rpg-sao-diagnose", "!", "Parse diagnostics")
-    + row("rpg-sao-help", "?", saoHelpOpen ? "Hide help" : "What these do")
+    + row("rpg-sao-help", "?", saoHelpOpen === true ? "Hide help" : "What these do")
+    + row("rpg-sao-whatsnew", "\u2726", saoHelpOpen === "log" ? "Hide what's new" : `What's new${changelogUnseen() ? " \u2022" : ""}`)
     + row("rpg-sao-move", "\u2725", "Move HUD pieces")
     + row("rpg-sao-reset", "\u21BA", "Reset settings")
     + row("rpg-sao-insert", "&#8595;", "Insert state")
@@ -7454,7 +7589,7 @@ function renderSaoSkin() {
     // --- panel ---
     let panelHtml = "";
     if (!saoMin && saoPanel === "gear" && saoHelpOpen) {
-      const help = saoHelpPanel();
+      const help = saoHelpOpen === "log" ? changelogPanel() : saoHelpPanel();
       panelHtml = `<div class="rpg-sao-panelwrap helpshift"><div class="rpg-sao-panel">
         <h2>${escHtml(help.title)}</h2>
         <div class="rpg-sao-body" data-scroll-key="help">${help.body}</div><div class="rpg-sao-jumps"><button class="rpg-sao-jumpto up" title="Back to the top"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 7.5L6 4l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="rpg-sao-jumpto down" title="To the bottom"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 4.5L6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div><div class="rpg-sao-notch"></div></div>`;
@@ -7629,7 +7764,8 @@ function saoBind() {
     renderRPG();
   });
   bind("rpg-sao-diagnose", () => { saoMin = false; saoPanel = "error"; renderRPG(); });
-  bind("rpg-sao-help", () => { saoHelpOpen = !saoHelpOpen; renderRPG(); });
+  bind("rpg-sao-help", () => { saoHelpOpen = saoHelpOpen === true ? false : true; renderRPG(); });
+  bind("rpg-sao-whatsnew", () => { saoHelpOpen = saoHelpOpen === "log" ? false : "log"; markChangelogSeen(); renderRPG(); });
   bind("rpg-sao-log-more", () => { saoLogShown += 20; renderRPG(); });
 
   // a character's own |Bond:|, edited from their Stats tab
