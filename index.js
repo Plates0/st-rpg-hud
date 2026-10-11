@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-11.2";
+const HUD_BUILD = "2026-10-11.3";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -3855,7 +3855,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         ${activeTab === "skills" ? classicIconList("skills", skills, "No Skills Learned") : ""}
         ${activeTab === "passives" ? classicIconList("passives", passives, "No Passives") : ""}
         ${activeTab === "mastery" ? classicMasteryHtml(masteries) : ""}
-        ${activeTab === "quests" ? makeList(rpgState.quests, "No Active Quests") : ""}
+        ${activeTab === "quests" ? classicQuestHtml() : ""}
         ${activeTab === "env" ? makeList(rpgState.env_effects, "No Environmental Effects") : ""}
       </div>
 
@@ -5868,6 +5868,7 @@ const LIST_ICONS = {
   laptop:  ico("M5.5 5.5h13v9h-13z M2.8 18.5h18.4l-1.7-4H4.5z"),
   camera:  ico("M4 8.2h3.4l1.6-2.6h6l1.6 2.6H20v10.6H4z", '<circle cx="12" cy="13.4" r="3.4"/>'),
   misc:    ico("M9 9.2a3 3 0 1 1 4.6 2.5c-1 .6-1.6 1.3-1.6 2.6 M12 17.6v.4"),
+  quest:   ico("M6 21V3.5 M6 4.5h11.5l-2.5 4 2.5 4H6"),
   // skills and passives
   fire:    ico("M12 3c.9 3.1 5 5 5 10.2a5 5 0 0 1-10 0c0-3 1.8-4.2 2-6.2 1.1.9 1.9 2 2 3.3 1.2-2.1 1.3-4.6 1-7.3z"),
   ice:     ico("M12 3v18 M4.2 7.5l15.6 9 M4.2 16.5l15.6-9 M9.5 4.5 12 7l2.5-2.5 M9.5 19.5 12 17l2.5 2.5"),
@@ -5922,6 +5923,7 @@ const SKILL_KINDS = [
 //   3. then any word, in category order ("Ring of Fire" ends on "Fire")
 // [...] notes are ignored entirely: "Keychain [Attached to Katana]" is a keychain.
 function listIconKind(listKey, text) {
+  if (listKey === "quests") return "quest";
   if (listKey === "inventory") {
     const head = String(descSplit(text).head || text).toLowerCase();
     const paren = (head.match(/\(([^)]*)\)/g) || []).join(" ");
@@ -6096,7 +6098,8 @@ function positionFixesFor(state) {
 let saoListEdit = null;   // null, or { key, rows: [{ text, orig }] }
 
 function saoListEditorHtml(key) {
-  const label = { inventory: "Items", skills: "Skills", passives: "Passives" }[key] || key;
+  const label = { inventory: "Items", skills: "Skills", passives: "Passives", quests: "Quests" }[key] || key;
+  const isQuests = key === "quests";
   const n = saoListEdit.rows.length;
   const rows = saoListEdit.rows.map((r, i) => `
     <div class="rpg-sao-ledit">
@@ -6105,15 +6108,17 @@ function saoListEditorHtml(key) {
       <textarea class="rpg-sao-ledit-text" data-i="${i}" rows="2" spellcheck="false">${escHtml(r.text)}</textarea>
       <span class="rpg-sao-ledit-side">
         <button class="rpg-sao-ledit-del" data-i="${i}" title="Remove">&#10005;</button>
-        <button class="rpg-sao-ledit-lock${r.locked ? " on" : ""}" data-i="${i}"
-          title="${r.locked ? "Locked to this position: the AI can't move it. Tap to unlock." : "Lock to this position"}">${r.locked ? LOCK_ICON.on : LOCK_ICON.off}</button>
+        ${isQuests ? "" : `<button class="rpg-sao-ledit-lock${r.locked ? " on" : ""}" data-i="${i}"
+          title="${r.locked ? "Locked to this position: the AI can't move it. Tap to unlock." : "Lock to this position"}">${r.locked ? LOCK_ICON.on : LOCK_ICON.off}</button>`}
       </span>
     </div>`).join("");
   const depth = Math.max(0, parseInt(uiSettings.listEditHistory, 10) || 0);
   return `<div class="rpg-sao-meditor rpg-sao-leditor">
       ${rows || `<p class="rpg-sao-empty">Empty. Add one below.</p>`}
       <button class="rpg-sao-mini" id="rpg-sao-ledit-add">+ Add</button>
-      <p class="rpg-sao-hint">${depth
+      <p class="rpg-sao-hint">${isQuests
+        ? "Quests are shared by everyone. Saving updates the latest reply."
+        : depth
         ? `Saving also updates ${depth} earlier repl${depth === 1 ? "y" : "ies"} (setting: Edits rewrite past replies).`
         : "Saving updates the latest reply. To also update earlier ones, see the setting Edits rewrite past replies."}</p>
       <div class="rpg-sao-medit-actions">
@@ -6196,8 +6201,11 @@ function rewriteListHistory(who, listKey, edits, depth) {
 }
 
 function saoSaveListEdit() {
-  const { display, isVehicle } = getActiveData();
   const key = saoListEdit.key;
+  const isQuests = key === "quests";
+  const active = getActiveData();
+  const display = isQuests ? rpgState : active.display;
+  const isVehicle = isQuests ? true : active.isVehicle;   // quests: no locks, no history
   const before = (Array.isArray(display[key]) ? display[key] : []).map(String);
   // ";" and "|" would split the entry apart in the block
   let rows = saoListEdit.rows.map((r) => ({ orig: r.orig, locked: !!r.locked, text: String(r.text || "").replace(/;/g, ",").replace(/\|/g, "/").replace(/\s*\n\s*/g, " ").trim() }))
@@ -6234,6 +6242,14 @@ function saoSaveListEdit() {
 }
 
 function saoBindListEditor() {
+  document.querySelectorAll(".rpg-quest-edit").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const items = (Array.isArray(rpgState.quests) ? rpgState.quests : []).map(String);
+      saoListEdit = { key: "quests", rows: items.map((t) => ({ text: t, orig: t, locked: false })) };
+      renderRPG();
+    };
+  });
   document.querySelectorAll(".rpg-sao-ico[data-list]").forEach((el) => {
     el.onclick = (e) => {
       e.stopPropagation();
@@ -6579,9 +6595,11 @@ function saoQuestsPanel() {
   if (saoQuestTab === "log") return { title: "Turn log", body: tabs + saoLogHtml() };
 
   const quests = Array.isArray(rpgState.quests) ? rpgState.quests : [];
+  if (saoListEdit && saoListEdit.key === "quests") return { title: "Quests", body: tabs + saoListEditorHtml("quests") };
   return {
     title: "Quests",
-    body: tabs + (quests.length
+    body: tabs + `<div class="rpg-sao-subhead"><span class="rpg-sao-sub">Active</span>
+        <button class="rpg-sao-mini rpg-quest-edit">&#9998; Edit</button></div>` + (quests.length
       ? quests.map((q) => `<div class="rpg-sao-quest">${escHtml(q)}</div>`).join("")
       : `<p class="rpg-sao-empty">No active quests.</p>`),
   };
@@ -6834,9 +6852,9 @@ const CLASSIC_ED_CSS = `<style>
 .rpg-c-ed button.rpg-sao-ico:hover{border-color:#C0A040; color:#ffd54f}
 .rpg-c-ed .rpg-sao-ico svg{width:15px; height:15px; display:block; fill:none; stroke:currentColor; stroke-width:1.7;
   stroke-linecap:round; stroke-linejoin:round}
-.rpg-c-li{display:flex; gap:7px; align-items:flex-start; padding:4px 0; border-bottom:1px solid #333}
-.rpg-c-li-body{flex:1; min-width:0; overflow-wrap:anywhere; padding-top:3px}
-.rpg-c-poslock{flex:0 0 auto; color:#ffc107; padding-top:5px}
+.rpg-c-li{display:flex; gap:7px; align-items:center; padding:4px 0; border-bottom:1px solid #333}
+.rpg-c-li-body{flex:1; min-width:0; overflow-wrap:anywhere}
+.rpg-c-poslock{flex:0 0 auto; color:#ffc107; display:grid}
 .rpg-c-ed .rpg-sao-mini{padding:2px 8px; font:inherit; font-size:.9em; font-weight:bold; cursor:pointer;
   background:#333; color:#ddd; border:1px solid #666; border-radius:2px}
 .rpg-c-ed .rpg-sao-mini.primary{background:#2e7d32; border-color:#4caf50; color:#fff}
@@ -6844,6 +6862,8 @@ const CLASSIC_ED_CSS = `<style>
 .rpg-c-ed .rpg-sao-hint{font-size:.85em; color:#999; margin:4px 0}
 .rpg-c-ed .rpg-sao-empty{opacity:.6; font-style:italic; margin:2px 0}
 .rpg-c-ed .rpg-sao-ledit{display:flex; gap:6px; align-items:flex-start; margin-bottom:6px}
+.rpg-c-ed .rpg-sao-ledit > .rpg-sao-ico{align-self:center}
+.rpg-sao-ledit > .rpg-sao-ico{align-self:center}
 .rpg-c-ed .rpg-sao-ledit-text{flex:1; min-width:0; box-sizing:border-box; resize:vertical; font:inherit; line-height:1.35;
   padding:3px 5px; color:#eee; background:#1b1b1b; border:1px solid #555; border-radius:2px}
 .rpg-c-ed .rpg-sao-ledit-side{flex:0 0 auto; display:flex; flex-direction:column; gap:4px}
@@ -6894,9 +6914,17 @@ function classicMasteryHtml(items) {
     makeList(items, "No Mastery Tracking");
 }
 
+function classicQuestHtml() {
+  if (saoListEdit && saoListEdit.key === "quests") return `<div class="rpg-c-ed">${saoListEditorHtml("quests")}</div>`;
+  return `<div style="display:flex; justify-content:flex-end; margin-bottom:3px;">
+      <button class="rpg-quest-edit" style="background:#333; border:1px solid #4FC3F7; color:#4FC3F7; cursor:pointer; font-size:0.9em; padding:1px 7px; font-weight:bold;">\u270E</button></div>` +
+    makeList(rpgState.quests, "No Active Quests");
+}
+
 // the classic tab body grows while an editor is open, so rows aren't cramped
 function classicEditorOpen() {
-  return !!(saoListEdit && LIST_TAB_KEYS[activeTab] === saoListEdit.key) || (activeTab === "mastery" && Array.isArray(saoMasteryEdit));
+  return !!(saoListEdit && (LIST_TAB_KEYS[activeTab] === saoListEdit.key || (activeTab === "quests" && saoListEdit.key === "quests")))
+    || (activeTab === "mastery" && Array.isArray(saoMasteryEdit));
 }
 
 function classicBindEditors() {
@@ -7555,7 +7583,7 @@ function saoBind() {
   });
 
   on(".rpg-sao-subtab", (el) => { saoSub = el.dataset.sub; saoMasteryEdit = null; saoListEdit = null; renderRPG(); });
-  on(".rpg-sao-qtab", (el) => { saoQuestTab = el.dataset.qtab; saoLogShown = 20; renderRPG(); });
+  on(".rpg-sao-qtab", (el) => { saoQuestTab = el.dataset.qtab; saoLogShown = 20; saoListEdit = null; renderRPG(); });
   on(".rpg-sao-turnhead", (el) => {
     const mes = document.querySelector(`#chat .mes[mesid="${el.dataset.mes}"]`);
     if (mes) mes.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -8259,9 +8287,9 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-mathnum{cursor:pointer; -webkit-tap-highlight-color:transparent}
 .rpg-mathnum i{font-style:normal; font-size:.72em; opacity:.7; margin-left:1px}
 .rpg-sao-move b{display:flex; gap:5px; flex-wrap:wrap; justify-content:flex-end}
-.rpg-sao-entries.with-icons li.has-ico{display:flex; gap:8px; align-items:flex-start}
+.rpg-sao-entries.with-icons li.has-ico{display:flex; gap:8px; align-items:center}
 .rpg-sao-li-body{flex:1; min-width:0}
-.rpg-sao-ico{flex:0 0 auto; display:grid; place-items:center; width:24px; height:24px; padding:0; margin-top:-2px;
+.rpg-sao-ico{flex:0 0 auto; display:grid; place-items:center; width:24px; height:24px; padding:0;
   border-radius:50%; border:1px solid var(--rpg-sao-rule); background:var(--rpg-sao-chip); color:var(--rpg-sao-ink)}
 button.rpg-sao-ico{cursor:pointer; -webkit-tap-highlight-color:transparent}
 button.rpg-sao-ico:hover{border-color:#b3903f; color:#8a6a12}
@@ -8269,6 +8297,7 @@ button.rpg-sao-ico:hover{border-color:#b3903f; color:#8a6a12}
   stroke-linecap:round; stroke-linejoin:round}
 .rpg-sao-empty .rpg-sao-ico{display:inline-grid; width:auto; padding:0 6px; height:auto; margin:0 0 0 4px; border-radius:4px}
 .rpg-sao-ledit{display:flex; gap:6px; align-items:flex-start; margin-bottom:6px}
+.rpg-sao-ledit > .rpg-sao-ico{align-self:center}
 .rpg-sao-reorder{flex:0 0 auto; display:flex; flex-direction:column; gap:2px}
 .rpg-sao-mv{width:18px; height:13px; padding:0; cursor:pointer; font-size:8px; line-height:1; border-radius:2px;
   color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule);
@@ -8285,7 +8314,7 @@ button.rpg-sao-ico:hover{border-color:#b3903f; color:#8a6a12}
 .rpg-sao-ledit-lock{width:22px; height:22px; padding:0; cursor:pointer; display:grid; place-items:center; border-radius:2px;
   background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink-dim)}
 .rpg-sao-ledit-lock.on{color:#8a6a12; border-color:#b3903f; background:rgba(179,144,63,.16)}
-.rpg-sao-poslock{flex:0 0 auto; display:grid; place-items:center; color:#8a6a12; opacity:.85; margin-top:3px}
+.rpg-sao-poslock{flex:0 0 auto; display:grid; place-items:center; color:#8a6a12; opacity:.85}
 #rpg-sao-edithist{width:52px; font:inherit; font-size:12px; padding:2px 4px; text-align:center}
 .rpg-sao-customfont input{width:100%; box-sizing:border-box; font:inherit; font-size:12px; padding:4px 6px;
   color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
