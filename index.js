@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.31";
+const HUD_BUILD = "2026-10-11.2";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -3242,11 +3242,13 @@ function toggleMinimize(e) {
 }
 function switchTab(tabName) {
   flushInlineEdits();
+  if (tabName !== activeTab) { saoListEdit = null; saoMasteryEdit = null; }
   activeTab = tabName;
   renderRPG();
 }
 function jumpToChar(e) {
   charIndex = parseInt(e.target.value, 10) || 0;
+  saoListEdit = null; saoMasteryEdit = null;
   renderRPG();
 }
 function toggleSettings(e) {
@@ -3691,6 +3693,10 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
    			 <input type="checkbox" id="rpg-settings-fixweekday" ${uiSettings.fixWeekdays !== false ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
 		  </div>
 		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="Editing Items, Skills or Passives (tap an icon) also rewrites this many earlier replies">Edits Rewrite Past Replies</span>
+   			 <input type="number" id="rpg-settings-edithist" min="0" max="20" step="1" value="${Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0))}" style="width:52px; background:#222; color:#ddd; border:1px solid #555; text-align:center;">
+		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
     			<span title="When the AI drops an item, skill or passive's description entirely, put it back (keeping its other changes)">Restore Lost Descriptions</span>
    			 <input type="checkbox" id="rpg-settings-restoredesc" ${uiSettings.restoreLostDesc ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
 		  </div>
@@ -3839,15 +3845,16 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         <div id="tab-log" style="${tabStyle("log")}">Log</div>
       </div>
 
-      <div data-scroll-key="c:body:${activeTab}" style="height: 110px; overflow-y: auto; font-size: 0.8em; padding:5px; background:rgba(0,0,0,0.3); scrollbar-gutter:${activeTab === "log" ? "auto" : "stable"};">
+      ${CLASSIC_ED_CSS}
+      <div data-scroll-key="c:body:${activeTab}" style="height: ${classicEditorOpen() ? 240 : 110}px; overflow-y: auto; font-size: 0.8em; padding:5px; background:rgba(0,0,0,0.3); scrollbar-gutter:${activeTab === "log" ? "auto" : "stable"};">
         ${activeTab === "party" ? renderPartyTab() : ""}
         ${activeTab === "log" ? classicLogHtml() : ""}
 		${activeTab === "bonds" ? renderBondsTab() : ""}
 		${activeTab === "timers" ? renderTimersTab() : ""}
-        ${activeTab === "inventory" ? makeList(inv, "No Items") : ""}
-        ${activeTab === "skills" ? makeList(skills, "No Skills Learned") : ""}
-        ${activeTab === "passives" ? makeList(passives, "No Passives") : ""}
-        ${activeTab === "mastery" ? makeList(masteries, "No Mastery Tracking") : ""}
+        ${activeTab === "inventory" ? classicIconList("inventory", inv, "No Items") : ""}
+        ${activeTab === "skills" ? classicIconList("skills", skills, "No Skills Learned") : ""}
+        ${activeTab === "passives" ? classicIconList("passives", passives, "No Passives") : ""}
+        ${activeTab === "mastery" ? classicMasteryHtml(masteries) : ""}
         ${activeTab === "quests" ? makeList(rpgState.quests, "No Active Quests") : ""}
         ${activeTab === "env" ? makeList(rpgState.env_effects, "No Environmental Effects") : ""}
       </div>
@@ -4019,6 +4026,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     bind("tab-env", () => switchTab("env"));
     bind("tab-log", () => switchTab("log"));
     classicBindLog();
+    classicBindEditors();
 	  
 	if (isSettingsOpen) {
 	  bind("rpg-settings-close", toggleSettings);
@@ -4026,6 +4034,12 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	
 	  bind("rpg-settings-reset", resetRPG);
 	  bind("rpg-settings-remove", removeActiveCharacter);
+	  const ehEl = document.getElementById("rpg-settings-edithist");
+	  if (ehEl) {
+	    ehEl.onclick = (e) => e.stopPropagation();
+	    ehEl.onkeydown = (e) => e.stopPropagation();
+	    ehEl.onchange = () => { uiSettings.listEditHistory = Math.max(0, Math.min(20, parseInt(ehEl.value, 10) || 0)); saveUiSettings(); };
+	  }
 	  const wdEl = document.getElementById("rpg-settings-fixweekday");
 	  if (wdEl) {
 	    wdEl.onclick = (e) => e.stopPropagation();
@@ -6100,8 +6114,8 @@ function saoListEditorHtml(key) {
       ${rows || `<p class="rpg-sao-empty">Empty. Add one below.</p>`}
       <button class="rpg-sao-mini" id="rpg-sao-ledit-add">+ Add</button>
       <p class="rpg-sao-hint">${depth
-        ? `Saving also updates ${depth} earlier repl${depth === 1 ? "y" : "ies"} (Settings \u2192 Edits rewrite past replies).`
-        : "Saving updates the latest reply. To also update earlier ones, see Settings \u2192 Edits rewrite past replies."}</p>
+        ? `Saving also updates ${depth} earlier repl${depth === 1 ? "y" : "ies"} (setting: Edits rewrite past replies).`
+        : "Saving updates the latest reply. To also update earlier ones, see the setting Edits rewrite past replies."}</p>
       <div class="rpg-sao-medit-actions">
         <button class="rpg-sao-mini" id="rpg-sao-ledit-cancel">Cancel</button>
         <button class="rpg-sao-mini primary" id="rpg-sao-ledit-save">Save ${escHtml(label)}</button>
@@ -6803,6 +6817,103 @@ function saoRedoLastTurn() {
 // Quests orb, drawn with classic's inline styles for its dark panel. Its tab
 // body drops scrollbar-gutter:stable: with it, Chromium left the good/bad
 // bullets unpainted, and a log that almost always scrolls gains nothing from it.
+
+// =====================================================================
+// CLASSIC: list icons + editors
+// Same editors as the SAO Status orb (so saving, history rewriting, position
+// locks and reordering all behave the same), drawn in classic's dark style.
+// The SAO editors' markup is reused inside .rpg-c-ed, which gives it a dark
+// look; everything outside .rpg-c-ed is untouched.
+// =====================================================================
+const CLASSIC_ED_CSS = `<style>
+.rpg-c-ed{--rpg-sao-ink:#e6e6e6; --rpg-sao-ink-dim:#9a9a9a; --rpg-sao-chip:#262626; --rpg-sao-rule:#555;
+  font-size:1.05em; color:#e6e6e6}
+.rpg-c-ed .rpg-sao-ico{flex:0 0 auto; display:grid; place-items:center; width:24px; height:24px; padding:0;
+  border-radius:3px; border:1px solid #5a5a5a; background:#262626; color:#ddd}
+.rpg-c-ed button.rpg-sao-ico{cursor:pointer; -webkit-tap-highlight-color:transparent}
+.rpg-c-ed button.rpg-sao-ico:hover{border-color:#C0A040; color:#ffd54f}
+.rpg-c-ed .rpg-sao-ico svg{width:15px; height:15px; display:block; fill:none; stroke:currentColor; stroke-width:1.7;
+  stroke-linecap:round; stroke-linejoin:round}
+.rpg-c-li{display:flex; gap:7px; align-items:flex-start; padding:4px 0; border-bottom:1px solid #333}
+.rpg-c-li-body{flex:1; min-width:0; overflow-wrap:anywhere; padding-top:3px}
+.rpg-c-poslock{flex:0 0 auto; color:#ffc107; padding-top:5px}
+.rpg-c-ed .rpg-sao-mini{padding:2px 8px; font:inherit; font-size:.9em; font-weight:bold; cursor:pointer;
+  background:#333; color:#ddd; border:1px solid #666; border-radius:2px}
+.rpg-c-ed .rpg-sao-mini.primary{background:#2e7d32; border-color:#4caf50; color:#fff}
+.rpg-c-ed .rpg-sao-medit-actions{display:flex; gap:6px; justify-content:flex-end; margin-top:6px}
+.rpg-c-ed .rpg-sao-hint{font-size:.85em; color:#999; margin:4px 0}
+.rpg-c-ed .rpg-sao-empty{opacity:.6; font-style:italic; margin:2px 0}
+.rpg-c-ed .rpg-sao-ledit{display:flex; gap:6px; align-items:flex-start; margin-bottom:6px}
+.rpg-c-ed .rpg-sao-ledit-text{flex:1; min-width:0; box-sizing:border-box; resize:vertical; font:inherit; line-height:1.35;
+  padding:3px 5px; color:#eee; background:#1b1b1b; border:1px solid #555; border-radius:2px}
+.rpg-c-ed .rpg-sao-ledit-side{flex:0 0 auto; display:flex; flex-direction:column; gap:4px}
+.rpg-c-ed .rpg-sao-ledit-del, .rpg-c-ed .rpg-sao-ms-del, .rpg-c-ed .rpg-sao-ledit-lock{width:22px; height:22px; padding:0;
+  cursor:pointer; display:grid; place-items:center; font-size:12px; border-radius:2px;
+  background:#262626; border:1px solid #555; color:#bbb}
+.rpg-c-ed .rpg-sao-ledit-del:hover, .rpg-c-ed .rpg-sao-ms-del:hover{color:#ef5350; border-color:#ef5350}
+.rpg-c-ed .rpg-sao-ledit-lock.on{color:#ffc107; border-color:#ffc107; background:rgba(255,193,7,.15)}
+.rpg-c-ed .rpg-sao-reorder{flex:0 0 auto; display:flex; flex-direction:column; gap:2px}
+.rpg-c-ed .rpg-sao-mv{width:18px; height:13px; padding:0; cursor:pointer; font-size:8px; line-height:1; border-radius:2px;
+  color:#ddd; background:#262626; border:1px solid #555}
+.rpg-c-ed .rpg-sao-mv:disabled{opacity:.3; cursor:default}
+@media (pointer:coarse){ .rpg-c-ed .rpg-sao-mv{width:22px; height:18px; font-size:9px} }
+.rpg-c-ed .rpg-sao-subhead{display:none}
+.rpg-c-ed .rpg-sao-mast-edit{display:grid; align-items:center; gap:4px; margin-bottom:5px;
+  grid-template-columns:auto minmax(0,1fr) 44px 8px 44px 22px}
+.rpg-c-ed .rpg-sao-mast-edit input[type=text]{min-width:0; width:100%; box-sizing:border-box; font:inherit;
+  padding:2px 4px; color:#eee; background:#1b1b1b; border:1px solid #555; border-radius:2px}
+.rpg-c-ed .rpg-sao-m-slash{text-align:center; color:#888}
+</style>`;
+
+const LIST_TAB_KEYS = { inventory: "inventory", skills: "skills", passives: "passives" };
+
+function classicIconList(listKey, items, emptyText) {
+  if (saoListEdit && saoListEdit.key === listKey) return `<div class="rpg-c-ed">${saoListEditorHtml(listKey)}</div>`;
+  if (!items.length) {
+    return `<div class="rpg-c-ed"><div style="opacity:0.5; font-style:italic;">${escHtml(emptyText)}
+      <button class="rpg-sao-mini rpg-sao-ico" data-list="${listKey}" style="display:inline-grid; width:auto; height:auto; padding:1px 7px; border-radius:2px; margin-left:4px;">+ Add</button></div></div>`;
+  }
+  const who = activeListOwner();
+  const lockedSet = new Set(who === undefined ? [] : lockedIndices(items.map(String), posLocksFor(ownerIdOf(who), listKey)).map((l) => l.i));
+  return `<div class="rpg-c-ed">` + items.map((it, i) => {
+    const text = String(it);
+    const p = text.match(/:\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
+    const bar = p ? `<div style="width:100%; background:#444; height:4px; margin-top:3px; border-radius:2px; overflow:hidden;"><div style="height:100%; background:#7e57c2; width:${clamp(parseFloat(p[2]) > 0 ? (parseFloat(p[1]) / parseFloat(p[2])) * 100 : 0, 0, 100)}%"></div></div>` : "";
+    return `<div class="rpg-c-li">${listIconHtml(listKey, text, true)}<div class="rpg-c-li-body">${escHtml(text)}${bar}</div>${
+      lockedSet.has(i) ? `<span class="rpg-c-poslock" title="Locked to this position">${LOCK_ICON.on}</span>` : ""}</div>`;
+  }).join("") + `</div>`;
+}
+
+function classicMasteryHtml(items) {
+  const editBtn = (id, label, color) => `<button id="${id}" style="background:#333; border:1px solid ${color}; color:${color};
+      cursor:pointer; font-size:0.9em; padding:1px 7px; font-weight:bold;">${label}</button>`;
+  if (Array.isArray(saoMasteryEdit)) {
+    return `<div class="rpg-c-ed">${saoMasteriesSection(items)}</div>`;
+  }
+  return `<div style="display:flex; justify-content:flex-end; margin-bottom:3px;">${editBtn("rpg-sao-ms-edit", "✎", "#4FC3F7")}</div>` +
+    makeList(items, "No Mastery Tracking");
+}
+
+// the classic tab body grows while an editor is open, so rows aren't cramped
+function classicEditorOpen() {
+  return !!(saoListEdit && LIST_TAB_KEYS[activeTab] === saoListEdit.key) || (activeTab === "mastery" && Array.isArray(saoMasteryEdit));
+}
+
+function classicBindEditors() {
+  saoBindListEditor();
+  saoBindMasteryEditor();
+  document.querySelectorAll(".rpg-c-ed .rpg-sao-mv").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const rows = reorderRows(el.dataset.kind);
+      const i = +el.dataset.i, j = i + (+el.dataset.d);
+      if (!rows || j < 0 || j >= rows.length) return;
+      [rows[i], rows[j]] = [rows[j], rows[i]];
+      renderRPG();
+    };
+  });
+}
+
 function classicLogHtml() {
   let chat = [], ctx = null;
   try { ctx = SillyTavern.getContext(); chat = ctx?.chat || []; } catch {}
