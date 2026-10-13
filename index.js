@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-11.4";
+const HUD_BUILD = "2026-10-12.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -440,6 +440,7 @@ const defaultUiSettings = {
   oocEditNotes: true,     // Edit state -> Save leaves an (OOC: ...) note in the block listing what you changed
   restoreLostDesc: false, // put back a description the AI dropped entirely (keeps its other changes)
   fixWeekdays: true,      // a weekday written in Time: that doesn't match the date gets corrected
+  addWeekdays: true,      // a reply's Time: with no weekday gets one added (when the date can be placed)
   listEditHistory: 0,     // list edits from the Status orb also rewrite this many earlier replies (0-20)
   saoUiScale: 100,        // % size of the bar cluster; a desktop usually wants ~130
   saoTextShadow: false,   // shadow behind the text that sits straight on the chat
@@ -805,7 +806,9 @@ function applyDescriptionRestores(mes, fixes) {
 // stays three letters, "Monday" stays whole, capitals are kept. Only when the
 // date can really be placed: a Jan..Dec month and a written year. Otherwise
 // it's left alone rather than "corrected" against a guess.
-function weekdayFixFor(inner) {
+function weekdayFixFor(inner, opts = {}) {
+  const fix = opts.fix ?? (uiSettings.fixWeekdays !== false);
+  const add = opts.add ?? (uiSettings.addWeekdays !== false);
   const f = String(inner || "").match(/\|\s*Time\s*:\s*([^|]*)\|/i);
   if (!f) return null;
   const parts = f[1].split(",");
@@ -814,11 +817,15 @@ function weekdayFixFor(inner) {
   const dp = (parts[0] || "").trim().split(/\s+/);
   if (dp.length > 2 && WEEKDAY_RE.test(dp[0])) written = dp.shift();
   written = written.replace(/[.,]/g, "");
-  if (!written) return null;
   const [month, day, year] = dp;
   if (!/^\d{1,4}$/.test(year || "")) return null;               // no written year: can't be sure
   const correct = worldWeekday({ month, day, year }, true);
   if (!correct) return null;                                    // not a calendar month
+  if (!written) {
+    // none written: add the short form in front of the month
+    return add ? { from: "", to: correct.slice(0, 3), date: `${month} ${day} ${year}`, insert: true } : null;
+  }
+  if (!fix) return null;
   if (correct.slice(0, 3).toLowerCase() === written.slice(0, 3).toLowerCase()) return null;
   const long = /^(sun|mon|tues|wednes|thurs|fri|satur)day$/i.test(written);
   let to = long ? correct : correct.slice(0, 3);
@@ -833,7 +840,9 @@ function applyWeekdayFix(mes, fix) {
   let hit = false;
   const out = String(mes).replace(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i, (block) =>
     block.replace(/(\|\s*Time\s*:\s*)([^|]*)\|/i, (m0, pre, val) => {
-      const nv = val.replace(new RegExp(`^(\\s*)${esc(fix.from)}(?![A-Za-z])`), (x, sp) => { hit = true; return sp + fix.to; });
+      const nv = fix.insert
+        ? val.replace(/^(\s*)/, (x, sp) => { hit = true; return sp + fix.to + " "; })
+        : val.replace(new RegExp(`^(\\s*)${esc(fix.from)}(?![A-Za-z])`), (x, sp) => { hit = true; return sp + fix.to; });
       return pre + nv + "|";
     }));
   return hit ? out : mes;
@@ -879,13 +888,15 @@ function schedulePostReplyFixes(idx, inner, fixes, waited = 0) {
     if (!window.toastr) return;
 
     const lines = [];
-    if (weekdayDone) lines.push(`Weekday: <b>${escHtml(weekdayDone.from)}</b> \u2192 <b>${escHtml(weekdayDone.to)}</b> (${escHtml(weekdayDone.date)})`);
+    if (weekdayDone) lines.push(weekdayDone.insert
+      ? `Weekday added: <b>${escHtml(weekdayDone.to)}</b> (${escHtml(weekdayDone.date)})`
+      : `Weekday: <b>${escHtml(weekdayDone.from)}</b> \u2192 <b>${escHtml(weekdayDone.to)}</b> (${escHtml(weekdayDone.date)})`);
     done.forEach((f) => lines.push(`${f.owner ? escHtml(f.owner) + " \u00B7 " : ""}${escHtml(f.label)}: <b>${escHtml(tItemName(f.to))}</b>`));
     const LIST_LABEL = { inventory: "Items", skills: "Skills", passives: "Passives" };
     moved.forEach((f) => lines.push(`${f.owner ? escHtml(f.owner) + " \u00B7 " : ""}${LIST_LABEL[f.listKey]}: locked positions kept`));
     const kinds = [weekdayDone, done.length, moved.length].filter(Boolean).length;
     const title = kinds > 1 ? "\u{1F4DD} Fixed the reply"
-      : weekdayDone ? "\u{1F4C5} Weekday corrected"
+      : weekdayDone ? (weekdayDone.insert ? "\u{1F4C5} Weekday added" : "\u{1F4C5} Weekday corrected")
       : moved.length ? "\u{1F512} Locked positions kept"
       : `\u{1F4DD} Restored ${done.length === 1 ? "a lost description" : done.length + " lost descriptions"}`;
     window.toastr.info(`${lines.join("<br>")}<br><span style="opacity:.75">Tap to undo.</span>`, title, {
@@ -919,7 +930,7 @@ function maybeReportListChanges() {
     // block is one the AI has only just written (SillyTavern says so; loading
     // a chat never does), its weekday can still be checked: there's nothing
     // earlier to compare descriptions with, but a date needs no comparison.
-    if (uiSettings.fixWeekdays !== false && Date.now() - lastReplyAt < 15000 && idx === chat.length - 1) {
+    if ((uiSettings.fixWeekdays !== false || uiSettings.addWeekdays !== false) && Date.now() - lastReplyAt < 15000 && idx === chat.length - 1) {
       const weekday = weekdayFixFor(inner);
       if (weekday) schedulePostReplyFixes(idx, inner, { weekday, restores: [] });
     }
@@ -929,11 +940,11 @@ function maybeReportListChanges() {
   const wentBack = idx < alertIdx;                                                  // a deletion
   alertSig = sig; alertIdx = idx;
   if (wentBack) return;
-  const fixWd = uiSettings.fixWeekdays !== false;
-  if (!uiSettings.changeAlerts && !uiSettings.restoreLostDesc && !fixWd) return;
+  // (no early exit when the alert and fix settings are all off: position
+  // locks still need this pass)
 
   // the weekday needs no earlier turn, so it's checked even on a first reply
-  const weekday = fixWd ? weekdayFixFor(inner) : null;
+  const weekday = weekdayFixFor(inner);
 
   let prevInner = null;
   for (let i = idx - 1; i >= 0 && !prevInner; i--) {
@@ -3404,6 +3415,19 @@ function saveEditor() {
     rpgState.world_time.month = getStr("edit-month");
     rpgState.world_time.day = getVal("edit-day");
 	rpgState.world_time.year = getStr("edit-year").trim();
+    {
+      // after month/day/year, so "Auto" uses the date being saved
+      const wd = getStr("edit-weekday");
+      if (wd === "auto") {
+        const w = worldWeekday({ month: rpgState.world_time.month, day: rpgState.world_time.day, year: rpgState.world_time.year }, false);
+        if (w) rpgState.world_time.weekday = w; else delete rpgState.world_time.weekday;
+      } else if (wd && wd !== "none") {
+        const d = WEEKDAYS.find((x) => x.slice(0, 3).toLowerCase() === wd);
+        rpgState.world_time.weekday = d ? d.slice(0, 3) : wd;
+      } else if (wd === "none") {
+        delete rpgState.world_time.weekday;
+      }
+    }
     rpgState.world_time.clock = getStr("edit-clock");
     rpgState.world_time.weather = getStr("edit-weather");
     rpgState.quests = getList("edit-quests");
@@ -3687,6 +3711,10 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 			 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
     			<span title="Automatically reminds the AI of stats on every message">Auto-Inject Prompt</span>
    			 <input type="checkbox" id="rpg-settings-autoinject" ${autoInjectState ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
+		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="If a reply's Time: has no weekday, add one (when the month and year are written)">Add Weekdays</span>
+   			 <input type="checkbox" id="rpg-settings-addweekday" ${uiSettings.addWeekdays !== false ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
 		  </div>
 		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
     			<span title="If a reply writes a weekday in Time: that doesn't match the date, correct it">Fix Weekdays</span>
@@ -4053,6 +4081,11 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    ehEl.onclick = (e) => e.stopPropagation();
 	    ehEl.onkeydown = (e) => e.stopPropagation();
 	    ehEl.onchange = () => { uiSettings.listEditHistory = Math.max(0, Math.min(20, parseInt(ehEl.value, 10) || 0)); saveUiSettings(); };
+	  }
+	  const awEl = document.getElementById("rpg-settings-addweekday");
+	  if (awEl) {
+	    awEl.onclick = (e) => e.stopPropagation();
+	    awEl.onchange = () => { uiSettings.addWeekdays = awEl.checked; saveUiSettings(); };
 	  }
 	  const wdEl = document.getElementById("rpg-settings-fixweekday");
 	  if (wdEl) {
@@ -6963,6 +6996,11 @@ function classicBindEditors() {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-12.1", items: [
+    "Add weekdays (on by default): a new reply's Time: without a weekday gets one written in.",
+    "Edit state has a Weekday choice: None, Auto, or a specific day.",
+    "Fix: position locks no longer stop working when alerts and the other auto-fixes are all off.",
+  ] },
   { build: "2026-10-11.4", items: [
     "Classic: a ? help button and a \u{1F4DC} update log beside settings. The log is also in the SAO settings menu as What's new.",
   ] },
@@ -7046,6 +7084,7 @@ const CLASSIC_HELP = [
   ["Move", "Settings: move the selected character between Party, NPCs and Enemies."],
   ["Change Alerts", "A toast when an item, skill or passive's description changes or loses detail, for anyone."],
   ["Restore Lost Descriptions", "If the AI drops a description entirely, the old one is put back onto the new entry. Tap the toast to undo."],
+  ["Add Weekdays", "If a new reply's Time: has no weekday, one is written in. Tap the toast to undo. Edit state also has a Weekday choice: Auto, a specific day, or None."],
   ["Fix Weekdays", "If the AI writes a weekday in Time: that doesn't match the date, it's corrected. Tap the toast to undo."],
   ["Scan (↻)", "Re-reads the latest reply and writes the state back into it."],
 ];
@@ -7273,6 +7312,8 @@ function saoHelpPanel() {
           "Drag the bars, the orb column and the clock wherever you like. Buttons stop responding while you're arranging, so a tap can't fire by accident. Reset puts them back.")
       + item("Turn log",
           "In the Quests orb, the Log tab lists what changed each turn \u2014 HP, items, bonds, where you went, how much time passed. It's worked out from your chat history rather than stored, so it follows swipes and edits and covers old chats too. Tap a turn to jump to its message. Undo last turn reverts everything the newest turn changed; the \u21B6 beside a single change in the newest turn reverts just that one. The padlock beside a change locks it: Undo last turn then reverts everything except what's locked. Redo puts any of these back.")
+      + item("Add weekdays",
+          "If a new reply's Time: has no weekday, the HUD writes the short one in (\u201cSun Jan 5 1023\u201d) once the reply has finished, so the AI can see it too. Only when the month is Jan\u2013Dec and the year is written. Tap the toast to undo. You can also pick a weekday, or None, in Edit state.")
       + item("Fix weekdays",
           "If a reply writes a weekday in Time: (\u201cMon Jan 7 1023\u201d) that the real calendar disagrees with, it's corrected in the AI's own style, once the reply has finished. Only when the month is Jan\u2013Dec and the year is written. A toast says what changed; tap it to undo.")
       + item("Restore lost descriptions",
@@ -7338,6 +7379,7 @@ function saoSettingsHtml() {
     + toggle("rpg-sao-sw-inject", "Auto-inject", !!autoInjectState)
     + toggle("rpg-sao-sw-ooc", "Note edits for AI", uiSettings.oocEditNotes !== false)
     + toggle("rpg-sao-sw-restore", "Restore lost descriptions", !!uiSettings.restoreLostDesc)
+    + toggle("rpg-sao-sw-addwd", "Add weekdays", uiSettings.addWeekdays !== false)
     + toggle("rpg-sao-sw-weekday", "Fix weekdays", uiSettings.fixWeekdays !== false)
     + `<div class="rpg-sao-mrow toggle"><span title="Editing Items, Skills or Passives from the Status orb also rewrites this many earlier replies">Edits rewrite past replies</span>
         <input id="rpg-sao-edithist" type="number" min="0" max="20" step="1" value="${Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0))}"></div>`
@@ -7854,6 +7896,11 @@ function saoBind() {
     eh.onkeydown = (e) => e.stopPropagation();
     eh.onchange = () => { uiSettings.listEditHistory = Math.max(0, Math.min(20, parseInt(eh.value, 10) || 0)); saveUiSettings(); };
   }
+  bind("rpg-sao-sw-addwd", () => {
+    uiSettings.addWeekdays = uiSettings.addWeekdays === false;
+    saveUiSettings();
+    renderRPG();
+  });
   bind("rpg-sao-sw-weekday", () => {
     uiSettings.fixWeekdays = uiSettings.fixWeekdays === false;
     saveUiSettings();
@@ -8783,6 +8830,20 @@ const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(displ
         <div style="${labelStyle()}">Year</div>
         <input id="edit-year" type="text" value="${escAttr(rpgState.world_time?.year ?? "")}"
           style="width:100%; background:#222; border:1px solid #555; color:white;">
+      </div>
+      <div>
+        <div style="${labelStyle()}">Weekday</div>
+        <select id="edit-weekday" style="width:100%; background:#222; border:1px solid #555; color:white;">
+          ${(() => {
+            const wt = rpgState.world_time || {};
+            const written = wt.weekday ? String(wt.weekday).slice(0, 3).toLowerCase() : "";
+            const auto = worldWeekday({ month: wt.month, day: wt.day, year: wt.year }, false);
+            const cur = !written ? "none" : auto && auto.toLowerCase() === written ? "auto" : written;
+            const opt = (v, label) => `<option value="${v}"${cur === v ? " selected" : ""}>${label}</option>`;
+            return opt("none", "None") + opt("auto", `Auto${auto ? " (" + auto + ")" : ""}`) +
+              WEEKDAYS.map((d) => opt(d.slice(0, 3).toLowerCase(), d)).join("");
+          })()}
+        </select>
       </div>
       <div>
         <div style="${labelStyle()}">Clock</div>
