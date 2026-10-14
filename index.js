@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-12.1";
+const HUD_BUILD = "2026-10-13.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -1730,7 +1730,9 @@ function nowWorldMinutes() {
 }
 
 function parseDeadline(val) {
-  const s = String(val || "").trim();
+  // an optional weekday in front, like Time: ("Mon Jan 6 1023,14:00" or
+  // "Mon, Jan 6 1023,14:00"): the date is what counts, so it's skipped
+  const s = String(val || "").trim().replace(/^(sun|mon|tue|wed|thu|fri|sat)[a-z]*\.?\s*,?\s+(?=[A-Za-z]{3,9}\s+\d)/i, "");
   const t = rpgState.world_time || {};
 
   const full = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2})(?:\s+(\d{1,4}))?\s*,\s*(\d{1,2}\s*:\s*\d{1,2})$/);
@@ -1743,6 +1745,54 @@ function parseDeadline(val) {
     return target;
   }
   return null;
+}
+
+// ---- durations, for editing deadline timers as "time left" ----
+// "1d 3h", "2h 30m", "45m", "1w", "in 2 days": minutes, or null if the text
+// isn't a duration (so turns, uses and typed dates are left to the parser).
+function parseDuration(text) {
+  const t = String(text || "").trim().toLowerCase().replace(/^(in|\+)\s*/, "");
+  if (!t) return null;
+  const unit = { w: 10080, wk: 10080, wks: 10080, week: 10080, weeks: 10080,
+    d: 1440, day: 1440, days: 1440, h: 60, hr: 60, hrs: 60, hour: 60, hours: 60,
+    m: 1, min: 1, mins: 1, minute: 1, minutes: 1 };
+  const re = /(\d+(?:\.\d+)?)\s*([a-z]+)\s*,?\s*/g;
+  let total = 0, used = 0, m;
+  while ((m = re.exec(t))) {
+    if (m.index !== used || !unit[m[2]]) return null;
+    total += parseFloat(m[1]) * unit[m[2]];
+    used = re.lastIndex;
+  }
+  return used === t.length && used > 0 ? Math.round(total) : null;
+}
+
+// minutes as an exact, editable duration: "1d 3h 15m"
+function durationText(mins) {
+  const a = Math.max(0, Math.round(mins));
+  const d = Math.floor(a / 1440), h = Math.floor((a % 1440) / 60), m = a % 60;
+  const parts = [];
+  if (d) parts.push(`${d}d`);
+  if (h) parts.push(`${h}h`);
+  if (m || !parts.length) parts.push(`${m}m`);
+  return parts.join(" ");
+}
+
+// world minutes back to a deadline in Time: format ("Mon Jan 6 1023,14:00").
+// A weekday is written only if the story's Time: uses one.
+function deadlineText(target) {
+  const t = rpgState.world_time || {};
+  const hasYear = Number.isFinite(parseInt(t.year, 10));
+  let rest = Math.max(0, Math.round(target));
+  const year = hasYear ? Math.floor(rest / YEAR_MINUTES) : null;
+  if (hasYear) rest -= year * YEAR_MINUTES;
+  let day = Math.floor(rest / 1440);
+  const clockMin = rest - day * 1440;
+  let mi = 0;
+  while (mi < 11 && day >= TIMER_MONTH_DAYS[mi]) { day -= TIMER_MONTH_DAYS[mi]; mi++; }
+  const month = TIMER_MONTHS[mi][0].toUpperCase() + TIMER_MONTHS[mi].slice(1);
+  const clock = `${String(Math.floor(clockMin / 60)).padStart(2, "0")}:${String(clockMin % 60).padStart(2, "0")}`;
+  const wd = t.weekday && hasYear ? worldWeekday({ month, day: day + 1, year }) : "";
+  return `${wd ? wd + " " : ""}${month} ${day + 1}${hasYear ? " " + year : ""},${clock}`;
 }
 
 function minutesUntil(targetMin) {
@@ -2705,8 +2755,16 @@ function renderTimersTab() {
       <div style="display:flex; gap:3px; align-items:center; padding:2px 0; border-bottom:1px solid #333;">
         <input class="rpg-timer-name" data-i="${i}" type="text" value="${escAttr(t?.owner ? t.owner + "/" + t.name : (t?.name ?? ""))}"
           style="flex:1 1 auto; min-width:0; background:#222; border:1px solid #555; color:#fff; font-family:inherit; font-size:1em;">
-        <input class="rpg-timer-val" data-i="${i}" type="text" value="${escAttr(t?.value ?? "")}"
-          style="flex:0 0 64px; width:64px; background:#222; border:1px solid #555; color:#90caf9; font-family:inherit; font-size:1em; text-align:center;">
+        ${(() => {
+          // a deadline still ahead is edited as time left; the date is kept
+          // as written unless this field is changed
+          const dl = parseDeadline(t?.value);
+          const left = dl === null ? null : minutesUntil(dl);
+          const shown = left !== null && left > 0 ? durationText(left) : String(t?.value ?? "");
+          return `<input class="rpg-timer-val" data-i="${i}" type="text" value="${escAttr(shown)}" data-shown="${escAttr(shown)}"
+            title="${left !== null && left > 0 ? escAttr("Time left. Due " + String(t.value)) : ""}"
+            style="flex:0 0 78px; width:78px; background:#222; border:1px solid #555; color:${left !== null && left > 0 ? "#ce93d8" : "#90caf9"}; font-family:inherit; font-size:1em; text-align:center;">`;
+        })()}
         <select class="rpg-timer-kind" data-i="${i}"
           style="flex:0 0 62px; background:#222; border:1px solid #555; color:#ddd; font-family:inherit; font-size:0.9em;">${opts(t?.kind)}</select>
         <button class="rpg-timer-del" data-i="${i}" title="Delete"
@@ -2715,7 +2773,8 @@ function renderTimersTab() {
 
     return header + rows + `
       <div style="font-size:0.7em; color:#666; margin-top:4px; line-height:1.35;">
-        Value: <span style="color:#888;">2/3</span> (turns) or <span style="color:#888;">Jan 6,14:00</span> (deadline).<br>
+        Value: <span style="color:#888;">2/3</span> (turns), <span style="color:#888;">2/2x</span> (uses), or time left like
+        <span style="color:#ce93d8;">1d 3h</span> / <span style="color:#ce93d8;">45m</span>, saved as a deadline date for the AI.<br>
         <span style="color:#ce93d8;">EVENT</span> = appointment · <span style="color:#ff5252;">DOOM</span> = threat. Both survive being dropped.<br>
         Name may be <span style="color:#888;">Owner/Skill</span>. Blank name deletes.
       </div>`;
@@ -2779,7 +2838,13 @@ function readTimerInputs() {
   });
   document.querySelectorAll(".rpg-timer-val").forEach((el) => {
     const i = Number(el.dataset.i);
-    if (rpgState.timers[i]) rpgState.timers[i].value = String(el.value || "").trim();
+    const t = rpgState.timers[i];
+    if (!t) return;
+    const typed = String(el.value || "").trim();
+    if (el.dataset.shown !== undefined && typed === el.dataset.shown) return;   // untouched: keep the date as it was
+    const mins = parseDuration(typed);
+    t.value = mins !== null && mins > 0 ? deadlineText(nowWorldMinutes() + mins) : typed;
+    el.dataset.shown = typed;
   });
   document.querySelectorAll(".rpg-timer-kind").forEach((el) => {
     const i = Number(el.dataset.i);
@@ -6996,6 +7061,12 @@ function classicBindEditors() {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-13.1", items: [
+    "Timer editor: deadlines show as time left (1d 3h, 45m). Type a duration and it's saved as a deadline date for the AI. Untouched timers keep their exact date.",
+  ] },
+  { build: "2026-10-12.2", items: [
+    "Fix: timer deadlines with a weekday in front (Mon Jan 6 1023,14:00) count down again instead of showing as raw text.",
+  ] },
   { build: "2026-10-12.1", items: [
     "Add weekdays (on by default): a new reply's Time: without a weekday gets one written in.",
     "Edit state has a Weekday choice: None, Auto, or a specific day.",
