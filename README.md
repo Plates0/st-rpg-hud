@@ -50,7 +50,7 @@ Scheduled ≠ dangerous: default to EVENT, reserve DOOM for real threats.
 Value: `2/3` turns left/total (-1 per round) · `2/2x` uses left/total (-1 only when used, never per round) · `Jan 6 1023,14:00` deadline (|Time:| format, with year). 
 Deadlines for anything over ~5 turns; grant or steal time by moving the deadline, never recomputing.
 Drop resolved CD/BUFF/DEBUFF. Keep EVENT/DOOM listed until narrated, fired or not.
-Ex: |Timers:Heavy Strike:2/3:CD;Phase Veil:2/2x:BUFF;Kira/Regen:3/5:BUFF;Dentist:Jan 6 1023,14:00:EVENT;Plague:Jan 9 1023,06:00:DOOM|
+Ex: |Timers:Heavy Strike:2/3:CD;Phase Veil:2/2x:BUFF;Kira/Regen:3/5:BUFF;Dentist:Dec 6 1023,14:00:EVENT;Plague:Jan 9 1023,06:00:DOOM;Sensitivity Debuff:Mar 4 3027,07:23|
 
 Calendar: Format `Month Day Year,Clock` (e.g. `Jan 5 1023,14:30`). If day exceeds the month's max, roll to day 1 of next month; Dec 31 rolls to Jan 1 of next year.
 - 30: Apr, Jun, Sep, Nov | 31: Jan, Mar, May, Jul, Aug, Oct, Dec | 28: Feb
@@ -90,6 +90,8 @@ Examples:
 - "Heavy Strike (MP-20) ATK*1.5, A Powerful Strike."
 - "Iron Sword +10 ATK [X]"
 - "Healing Whispers (MP-15) Heal target MATK*1, recovers 15 Sanity"
+- Item descriptions are fixed. Only edit an entry for lasting changes: equip state ([X]/[]), quantity, depletion (e.g., Seed Pouch (Full) → (Half-Full)), or upgrades. Upgrades change only the affected value (Lifesteal 10% → 20%) or append a new trait; never reword the rest. Momentary actions (removing a mask to eat) stay in the narrative only.
+
 
 IV. MECHANICS & MATH
 M.HP/M.MP = Max HP/MP; gear with these raises the wearer's max.
@@ -109,7 +111,6 @@ Stat Calc (HP Max, MP Max, Stats): "TOTAL (((Base*BaseMulti)+Mod+Buff)*TotalMult
 - Doubling total → `ATK:30 ((10+5+0)*2)`; doubling base → `ATK:25 ((10*2)+5+0)`
 Current Only: Damage, poison, and MP/EN costs hit Current only, never Base/Max or the equation. `HP:90/100 (75+25+0)`
 - HP with multiplier: `HP:250/300 ((100+100+0)*1.5)` after 50 DMG; Max keeps its equation, Current just drops.
-
 
 V. COMBAT & OVERLAYS
 Pacing: Exactly ONE ROUND per response (one action per combatant), unless a skill says otherwise.
@@ -139,6 +140,7 @@ Combat Rules:
 7. Generate skills/multipliers for enemies without predefined ones.
 8. AoE caps: Small 3 · AoE 5 (default) · Big 15 · True unlimited.
 9. Barriers block most debuffs incl. DoT and tank True DMG. High-tier magic debuffs (e.g., timestop) bypass them.
+10. Skill multiplier bonuses (passives/items, stackable) add to each skill's listed multiplier; rewrite the Skills entry with the result (e.g., "All Skill Multipliers +1": ATK*1 → ATK*2; multi-hit adds to hit count instead: ((ATK*1)*8) → ((ATK*1)*9)). Never put these in the stat equation.
 
 VI. LIVING WEAPON OVERRIDE
 Trigger: {{user}} is a sentient weapon/item.
