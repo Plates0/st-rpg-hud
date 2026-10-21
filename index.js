@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-21.3";
+const HUD_BUILD = "2026-10-21.4";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -5111,7 +5111,7 @@ function aloBarSvg(W, H, pctVal, c1, c2) {
   const d = `M${x0} ${y0}H${x0 + w - tip}L${x0 + w} ${y0 + h / 2}L${x0 + w - tip} ${y0 + h}H${x0}Z`;
   const id = "a" + (++saoSvgUid);
   const fx = x0 + w * clamp(pctVal, 0, 100) / 100;
-  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
     <defs>
       <linearGradient id="g${id}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/>
@@ -5214,7 +5214,7 @@ function saoBarSvg(W, H, pctVal, c1, c2) {
     ? `<polygon points="${x0},${y0} ${topX},${y0} ${botX},${y0 + h} ${x0},${y0 + h}" fill="url(#g${id})" clip-path="url(#c${id})"/>`
     : "";
 
-  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" shape-rendering="geometricPrecision" xmlns="http://www.w3.org/2000/svg">
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="none" shape-rendering="geometricPrecision" xmlns="http://www.w3.org/2000/svg">
     <defs>
       <linearGradient id="m${id}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="${SAO_RIM.hi}"/><stop offset="1" stop-color="${SAO_RIM.lo}"/>
@@ -5234,7 +5234,10 @@ function saoBarSvg(W, H, pctVal, c1, c2) {
 // Bars can only be drawn once they have a real pixel width, so the markup
 // ships empty and this fills every .rpg-sao-bar after layout.
 function saoDrawBar(el, p) {
-  const W = el.clientWidth, H = el.clientHeight;
+  // the box's exact size: clientWidth/Height round to whole pixels, and at a
+  // Bar size like 70% (5.6px tall) the drawing then didn't match its box
+  const q = el.getBoundingClientRect();
+  const W = Math.round(q.width * 100) / 100, H = Math.round(q.height * 100) / 100;
   if (!W || !H) return;
   el.innerHTML = saoBarSvg(W, H, p, el.dataset.c1 || "#b9f56d", el.dataset.c2 || "#63c322");
 }
@@ -5331,7 +5334,7 @@ function aloPlateSvg(W, H, geo, hp, mp, hpc, mpc) {
   const id = "p" + (++saoSvgUid);
   const w = (p) => (bw * clamp(p, 0, 100)) / 100;
 
-  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
     <defs>
       <linearGradient id="h${id}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="${hpc[0]}"/><stop offset="1" stop-color="${hpc[1]}"/></linearGradient>
@@ -5392,7 +5395,7 @@ function saoPaintAloPlates() {
 
   plates.forEach((el) => {
     const small = el.classList.contains("small");
-    const H = el.clientHeight;
+    const H = Math.round(el.getBoundingClientRect().height * 100) / 100;
     if (!H) return;
     const nameEl0 = el.querySelector(".rpg-alo-name");
     const nameW = small ? 0 : Math.min(nameEl0 ? nameEl0.scrollWidth : 0, ALO_NAME_CAP.big * ui);
@@ -5467,7 +5470,7 @@ function blkBarSvg(W, H, pctVal, c1, c2) {
   const fw = (W - 1) * clamp(pctVal, 0, 100) / 100;
   // the band near the end is a gentle step up from the fill, not a highlight
   const base = blkShade(c2, 5), light = blkShade(base, 9);
-  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
     <defs>
       <linearGradient id="f${id}" x1="0" y1="0" x2="1" y2="0">
         <stop offset="0" stop-color="${base}"/><stop offset=".72" stop-color="${base}"/>
@@ -7065,9 +7068,11 @@ function classicBindEditors() {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
-  { build: "2026-10-21.3", items: [
-    "Fix: on iPhone, ALfheim (New) party/NPC/enemy bars were drawn a few px right of the tile. Their sections are no longer dimmed, which is what Safari mis-drew.",
+  { build: "2026-10-21.4", items: [
+    "Fix: at Bar sizes that make a bar a fraction of a pixel tall (like 70%), bars were drawn slightly shrunk and centred, leaving a gap after the tile. They now fill their box exactly, in every bar style.",
+    "Party, NPC and enemy sections are dimmed again (build .3 had briefly undimmed them while chasing this).",
   ] },
+
   { build: "2026-10-21.2", items: [
     "Settings: Layout report, which measures how this device draws the bar rows, for tracking down device-only layout bugs.",
   ] },
@@ -8369,10 +8374,6 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-slim .rpg-sao-bar svg{filter:none}
 
 .rpg-sao-slim{opacity:.78; margin-right:calc(56px * var(--rpg-sao-ui, 1))}
-/* Not in ALfheim (New): a semi-transparent group is drawn as its own layer,
-   and iPhone Safari drew the party/NPC bars ~5px right of where they were laid
-   out, leaving a gap after the tile (measured: layout correct, paint offset). */
-.rpg-sao-vitals.blk .rpg-sao-slim{opacity:1}
 .rpg-sao-slim.hide{display:none}
 .rpg-sao-row{
   --tagw:calc(50px * var(--rpg-sao-ui, 1)); --numw:calc(58px * var(--rpg-sao-ui, 1));
