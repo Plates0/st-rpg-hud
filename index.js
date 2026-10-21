@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-21.8";
+const HUD_BUILD = "2026-10-21.9";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -441,6 +441,7 @@ const defaultUiSettings = {
   restoreLostDesc: false, // put back a description the AI dropped entirely (keeps its other changes)
   fixWeekdays: true,      // a weekday written in Time: that doesn't match the date gets corrected
   addWeekdays: true,      // a reply's Time: with no weekday gets one added (when the date can be placed)
+  clockFormat: "asis",    // how times are shown: "asis" (as the story writes them) | "12" | "24"
   listEditHistory: 0,     // list edits from the Status orb also rewrite this many earlier replies (0-20)
   saoUiScale: 100,        // % size of the bar cluster; a desktop usually wants ~130
   saoTextShadow: false,   // shadow behind the text that sits straight on the chat
@@ -1718,10 +1719,61 @@ function monthIndex(m) {
   return i === -1 ? 0 : i;
 }
 
+// A clock time in any of the usual ways of writing one: "14:30", "2:30 PM",
+// "2:30pm", "2 p.m.", "02.30 PM", "noon", "midnight". Returns minutes after
+// midnight and whether it was written as 12-hour, or null.
+function parseClock(clock) {
+  const s = String(clock || "").trim();
+  if (/^noon$/i.test(s)) return { mins: 720, ampm: true };
+  if (/^midnight$/i.test(s)) return { mins: 0, ampm: true };
+  let h, mi, ap;
+  let m = s.match(/(\d{1,2})\s*[:.]\s*(\d{1,2})(?:\s*([ap])\.?\s*m\.?)?/i);
+  if (m) { h = +m[1]; mi = +m[2]; ap = m[3]; }
+  else {
+    m = s.match(/(\d{1,2})\s*([ap])\.?\s*m\.?/i);
+    if (!m) return null;
+    h = +m[1]; mi = 0; ap = m[2];
+  }
+  if (ap) h = (h % 12) + (/p/i.test(ap) ? 12 : 0);
+  if (h === 24) h = 0;
+  if (h > 23 || mi > 59) return null;
+  return { mins: h * 60 + mi, ampm: !!ap };
+}
+// the same, as a pattern to embed in larger ones
+const CLOCK_SRC = String.raw`(?:\d{1,2}\s*:\s*\d{1,2}(?:\s*[ap]\.?\s*m\.?)?|\d{1,2}\s*[ap]\.?\s*m\.?|noon|midnight)`;
+
 function clockToMinutes(clock) {
-  const m = String(clock || "").match(/(\d{1,2})\s*:\s*(\d{1,2})/);
-  if (!m) return 0;
-  return (parseInt(m[1], 10) || 0) * 60 + (parseInt(m[2], 10) || 0);
+  return parseClock(clock)?.mins ?? 0;
+}
+
+// minutes after midnight written out, 12- or 24-hour
+function clockText(mins, twelve) {
+  const h = Math.floor(mins / 60) % 24, m = mins % 60;
+  const mm = String(m).padStart(2, "0");
+  return twelve ? `${h % 12 || 12}:${mm} ${h >= 12 ? "PM" : "AM"}` : `${String(h).padStart(2, "0")}:${mm}`;
+}
+function storyUses12h() {
+  return !!parseClock(rpgState?.world_time?.clock)?.ampm;
+}
+// times the HUD writes into a block (deadlines from "time left"): 12-hour
+// when the setting says so, or, on "As written", when the story's Time: is
+function writeIn12h() {
+  const f = uiSettings.clockFormat;
+  return f === "12" || (f !== "24" && storyUses12h());
+}
+
+function clockFormatOptions() {
+  const f = uiSettings.clockFormat === "12" || uiSettings.clockFormat === "24" ? uiSettings.clockFormat : "asis";
+  return [["asis", "As written"], ["12", "12-hour"], ["24", "24-hour"]]
+    .map(([v, t]) => `<option value="${v}"${f === v ? " selected" : ""}>${t}</option>`).join("");
+}
+
+// a clock as shown on screen, per the Clock setting; unreadable text is left alone
+function showClock(clock) {
+  const f = uiSettings.clockFormat;
+  if (f !== "12" && f !== "24") return String(clock ?? "");
+  const p = parseClock(clock);
+  return p ? clockText(p.mins, f === "12") : String(clock ?? "");
 }
 
 function worldMinutes(month, day, clock, year) {
@@ -1745,10 +1797,10 @@ function parseDeadline(val) {
   const s = String(val || "").trim().replace(/^(sun|mon|tue|wed|thu|fri|sat)[a-z]*\.?\s*,?\s+(?=[A-Za-z]{3,9}\s+\d)/i, "");
   const t = rpgState.world_time || {};
 
-  const full = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2})(?:\s+(\d{1,4}))?\s*,\s*(\d{1,2}\s*:\s*\d{1,2})$/);
+  const full = s.match(new RegExp(String.raw`^([A-Za-z]{3,9})\s+(\d{1,2})(?:\s+(\d{1,4}))?\s*,\s*(${CLOCK_SRC})$`, "i"));
   if (full) return worldMinutes(full[1], full[2], full[4], full[3] ?? t.year);
 
-  const clockOnly = s.match(/^(\d{1,2}\s*:\s*\d{1,2})$/);
+  const clockOnly = s.match(new RegExp(`^(${CLOCK_SRC})$`, "i"));
   if (clockOnly) {
     let target = worldMinutes(t.month, t.day, clockOnly[1], t.year);
     if (target <= nowWorldMinutes()) target += 1440;
@@ -1800,7 +1852,7 @@ function deadlineText(target) {
   let mi = 0;
   while (mi < 11 && day >= TIMER_MONTH_DAYS[mi]) { day -= TIMER_MONTH_DAYS[mi]; mi++; }
   const month = TIMER_MONTHS[mi][0].toUpperCase() + TIMER_MONTHS[mi].slice(1);
-  const clock = `${String(Math.floor(clockMin / 60)).padStart(2, "0")}:${String(clockMin % 60).padStart(2, "0")}`;
+  const clock = clockText(clockMin, writeIn12h());
   const wd = t.weekday && hasYear ? worldWeekday({ month, day: day + 1, year }) : "";
   return `${wd ? wd + " " : ""}${month} ${day + 1}${hasYear ? " " + year : ""},${clock}`;
 }
@@ -3861,6 +3913,10 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     			<span title="If a reply writes a weekday in Time: that doesn't match the date, correct it">Fix Weekdays</span>
    			 <input type="checkbox" id="rpg-settings-fixweekday" ${uiSettings.fixWeekdays !== false ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
 		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="How times are shown. 12- and 24-hour times in the story are both understood either way.">Clock</span>
+   			 <select id="rpg-settings-clockfmt" style="background:#222; color:#ddd; border:1px solid #555; padding:3px;">${clockFormatOptions()}</select>
+		  </div>
 		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
     			<span title="Editing Items, Skills or Passives (tap an icon) also rewrites this many earlier replies">Edits Rewrite Past Replies</span>
    			 <input type="number" id="rpg-settings-edithist" min="0" max="20" step="1" value="${Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0))}" style="width:52px; background:#222; color:#ddd; border:1px solid #555; text-align:center;">
@@ -3967,7 +4023,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         <div style="color:#aaa; font-size:0.9em;">
           📅 ${worldWeekday(time) ? escHtml(worldWeekday(time)) + ", " : ""}${escHtml(time.month)} ${escHtml(time.day)}${time.year ? `, ${escHtml(time.year)}` : ""}
           &nbsp;|&nbsp;
-          ⏰ ${escHtml(time.clock)}
+          ⏰ ${escHtml(showClock(time.clock))}
           &nbsp;|&nbsp;
           ${getWeatherEmoji(time.weather)} ${escHtml(time.weather || "Unknown")}
         </div>
@@ -4232,6 +4288,11 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	  if (awEl) {
 	    awEl.onclick = (e) => e.stopPropagation();
 	    awEl.onchange = () => { uiSettings.addWeekdays = awEl.checked; saveUiSettings(); };
+	  }
+	  const cfEl = document.getElementById("rpg-settings-clockfmt");
+	  if (cfEl) {
+	    cfEl.onclick = (e) => e.stopPropagation();
+	    cfEl.onchange = () => { uiSettings.clockFormat = cfEl.value; saveUiSettings(); renderRPG(); };
 	  }
 	  const wdEl = document.getElementById("rpg-settings-fixweekday");
 	  if (wdEl) {
@@ -4666,7 +4727,7 @@ function buildTurnLog(chat) {
     out.push({
       idx: turns[i].idx,
       n: i,
-      when: `${worldWeekday(wt) ? worldWeekday(wt) + " " : ""}${wt.month || "?"} ${wt.day ?? "?"} ${wt.clock || ""}`.trim(),
+      when: `${worldWeekday(wt) ? worldWeekday(wt) + " " : ""}${wt.month || "?"} ${wt.day ?? "?"} ${wt.clock ? showClock(wt.clock) : ""}`.trim(),
       where: turns[i].state.location || "",
       changes,
     });
@@ -7404,7 +7465,7 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
   const rows = [];
   if (clockMode) rows.push(["NAME", pick(escHtml(name)), ""]);
   rows.push(["LOCATION", escHtml(rpgState.location || "Unknown"), ""]);
-  rows.push(["TIME", `${escHtml(dateText)} · ${escHtml(time.clock ?? "??:??")}`, ""]);
+  rows.push(["TIME", `${escHtml(dateText)} \u00B7 ${escHtml(time.clock ? showClock(time.clock) : "??:??")}`, ""]);
   if (time.weather && !/^unknown$/i.test(String(time.weather))) rows.push(["WEATHER", escHtml(time.weather), ""]);
   if (rpgState?.combat?.active) rows.push(["COMBAT", `Round ${escHtml(rpgState.combat.round ?? 1)}`, "bad"]);
   rows.push(["CONDITION", effects.length ? effects.map(escHtml).join(", ") : "Healthy", effects.length ? "bad" : "ok"]);
@@ -7656,6 +7717,11 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-21.9", items: [
+    "12-hour times now work everywhere: \u201c2:30 PM\u201d, \u201c2:30pm\u201d, \u201c2 p.m.\u201d, \u201cnoon\u201d and \u201cmidnight\u201d are understood in Time: and in timer deadlines, so countdowns, time-passed in the log and the analog clock are right. Before, PM was ignored.",
+    "New setting, Clock: As written (default), 12-hour or 24-hour. It changes how times are shown in every skin, not what's in the story.",
+    "Deadlines the HUD writes (editing a timer as time left) follow the Clock setting; on As written they match the story's own format.",
+  ] },
   { build: "2026-10-21.8", items: [
     "System skin: the ATK icon is now a proper sword (blade, crossguard, grip and pommel) instead of something that read as an arrow.",
   ] },
@@ -7937,7 +8003,7 @@ function saoPlacePanel() {
   const env = Array.isArray(rpgState.env_effects) ? rpgState.env_effects : [];
   let h = `<div class="rpg-sao-place">${escHtml(rpgState.location || "Unknown")}</div>`;
   h += `<div class="rpg-sao-weather">${getWeatherEmoji(t.weather)} ${escHtml(t.weather || "Unknown")}
-        &#183; ${escHtml(t.clock || "??:??")}, ${worldWeekday(t, true) ? escHtml(worldWeekday(t, true)) + ", " : ""}${escHtml(t.month || "?")} ${escHtml(t.day ?? "?")} ${escHtml(t.year || "")}</div>`;
+        &#183; ${escHtml(t.clock ? showClock(t.clock) : "??:??")}, ${worldWeekday(t, true) ? escHtml(worldWeekday(t, true)) + ", " : ""}${escHtml(t.month || "?")} ${escHtml(t.day ?? "?")} ${escHtml(t.year || "")}</div>`;
   h += env.length
     ? env.map((e) => `<div class="rpg-sao-env">${escHtml(e)}</div>`).join("")
     : `<p class="rpg-sao-empty">No environmental effects.</p>`;
@@ -8124,6 +8190,8 @@ function saoSettingsHtml() {
     + toggle("rpg-sao-sw-restore", "Restore lost descriptions", !!uiSettings.restoreLostDesc)
     + toggle("rpg-sao-sw-addwd", "Add weekdays", uiSettings.addWeekdays !== false)
     + toggle("rpg-sao-sw-weekday", "Fix weekdays", uiSettings.fixWeekdays !== false)
+    + `<div class="rpg-sao-mrow toggle"><span title="How times are shown. 12- and 24-hour times in the story are both understood either way.">Clock</span>
+        <select id="rpg-sao-clockfmt">${clockFormatOptions()}</select></div>`
     + `<div class="rpg-sao-mrow toggle"><span title="Editing Items, Skills or Passives from the Status orb also rewrites this many earlier replies">Edits rewrite past replies</span>
         <input id="rpg-sao-edithist" type="number" min="0" max="20" step="1" value="${Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0))}"></div>`
     + toggle("rpg-sao-sw-bars", "Keep bars when minimised", !!uiSettings.barsOnMin)
@@ -8402,7 +8470,7 @@ function renderSaoSkin() {
         <span class="rpg-sao-dot ${saoIndicatorClass(latest.status)}"></span>
         <span class="rpg-sao-glyph">${getWeatherEmoji(t.weather)}</span>
         <span class="rpg-sao-cstack">
-          <span class="hhmm">${escHtml(t.clock || "??:??")}</span>
+          <span class="hhmm">${t.clock ? escHtml(showClock(t.clock)).replace(/\s*([AP]\.?\s*M\.?)$/i, '<span style="font-size:.5em; margin-left:.25em;">$1</span>') : "??:??"}</span>
           <span class="date">${worldWeekday(t) ? escHtml(worldWeekday(t)) + " " : ""}${escHtml(t.month || "?")} ${escHtml(t.day ?? "?")} ${escHtml(t.year || "")}</span>
         </span></button></div>`;
 
@@ -8744,6 +8812,12 @@ function saoBind() {
     };
     ca.onchange = () => saveUiSettings();
     ca.onclick = (e) => e.stopPropagation();
+  }
+
+  const cfSel = document.getElementById("rpg-sao-clockfmt");
+  if (cfSel) {
+    cfSel.onchange = () => { uiSettings.clockFormat = cfSel.value; saveUiSettings(); renderRPG(); };
+    cfSel.onclick = (e) => e.stopPropagation();
   }
 
   const styleSel = document.getElementById("rpg-sao-barstyle");
