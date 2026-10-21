@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-21.1";
+const HUD_BUILD = "2026-10-21.2";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -6726,7 +6726,7 @@ function saoQuestsPanel() {
 function saoPanelScrollKey() {
   if (saoPanel === "status") return `status:${charIndex}:${saoSub}`;
   if (saoPanel === "quests") return `quests:${saoQuestTab}`;
-  if (saoPanel === "gear" && saoHelpOpen) return saoHelpOpen === "log" ? "whatsnew" : "help";
+  if (saoPanel === "gear" && saoHelpOpen) return saoHelpOpen === "log" ? "whatsnew" : saoHelpOpen === "layout" ? "layout" : "help";
   return `panel:${saoPanel}`;
 }
 
@@ -7065,6 +7065,9 @@ function classicBindEditors() {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-21.2", items: [
+    "Settings: Layout report, which measures how this device draws the bar rows, for tracking down device-only layout bugs.",
+  ] },
   { build: "2026-10-21.1", items: [
     "Fix: on iPhone, ALfheim (New) bars sat detached from the tile. The tile and bars now share one row, so they can't drift apart.",
     "Fix: on narrow phone screens your own HP/MP numbers were cut off; bars now shorten to fit.",
@@ -7361,6 +7364,50 @@ function saoTimersHtml() {
 }
 
 // the classic caret/error overlay, dropped into a SAO panel
+// ---- layout report: how this device actually draws the ALfheim (New) rows ----
+// For layout bugs that only show on one device: measured here, copied by the
+// user, so the real numbers can be compared with what the CSS intends.
+let layoutReportText = "";
+function measureLayoutReport() {
+  const r1 = (n) => Math.round(n * 10) / 10;
+  const box = (el) => { if (!el) return "missing"; const q = el.getBoundingClientRect(); return `x ${r1(q.left)} w ${r1(q.width)} | y ${r1(q.top)} h ${r1(q.height)}`; };
+  const cs = (el, ...props) => { if (!el) return ""; const c = getComputedStyle(el); return props.map((k) => `${k}=${c.getPropertyValue(k)}`).join(" "); };
+  const lines = [
+    `build ${HUD_BUILD} | style ${uiSettings.saoBarStyle} | bar size ${uiSettings.saoUiScale ?? 100}% | font ${uiSettings.saoFont} | backing ${!!uiSettings.saoTextBacking}`,
+    `screen ${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}x | ${navigator.userAgent}`,
+  ];
+  const v = document.querySelector(".rpg-sao-vitals");
+  lines.push(`vitals: ${box(v)} | ${cs(v, "width", "max-width", "zoom", "transform")}`);
+  [...document.querySelectorAll(".rpg-blk-row")].slice(0, 4).forEach((row, i) => {
+    const name = row.querySelector(".rpg-blk-name")?.textContent || "?";
+    const tile = row.querySelector(".rpg-blk-tile"), bars = row.querySelector(".rpg-blk-bars"),
+          hp = row.querySelector(".rpg-sao-bar.blkhp"), line = row.querySelector(".rpg-blk-line"),
+          svg = hp?.querySelector("svg"), group = row.closest(".rpg-sao-slim");
+    const t = tile?.getBoundingClientRect(), h = hp?.getBoundingClientRect();
+    lines.push(``, `#${i + 1} ${name}${group ? " (in a group)" : " (you)"}  GAP tile->bar = ${t && h ? r1(h.left - t.right) : "?"} (should be -3 x bar size)`);
+    lines.push(`  row:   ${box(row)} | ${cs(row, "display", "--bt", "--bl", "--bb", "font-size")}`);
+    lines.push(`  line:  ${box(line)} | ${cs(line, "display", "justify-content", "gap")}`);
+    lines.push(`  tile:  ${box(tile)} | ${cs(tile, "width", "margin-left", "margin-right", "flex", "border-left-width")}`);
+    lines.push(`  bars:  ${box(bars)} | ${cs(bars, "margin-left", "flex", "width")}`);
+    lines.push(`  hp:    ${box(hp)} | ${cs(hp, "width", "margin-left")}`);
+    lines.push(`  svg:   ${box(svg)}`);
+    if (group) lines.push(`  group: ${box(group)} | ${cs(group, "padding-left", "margin-left", "opacity", "display")}`);
+  });
+  if (!document.querySelector(".rpg-blk-row")) lines.push("", "No ALfheim (New) rows on screen. Switch Bar style to ALfheim (New) and make sure a party member or NPC is showing.");
+  layoutReportText = lines.join("\n");
+}
+
+function layoutReportPanel() {
+  return {
+    title: "Layout report",
+    body: `<p class="rpg-sao-hint">Measured on this device just now. Tap Copy and paste it to Claude.</p>
+      <textarea id="rpg-sao-layout-text" readonly spellcheck="false"
+        style="width:100%; box-sizing:border-box; height:40svh; font:11px/1.35 ui-monospace,monospace; white-space:pre;
+               color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule)">${escHtml(layoutReportText)}</textarea>
+      <div class="rpg-sao-medit-actions"><button class="rpg-sao-mini primary" id="rpg-sao-layout-copy">Copy</button></div>`,
+  };
+}
+
 function saoErrorPanel() {
   return {
     title: "Parse error",
@@ -7452,6 +7499,7 @@ function saoSettingsHtml() {
     + row("rpg-sao-whatsnew", "\u2726", saoHelpOpen === "log" ? "Hide what's new" : `What's new${changelogUnseen() ? " \u2022" : ""}`)
     + row("rpg-sao-move", "\u2725", "Move HUD pieces")
     + row("rpg-sao-reset", "\u21BA", "Reset settings")
+    + row("rpg-sao-layoutrep", "\u2316", saoHelpOpen === "layout" ? "Hide layout report" : "Layout report")
     + row("rpg-sao-insert", "&#8595;", "Insert state")
     + row("rpg-sao-remind", "&#9993;", "Remind state")
     + toggle("rpg-sao-sw-alerts", "Change alerts", !!uiSettings.changeAlerts)
@@ -7710,7 +7758,7 @@ function renderSaoSkin() {
     // --- panel ---
     let panelHtml = "";
     if (!saoMin && saoPanel === "gear" && saoHelpOpen) {
-      const help = saoHelpOpen === "log" ? changelogPanel() : saoHelpPanel();
+      const help = saoHelpOpen === "log" ? changelogPanel() : saoHelpOpen === "layout" ? layoutReportPanel() : saoHelpPanel();
       panelHtml = `<div class="rpg-sao-panelwrap helpshift"><div class="rpg-sao-panel">
         <h2>${escHtml(help.title)}</h2>
         <div class="rpg-sao-body" data-scroll-key="help">${help.body}</div><div class="rpg-sao-jumps"><button class="rpg-sao-jumpto up" title="Back to the top"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 7.5L6 4l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="rpg-sao-jumpto down" title="To the bottom"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 4.5L6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div><div class="rpg-sao-notch"></div></div>`;
@@ -7886,6 +7934,19 @@ function saoBind() {
   });
   bind("rpg-sao-diagnose", () => { saoMin = false; saoPanel = "error"; renderRPG(); });
   bind("rpg-sao-help", () => { saoHelpOpen = saoHelpOpen === true ? false : true; renderRPG(); });
+  // (the layout report box needs its own click handling: taps inside it shouldn't close the menu)
+  bind("rpg-sao-layoutrep", () => {
+    if (saoHelpOpen === "layout") { saoHelpOpen = false; renderRPG(); return; }
+    measureLayoutReport();                 // before the panel opens, as the rows are now
+    saoHelpOpen = "layout";
+    renderRPG();
+  });
+  bind("rpg-sao-layout-copy", () => {
+    const ta = document.getElementById("rpg-sao-layout-text");
+    const done = () => { if (window.toastr) window.toastr.info("Layout report copied."); };
+    try { navigator.clipboard.writeText(layoutReportText).then(done, () => { ta?.select(); document.execCommand("copy"); done(); }); }
+    catch { ta?.select(); try { document.execCommand("copy"); done(); } catch {} }
+  });
   bind("rpg-sao-whatsnew", () => { saoHelpOpen = saoHelpOpen === "log" ? false : "log"; markChangelogSeen(); renderRPG(); });
   bind("rpg-sao-log-more", () => { saoLogShown += 20; renderRPG(); });
 
