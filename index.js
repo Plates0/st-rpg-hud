@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-13.1";
+const HUD_BUILD = "2026-10-21.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -5660,21 +5660,25 @@ function blkUnitRow(view, idx, key, opts = {}) {
   const num = barPair;
   const initial = (String(name).replace(/^[^\p{L}\p{N}]+/u, "")[0] || "?").toUpperCase();
   return `<div class="rpg-blk-row${big ? " big" : ""}${foe ? " foe" : ""}">
+    <div class="rpg-blk-top">
     <div class="rpg-blk-plate"></div>
-    <div class="rpg-blk-tile" data-tkey="${escAttr(opts.kind === "player" ? "@player" : blkNameKey(name))}"
-      style="background-color:${foe ? "#a8322a" : opts.kind === "player" ? blkPlayerTileColor() : blkTileColor(name)}">${
-      blkIcon(opts.kind || (foe ? "enemy" : big ? "player" : "party")) || escHtml(initial)}</div>
     <div class="rpg-blk-head">
       <span class="rpg-blk-name rpg-sao-jump" data-idx="${idx}" title="${escAttr(full)}">${escHtml(name)}</span>
       ${title ? `<span class="rpg-blk-title">${escHtml(title)}</span>` : ""}
       <span class="rpg-blk-chips">${blkChips(opts.status, big ? 8 : 6)}</span>
     </div>
+    </div>
+    <div class="rpg-blk-line">
+    <div class="rpg-blk-tile" data-tkey="${escAttr(opts.kind === "player" ? "@player" : blkNameKey(name))}"
+      style="background-color:${foe ? "#a8322a" : opts.kind === "player" ? blkPlayerTileColor() : blkTileColor(name)}">${
+      blkIcon(opts.kind || (foe ? "enemy" : big ? "player" : "party")) || escHtml(initial)}</div>
     <div class="rpg-blk-bars">
       ${saoBarHtml("blkhp", hp, hs[0], hs[1], `${key}:hp`)}
       ${saoBarHtml("blkmp", mp, BLK_MP[0], BLK_MP[1], `${key}:mp`)}
     </div>
     <div class="rpg-blk-nums"><span>${opts.hpText ?? num(view.hp_curr, view.hp_max)}</span>
       <span>${opts.mpText ?? num(view.en?.curr, view.en?.max)}</span></div>
+    </div>
   </div>`;
 }
 
@@ -7061,6 +7065,10 @@ function classicBindEditors() {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-21.1", items: [
+    "Fix: on iPhone, ALfheim (New) bars sat detached from the tile. The tile and bars now share one row, so they can't drift apart.",
+    "Fix: on narrow phone screens your own HP/MP numbers were cut off; bars now shorten to fit.",
+  ] },
   { build: "2026-10-13.1", items: [
     "Timer editor: deadlines show as time left (1d 3h, 45m). Type a duration and it's saved as a deadline date for the AI. Untouched timers keep their exact date.",
   ] },
@@ -8191,22 +8199,26 @@ const SAO_CSS = `<style id="rpg-sao-style">
 
 
 /* ---- ALfheim (New) ---- */
+/* Two stacked blocks: the name (on its plate) above, then the tile, bars and
+   numbers in ONE flex line. The tile and bars used to be in separate grid
+   columns, attached only if the browser sized the first column to exactly the
+   tile; iPhone Safari sized it wider and left a gap. Flex siblings can't drift.
+   --bl shrinks on narrow screens so the numbers stay inside the stack (it
+   leaves room for the orb column, the tile and the numbers). */
 .rpg-blk-row{
-  --bt:calc(30px * var(--rpg-sao-ui, 1)); --bl:calc(150px * var(--rpg-sao-ui, 1)); --bb:calc(8px * var(--rpg-sao-ui, 1));
-  position:relative; display:grid; grid-template-columns:var(--bt) auto auto; grid-template-rows:auto auto;
-  /* pack the columns at the left: otherwise the auto columns stretch to the
-     width of the widest row (the player's), so a party member's plate ran on
-     past their shorter bars and their numbers drifted off to the right */
-  justify-content:start;
-  column-gap:0; align-items:center;
+  --bt:calc(30px * var(--rpg-sao-ui, 1)); --bb:calc(8px * var(--rpg-sao-ui, 1));
+  --bl:max(calc(60px * var(--rpg-sao-ui, 1)), min(calc(150px * var(--rpg-sao-ui, 1)), calc(100vw - 134px - var(--bt) - 66px * var(--rpg-sao-ui, 1))));
+  position:relative; display:flex; flex-direction:column; align-items:flex-start;
   margin-bottom:calc((var(--bt) - var(--bb) * 2) / 2 + 6px * var(--rpg-sao-ui, 1))}
-.rpg-blk-row.big{--bt:calc(38px * var(--rpg-sao-ui, 1)); --bl:calc(220px * var(--rpg-sao-ui, 1)); --bb:calc(10px * var(--rpg-sao-ui, 1));
+.rpg-blk-row.big{--bt:calc(38px * var(--rpg-sao-ui, 1)); --bb:calc(10px * var(--rpg-sao-ui, 1));
+  --bl:max(calc(80px * var(--rpg-sao-ui, 1)), min(calc(220px * var(--rpg-sao-ui, 1)), calc(100vw - 134px - var(--bt) - 66px * var(--rpg-sao-ui, 1))));
   margin-bottom:calc((var(--bt) - var(--bb) * 2) / 2 + 9px * var(--rpg-sao-ui, 1))}
 
 /* translucent plate behind the name: starts a little in from the tile's left
    edge and fades out by the time it reaches the end of the bars */
-.rpg-blk-plate{grid-column:1 / 3; grid-row:1; align-self:stretch; z-index:0;
-  margin-left:calc(var(--bt) * .22);
+/* the top block is exactly as wide as tile + bars, so the plate ends with the bars */
+.rpg-blk-top{position:relative; width:calc(var(--bt) + var(--bl) - 3px * var(--rpg-sao-ui, 1))}
+.rpg-blk-plate{position:absolute; top:0; bottom:0; right:0; left:calc(var(--bt) * .22); z-index:0;
   border-radius:calc(5px * var(--rpg-sao-ui, 1)) 0 0 calc(5px * var(--rpg-sao-ui, 1));
   background:linear-gradient(90deg, rgba(214,222,230,.26) 0, rgba(214,222,230,.18) 45%, rgba(214,222,230,0) 100%)}
 
@@ -8215,7 +8227,8 @@ const SAO_CSS = `<style id="rpg-sao-style">
    so the name plate sits right on the HP bar and the tile overlaps it. */
 .rpg-blk-tile svg{width:60%; height:60%; display:block; fill:#fff;
   filter:drop-shadow(0 1px 1px rgba(0,0,0,.35))}
-.rpg-blk-tile{grid-column:1; grid-row:2; align-self:center; position:relative; z-index:2; box-sizing:border-box;
+.rpg-blk-line{display:flex; align-items:center}
+.rpg-blk-tile{flex:none; position:relative; z-index:2; box-sizing:border-box;
   margin:calc((var(--bb) * 2 - var(--bt)) / 2) 0;
   width:var(--bt); height:var(--bt); border-radius:calc(6px * var(--rpg-sao-ui, 1));
   border:calc(2px * var(--rpg-sao-ui, 1)) solid rgba(236,240,245,.88); box-shadow:0 1px 3px rgba(0,0,0,.45);
@@ -8223,10 +8236,11 @@ const SAO_CSS = `<style id="rpg-sao-style">
   font-size:calc(var(--bt) * .46); text-shadow:0 1px 2px rgba(0,0,0,.35);
   background-image:linear-gradient(180deg, rgba(255,255,255,.24) 0, rgba(255,255,255,.06) 48%,
                                            rgba(0,0,0,0) 52%, rgba(0,0,0,.14) 100%)}
-/* width:0 + min-width:100% keeps a long name from widening the row */
-.rpg-blk-head{grid-column:2 / 4; grid-row:1; position:relative; z-index:1;
+/* starts where the bars start and may run a little past them, over the
+   numbers, as before; a fixed width so a long name can't widen the row */
+.rpg-blk-head{position:relative; z-index:1; box-sizing:border-box;
   display:flex; align-items:center; gap:calc(6px * var(--rpg-sao-ui, 1));
-  width:0; min-width:100%; overflow:hidden; padding:calc(2px * var(--rpg-sao-ui, 1)) 0 calc(3px * var(--rpg-sao-ui, 1)) calc(7px * var(--rpg-sao-ui, 1))}
+  margin-left:var(--bt); width:calc(var(--bl) - 3px * var(--rpg-sao-ui, 1) + 56px * var(--rpg-sao-ui, 1)); overflow:hidden; padding:calc(2px * var(--rpg-sao-ui, 1)) 0 calc(3px * var(--rpg-sao-ui, 1)) calc(7px * var(--rpg-sao-ui, 1))}
 .rpg-blk-name{flex:0 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   font-size:calc(11.5px * var(--rpg-sao-ui, 1)); font-weight:700; letter-spacing:.4px; color:#f2f0ea;
   text-shadow:0 1px 2px rgba(0,0,0,.75); cursor:pointer}
@@ -8244,12 +8258,12 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-blk-more{font-size:calc(9px * var(--rpg-sao-ui, 1)); color:#cfcbc1; margin-left:2px}
 
 /* HP and MP the same height, touching, and running out of the tile's edge */
-.rpg-blk-bars{grid-column:2; grid-row:2; align-self:center; display:flex; flex-direction:column; gap:0;
+.rpg-blk-bars{flex:none; display:flex; flex-direction:column; gap:0;
   position:relative; z-index:1; margin-left:calc(-3px * var(--rpg-sao-ui, 1))}
 .rpg-sao-bar.blkhp, .rpg-sao-bar.blkmp{flex:none; width:var(--bl); height:var(--bb)}
 .rpg-blk-row .rpg-sao-bar svg{filter:none}
-.rpg-blk-nums{grid-column:3; grid-row:2; display:flex; flex-direction:column; justify-content:space-between;
-  align-self:center; height:calc(var(--bb) * 2); padding-left:calc(6px * var(--rpg-sao-ui, 1));
+.rpg-blk-nums{flex:none; display:flex; flex-direction:column; justify-content:space-between;
+  height:calc(var(--bb) * 2); padding-left:calc(6px * var(--rpg-sao-ui, 1));
   font-size:calc(9px * var(--rpg-sao-ui, 1)); line-height:1; color:#c8c4ba; white-space:nowrap;
   text-shadow:0 1px 2px rgba(0,0,0,.7)}
 .rpg-blk-nums > span:first-child{color:#e2ded5; font-weight:600}
