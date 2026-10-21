@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-21.5";
+const HUD_BUILD = "2026-10-21.7";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -2369,6 +2369,9 @@ function makeList(items, emptyText) {
 
 function renderEnemySummary() {
   if (!Array.isArray(rpgState.enemies) || rpgState.enemies.length === 0) return "";
+  if (uiSettings.skin === "system") {
+    return `<div class="sys-foes">${sysUnitList(rpgState.enemies, { title: "HOSTILES", jumpType: "enemy", foe: true, hpOnly: true })}</div>`;
+  }
 
   let html =
     '<div style="border-top:1px solid #b71c1c; margin-top:5px; padding-top:5px; font-size:0.75em;">' +
@@ -2476,6 +2479,10 @@ function renderMiniUnitBars(list, options = {}) {
 function renderPartyTab() {
   const party = Array.isArray(rpgState.party) ? rpgState.party : [];
   const npcs = Array.isArray(rpgState.npcs) ? rpgState.npcs : [];
+  if (uiSettings.skin === "system") {
+    return sysUnitList(party, { title: "PARTY", jumpType: "party", emptyText: "No party members" })
+      + sysUnitList(npcs, { title: "NPCS", jumpType: "npc", emptyText: "No NPCs" });
+  }
 
   const partyHtml = renderMiniUnitBars(party, {
     title: "🛡️ Party",
@@ -2520,9 +2527,10 @@ function renderBondsTab() {
     `<button id="${id}" style="background:#333; border:1px solid ${color}; color:${color};
       cursor:pointer; font-size:0.9em; padding:1px 7px; font-weight:bold;">${text}</button>`;
 
+  const SYS = uiSettings.skin === "system";
   const header = `
-    <div style="display:flex; justify-content:space-between; align-items:center; gap:4px; margin-bottom:4px;">
-      <span style="color:#f06292; font-weight:bold;">❤️ Bonds</span>
+    <div class="${SYS ? "sys-tabhead" : ""}" style="display:flex; justify-content:space-between; align-items:center; gap:4px; margin-bottom:4px;">
+      ${SYS ? `<span>${sysIcon("bond")}BONDS</span>` : `<span style="color:#f06292; font-weight:bold;">❤️ Bonds</span>`}
       <span style="display:flex; gap:4px;">
         ${bondsEditMode ? btn("rpg-bond-add", "+", "#69f0ae") : ""}
         ${bondsEditMode ? btn("rpg-bond-edit", "✓", "#69f0ae") : btn("rpg-bond-edit", "✎", "#4FC3F7")}
@@ -2596,6 +2604,23 @@ function renderBondsTab() {
             <div style="position:absolute; top:0; height:100%; opacity:0.45;
                         left:${Math.min(pct, prevPct)}%; width:${Math.abs(pct - prevPct)}%;
                         background:${diff > 0 ? "#69f0ae" : "#ff5252"};"></div>`;
+
+      if (SYS) {
+        const tint = val < 0 ? "#ff6b6b" : "#f48fb1";
+        const ghostS = prevPct === null || prevPct === pct ? "" :
+          `<s style="left:${Math.min(pct, prevPct)}%; width:${Math.abs(pct - prevPct)}%; background:${diff > 0 ? "#7ef0c0" : "#ff6b6b"};"></s>`;
+        return `
+        <div class="sys-unit">
+          <div class="sys-unit-head">
+            <span class="sys-dot${idx !== null ? " on" : ""}" title="${idx !== null ? "In scene" : "Away"}"></span>
+            ${idx !== null
+              ? `<span class="rpg-jump" data-idx="${idx}">${escHtml(displayName(b.name))}</span>`
+              : `<span class="nm">${escHtml(displayName(b.name))}</span>`}
+            <span class="sys-unit-val" style="color:${tint};">${escHtml(label)}/100${deltaHtml}</span>
+          </div>
+          <div class="sys-cap sm tint" style="--mc:${tint}"><div class="sys-track"><i style="width:${Math.min(pct, prevPct === null ? pct : prevPct)}%"></i>${ghostS}</div></div>
+        </div>`;
+      }
 
       return `
         <div style="padding:4px 0; border-bottom:1px solid #333;">
@@ -2744,11 +2769,12 @@ function renderTimersTab() {
     `<button id="${id}" title="${escAttr(title || "")}" style="background:#333; border:1px solid ${color};
       color:${color}; cursor:pointer; font-size:0.9em; padding:1px 7px; font-weight:bold;">${text}</button>`;
 
+  const SYS = uiSettings.skin === "system";
   const header = `
-    <div style="display:flex; justify-content:space-between; align-items:center; gap:4px; margin-bottom:4px;">
-      <span style="color:#90caf9; font-weight:bold;">⏱️ Timers</span>
+    <div class="${SYS ? "sys-tabhead" : ""}" style="display:flex; justify-content:space-between; align-items:center; gap:4px; margin-bottom:4px;">
+      ${SYS ? `<span>${sysIcon("timer")}TIMERS</span>` : `<span style="color:#90caf9; font-weight:bold;">⏱️ Timers</span>`}
       <span style="display:flex; gap:4px;">
-        ${timersEditMode ? btn("rpg-timer-add", "+", "#69f0ae", "Add") : btn("rpg-timer-turn", "⏭", "#C0A040", "Advance one turn")}
+        ${timersEditMode ? btn("rpg-timer-add", "+", "#69f0ae", "Add") : btn("rpg-timer-turn", SYS ? sysIcon("skip") : "⏭", "#C0A040", "Advance one turn")}
         ${timersEditMode ? btn("rpg-timer-edit", "✓", "#69f0ae", "Save") : btn("rpg-timer-edit", "✎", "#4FC3F7", "Edit")}
       </span>
     </div>`;
@@ -2810,6 +2836,22 @@ function renderTimersTab() {
         <div style="width:100%; background:#333; height:3px; border-radius:2px; overflow:hidden; margin-top:3px;">
           <div style="height:100%; background:${st.color}; width:${info.pct}%"></div>
         </div>`;
+
+      if (SYS) {
+        const use = info.mode === "charges" && !info.done
+          ? `<button class="rpg-c-tuse" data-key="${escAttr(timerKey(t))}" title="Use one charge"
+               style="margin-left:2px; padding:0 5px; font-size:0.85em; line-height:1.4; cursor:pointer;
+                      background:rgba(10,26,48,.9); color:#dff1ff; border:1px solid rgba(143,208,255,.55);">\u22121</button>` : "";
+        return `
+        <div class="sys-unit${dim ? " dim" : ""}">
+          <div class="sys-unit-head">
+            <span class="sys-tkind" style="--tc:${st.color}">${sysIcon(SYS_TIMER_ICON[info.kind] || "hourglass")}</span>
+            <span class="nm">${ownerTag}${escHtml(t.name)}${mark}${keptMark}</span>
+            <span class="sys-unit-val" style="color:${st.color};">${escHtml(info.label)}${delta ? `<span class="d" style="color:#8aa3b8;">${escHtml(delta)}</span>` : ""}${use}</span>
+          </div>
+          ${info.pct === null ? "" : `<div class="sys-cap sm tint" style="--mc:${st.color}"><i style="width:${info.pct}%"></i></div>`}
+        </div>`;
+      }
 
       return `
         <div style="padding:4px 0; border-bottom:1px solid #333; ${dim}">
@@ -3548,6 +3590,7 @@ function renderClassicSkin() {
   queueMicrotask(() => saoRestoreScroll(container));
 
   const SYS = uiSettings.skin === "system";   // the System skin is this panel, restyled
+  const ico = (emoji, k) => (SYS ? sysIcon(k) : emoji);   // emoji in classic, line icons in System
   if (SYS) { sysEnsureCss(); sysEnsureWebFont(); }
   const BOX_RADIUS = "0px";
   const BAR_RADIUS = "4px";
@@ -3779,7 +3822,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         padding:10px;
       ">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid #333; padding-bottom:6px;">
-          <div style="font-weight:bold; color:#ddd;">⚙️ SETTINGS</div>
+          <div style="font-weight:bold; color:#ddd;">${ico("⚙️", "gear")} SETTINGS</div>
           <button id="rpg-settings-close" style="background:#444; border:1px solid #777; color:#fff; cursor:pointer; font-size:10px; padding:3px 10px; font-weight:bold;">CLOSE</button>
         </div>
 
@@ -3787,8 +3830,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Actions</div>
 
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-bottom:12px;">
-             <button id="rpg-settings-edit" style="background:#333; border:1px solid #4FC3F7; color:#4FC3F7; cursor:pointer; padding:8px 10px; font-weight:bold;">✏️ Edit</button>
-             <button id="rpg-settings-remove" style="background:#333; border:1px solid #ff9800; color:#ffcc80; cursor:pointer; padding:8px 10px; font-weight:bold;">🗑️ Remove</button>
+             <button id="rpg-settings-edit" style="background:#333; border:1px solid #4FC3F7; color:#4FC3F7; cursor:pointer; padding:8px 10px; font-weight:bold;">${ico("✏️", "pencil")} Edit</button>
+             <button id="rpg-settings-remove" style="background:#333; border:1px solid #ff9800; color:#ffcc80; cursor:pointer; padding:8px 10px; font-weight:bold;">${ico("🗑️", "trash")} Remove</button>
              ${(() => {
                const info = getActivePointerInfo();
                if (!MOVE_KEYS[info.type]) return "";
@@ -3800,10 +3843,10 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
                  <button id="rpg-settings-move" style="background:#333; border:1px solid #bbb; color:#eee; cursor:pointer; padding:6px 10px; font-weight:bold;">Move</button>
                </div>`;
              })()}
-             <button id="rpg-settings-clear-npcs" style="background:#333; border:1px solid #00e5ff; color:#b3f5ff; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 NPCs</button>
+             <button id="rpg-settings-clear-npcs" style="background:#333; border:1px solid #00e5ff; color:#b3f5ff; cursor:pointer; padding:8px 10px; font-weight:bold;">${ico("🧹", "sweep")} NPCs</button>
 
-             <button id="rpg-settings-clear-enemies" style="background:#333; border:1px solid #ff5252; color:#ffd0d0; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 Enemies</button>
-             <button id="rpg-settings-clear-party" style="background:#333; border:1px solid #C0A040; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 Party</button>
+             <button id="rpg-settings-clear-enemies" style="background:#333; border:1px solid #ff5252; color:#ffd0d0; cursor:pointer; padding:8px 10px; font-weight:bold;">${ico("🧹", "sweep")} Enemies</button>
+             <button id="rpg-settings-clear-party" style="background:#333; border:1px solid #C0A040; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold;">${ico("🧹", "sweep")} Party</button>
 			 <button id="rpg-settings-insert" style="background:#333; border:1px solid #4CAF50; color:#A5D6A7; cursor:pointer; padding:8px 10px; font-weight:bold;">Insert State</button>
              <button id="rpg-settings-remind" style="background:#333; border:1px solid #9C27B0; color:#E1BEE7; cursor:pointer; padding:8px 10px; font-weight:bold;">Remind State</button>
 			 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
@@ -4001,7 +4044,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    cursor:pointer; width:34px; height:26px;
 	    display:flex; align-items:center; justify-content:center;
 	    box-sizing:border-box;
-	  ">⚙️</button>
+	  ">${ico("⚙️", "gear")}</button>
 	
 	  <button id="rpg-scan-btn" title="Scan" style="
 	    background:#333; border:1px solid #C0A040; color:#fff;
@@ -4020,7 +4063,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    cursor:pointer; width:34px; height:26px;
 	    display:flex; align-items:center; justify-content:center;
 	    box-sizing:border-box;
-	  ">📜${changelogUnseen() ? `<span style="position:absolute; top:-3px; right:-3px; width:8px; height:8px; border-radius:50%; background:#ff5252; box-shadow:0 0 0 2px #111;"></span>` : ""}</button>
+	  ">${ico("📜", "log")}${changelogUnseen() ? `<span style="position:absolute; top:-3px; right:-3px; width:8px; height:8px; border-radius:50%; background:#ff5252; box-shadow:0 0 0 2px #111;"></span>` : ""}</button>
 	</div>
 
 
@@ -7124,7 +7167,25 @@ const SYS_CSS = `
   border:0 solid var(--sc); filter:drop-shadow(0 0 3px var(--sg)); z-index:1}
 .rpg-sys::before{top:5px; left:5px; border-top-width:2px; border-left-width:2px}
 .rpg-sys::after{bottom:5px; right:5px; border-bottom-width:2px; border-right-width:2px}
-.rpg-sys .sys-svg{fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round}
+.rpg-sys .sys-svg{fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round;
+  width:1.1em; height:1.1em; vertical-align:-0.18em; flex:0 0 auto}
+.rpg-sys .rpg-c-btns .sys-svg{width:16px; height:16px; color:#dff1ff; filter:drop-shadow(0 0 3px var(--sg))}
+.rpg-sys .sys-tabhead{display:flex; justify-content:space-between; align-items:center; gap:4px; margin-bottom:5px;
+  padding-bottom:3px; border-bottom:1px solid rgba(143,208,255,.25)}
+.rpg-sys .sys-tabhead > span:first-child{display:flex; align-items:center; gap:6px; font-size:1.02em; letter-spacing:.18em;
+  color:var(--sc); text-shadow:0 0 6px var(--sg)}
+.rpg-sys .sys-tabhead button{display:inline-flex; align-items:center; justify-content:center; min-width:24px;
+  background:rgba(10,26,48,.9) !important; border:1px solid rgba(143,208,255,.55) !important; color:#dff1ff !important}
+.rpg-sys .sys-unit-head .sys-dot{flex:0 0 auto; width:6px; height:6px; border-radius:50%; border:1px solid #6d8aa5}
+.rpg-sys .sys-unit-head .sys-dot.on{border-color:#7ef0c0; background:#7ef0c0; box-shadow:0 0 6px rgba(126,240,192,.8)}
+.rpg-sys .sys-unit-val{margin-left:auto; flex:0 0 auto; white-space:nowrap; display:flex; align-items:center; gap:4px}
+.rpg-sys .sys-unit-val .d{font-size:.8em}
+.rpg-sys .sys-track{position:relative; height:100%}
+.rpg-sys .sys-track s{position:absolute; top:0; height:100%; opacity:.5; border-radius:3px; text-decoration:none}
+.rpg-sys .sys-unit.dim{opacity:.55}
+.rpg-sys .sys-unit-head .nm{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#d6e8f7}
+.rpg-sys .sys-tkind{display:inline-grid; place-items:center; color:var(--tc); filter:drop-shadow(0 0 3px var(--tc))}
+.rpg-sys .sys-tkind .sys-svg{width:13px; height:13px}
 
 .rpg-sys .sys-head{position:relative; display:flex; justify-content:center; align-items:center; min-height:30px; margin:2px 0 8px}
 .rpg-sys .sys-kind{position:absolute; left:4px; top:50%; transform:translateY(-50%); font-size:.62em; letter-spacing:.16em;
@@ -7175,6 +7236,25 @@ const SYS_CSS = `
 .rpg-sys .sys-stat b{margin-left:auto; font-size:1.3em; color:#f4fbff; text-shadow:0 0 8px var(--sg); letter-spacing:0; font-weight:600;
   white-space:nowrap}
 
+.rpg-sys .sys-units + .sys-units{margin-top:8px}
+.rpg-sys .sys-sec{font-size:.82em; letter-spacing:.18em; color:var(--sc); text-shadow:0 0 6px var(--sg); margin:1px 0 5px;
+  padding-bottom:3px; border-bottom:1px solid rgba(143,208,255,.25)}
+.rpg-sys .sys-sec.foe{color:#ff9a9a; text-shadow:0 0 6px rgba(255,80,80,.5); border-bottom-color:rgba(255,128,128,.3)}
+.rpg-sys .sys-unit{padding:3px 0 6px}
+.rpg-sys .sys-unit + .sys-unit{border-top:1px solid rgba(143,208,255,.12); padding-top:5px}
+.rpg-sys .sys-unit-head{display:flex; align-items:center; gap:8px; margin-bottom:3px}
+.rpg-sys .sys-unit-head .rpg-jump{cursor:pointer; color:#eaf6ff; font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; text-shadow:0 0 6px var(--sg)}
+.rpg-sys .sys-unit-tag{margin-left:auto; display:flex; align-items:center; gap:3px; color:#f7b3cc; font-size:.9em; white-space:nowrap}
+.rpg-sys .sys-unit-tag .sys-svg{width:11px; height:11px}
+.rpg-sys .sys-mini{display:grid; grid-template-columns:30px minmax(0,1fr) auto; align-items:center; gap:6px; margin-top:2px}
+.rpg-sys .sys-mini .l{font-size:.78em; letter-spacing:.08em; color:#a9cbe8}
+.rpg-sys .sys-mini .n{font-size:.85em; color:#dff1ff; white-space:nowrap; min-width:58px; text-align:right}
+.rpg-sys .sys-cap.sm{height:7px; margin-top:0}
+.rpg-sys .sys-cap.foe{border-color:rgba(255,170,170,.75); box-shadow:0 0 6px rgba(255,80,80,.45)}
+.rpg-sys .sys-cap.foe i{background:linear-gradient(90deg,#ff6b6b,#ffc2c2); box-shadow:0 0 6px rgba(255,90,90,.85)}
+.rpg-sys .sys-foes{margin-top:6px; padding:6px 8px 2px; font-size:.8em; border:1px solid rgba(255,128,128,.35);
+  background:rgba(40,8,14,.35); max-height:96px; overflow-y:auto}
 .rpg-sys .rpg-c-btns button{background:rgba(10,26,48,.9) !important; border:1px solid rgba(143,208,255,.55) !important;
   color:#dff1ff !important; box-shadow:0 0 6px rgba(90,170,255,.2)}
 .rpg-sys #rpg-settings-overlay,.rpg-sys #rpg-info-overlay{background:#04090f !important; border-color:var(--sc) !important}
@@ -7251,7 +7331,22 @@ const SYS_ICON_PATHS = {
   satk: '<path d="M8 14c-2.6 0-4.3-1.8-4.3-4.1 0-2.6 2.3-3.7 2.6-6.4 1.6 1 2.6 2.4 2.6 4 .7-.4 1.2-1.2 1.3-2 1.4 1.2 2.1 2.7 2.1 4.4C12.3 12.2 10.6 14 8 14z"/>',
   sdef: '<path d="M8 2l5 2v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V4z"/><path d="M8 5.6v4.8M5.6 8h4.8"/>',
   coin: '<circle cx="8" cy="8" r="5.6"/><circle cx="8" cy="8" r="2.8"/>',
+  gear: '<path d="M6.94 3.42L7.08 1.46L8.92 1.46L9.06 3.42L10.49 4.01L11.97 2.73L13.27 4.03L11.99 5.51L12.58 6.94L14.54 7.08L14.54 8.92L12.58 9.06L11.99 10.49L13.27 11.97L11.97 13.27L10.49 11.99L9.06 12.58L8.92 14.54L7.08 14.54L6.94 12.58L5.51 11.99L4.03 13.27L2.73 11.97L4.01 10.49L3.42 9.06L1.46 8.92L1.46 7.08L3.42 6.94L4.01 5.51L2.73 4.03L4.03 2.73L5.51 4.01z" stroke-width="1.3"/><circle cx="8" cy="8" r="2.1"/>',
+  log: '<path d="M4.5 2.5h6.5a1.5 1.5 0 0 1 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5H4.5a1.5 1.5 0 0 1-1.5-1.5V4a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M5.8 6h4.4M5.8 8.5h4.4M5.8 11h2.6"/>',
+  help: '<circle cx="8" cy="8" r="6"/><path d="M6.3 6.2a1.8 1.8 0 1 1 2.5 1.7c-.5.2-.8.6-.8 1.1v.4M8 11.6v.1"/>',
+  pencil: '<path d="M10.8 2.7l2.5 2.5-7.6 7.6-3.2.7.7-3.2z"/><path d="M9.3 4.2l2.5 2.5"/>',
+  trash: '<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 9h5.6l.7-9"/>',
+  sweep: '<path d="M11 2L8 8"/><path d="M5 8.5h5.5l1 5.5H4z"/><path d="M6.8 11v3M8.7 11v3"/>',
+  timer: '<circle cx="8" cy="9" r="5"/><path d="M8 9V6.5M6.5 2h3M8 2v2M12 4.6l1-1"/>',
+  hourglass: '<path d="M4 2h8M4 14h8M5 2c0 3 3 4 3 6s-3 3-3 6M11 2c0 3-3 4-3 6s3 3 3 6"/>',
+  calendar: '<rect x="2.5" y="3.5" width="11" height="10" rx="1.5"/><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3"/>',
+  warn: '<path d="M8 2.5l6 10.5H2z"/><path d="M8 6.5v3M8 11.3v.2"/>',
+  sparkle: '<path d="M8 2l1.4 4.6L14 8l-4.6 1.4L8 14l-1.4-4.6L2 8l4.6-1.4z"/>',
+  skull: '<path d="M8 2.2c-3 0-5 2-5 4.7 0 1.6.8 2.7 1.8 3.3v2.1h6.4v-2.1c1-.6 1.8-1.7 1.8-3.3 0-2.7-2-4.7-5-4.7z"/><circle cx="6" cy="7.4" r="1"/><circle cx="10" cy="7.4" r="1"/><path d="M7 12.3v-1.2M9 12.3v-1.2"/>',
+  skip: '<path d="M3.5 3.5l6 4.5-6 4.5z"/><path d="M12.5 3.5v9"/>',
 };
+// timer kinds, matching timerKindStyle's emoji
+const SYS_TIMER_ICON = { DOOM: "skull", EVENT: "calendar", DEBUFF: "warn", BUFF: "sparkle" };
 const sysIcon = (k) => `<svg class="sys-svg" viewBox="0 0 16 16" aria-hidden="true">${SYS_ICON_PATHS[k] || ""}</svg>`;
 
 // An analog face for the in-world time. "14:30", "2:30 PM", "02.30pm" all read.
@@ -7299,7 +7394,7 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
   const name = isVehicle ? displayName(display.name, "Vehicle")
     : type === "player" ? playerDisplayName() : displayName(display.name, "Unit");
   const pick = (inner) => `<span class="sys-pick">${inner}<span class="sys-caret">▾</span>` +
-    `<select id="rpg-char-select" title="Switch character">${getCharOptions()}</select></span>`;
+    `<select id="rpg-char-select" title="Switch character">${getCharOptions().replace(/>\s*\p{Extended_Pictographic}\uFE0F?\s*/gu, ">")}</select></span>`;
   const clockMode = uiSettings.sysBigSlot === "clock";
 
   const wd = worldWeekday(time);
@@ -7363,6 +7458,37 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
       <div class="sys-box">${bars}</div>
       ${stats ? `<div class="sys-box sys-stats">${stats}</div>` : ""}
     </div>`;
+}
+
+// Party, NPC and enemy rows in the same capsule bars as the status window.
+function sysUnitList(list, { title, jumpType, emptyText = "", foe = false, hpOnly = false }) {
+  const head = `<div class="sys-sec${foe ? " foe" : ""}">${escHtml(title)}</div>`;
+  if (!Array.isArray(list) || !list.length) {
+    return emptyText ? `<div class="sys-units">${head}<div style="opacity:.5; font-style:italic;">${escHtml(emptyText)}</div></div>` : "";
+  }
+  const mini = (label, curr, max, cls) => {
+    const maxNum = safeParseFloatOrInf(max, 0);
+    if (Number.isFinite(maxNum) && maxNum <= 0) return "";
+    const pct = percentFrom(curr, max);
+    const low = cls !== "foe" && cls !== "mp" && pct <= 25 ? " low" : "";
+    return `<div class="sys-mini"><span class="l">${escHtml(label)}</span>
+      <div class="sys-cap sm ${cls}${low}"><i style="width:${pct}%"></i></div>
+      <span class="n">${escHtml(splitMathValue(String(curr ?? 0)).val)}/${escHtml(splitMathValue(String(max ?? 0)).val)}</span></div>`;
+  };
+  const rows = list.map((unit, idx) => {
+    const isVeh = !!(unit?.vehicle && unit.vehicle.active);
+    const t = isVeh ? unit.vehicle : unit;
+    const name = escHtml(displayName(t?.name || unit?.name, "Unit"));
+    const { curr: eC, max: eM, label: eL } = getEnergy(t, isVeh);
+    const bond = !foe && unit?.bond !== undefined && unit.bond !== "" ? parseBondValue(unit.bond) : null;
+    return `<div class="sys-unit">
+      <div class="sys-unit-head"><span class="rpg-jump" data-idx="${charIndexFor(jumpType, idx)}">${isVeh ? "\u25C6 " : ""}${name}</span>
+        ${bond !== null ? `<span class="sys-unit-tag">${sysIcon("bond")}${bond >= 101 ? "\u221E" : escHtml(bond)}</span>` : ""}</div>
+      ${mini(isVeh ? "HULL" : "HP", t?.hp_curr, t?.hp_max, foe ? "foe" : "")}
+      ${hpOnly ? "" : mini(eL, eC, eM, "mp")}
+    </div>`;
+  }).join("");
+  return `<div class="sys-units">${head}${rows}</div>`;
 }
 
 // ---- settings (inside the classic settings overlay, when this skin is on) ----
@@ -7530,6 +7656,13 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-21.7", items: [
+    "System skin: Bonds and Timers use the capsule bars too. Bonds show a glowing dot for who's in the scene; timers get a line icon per kind (threat, event, debuff, buff, cooldown).",
+    "System skin: emoji replaced with matching line icons: the settings gear, update log, help, the Bonds heart, the Timers stopwatch, the advance-turn button and the settings action buttons. The character picker drops its emoji too. Classic keeps its emoji.",
+  ] },
+  { build: "2026-10-21.6", items: [
+    "System skin: the Party tab and the Hostiles list now use the same glowing capsule bars as the status window (red for hostiles), with bonds shown as a heart next to the name.",
+  ] },
   { build: "2026-10-21.5", items: [
     "New skin: System window. A glowing status panel with the same tabs and editors as classic. Pick it under Skin in settings (either skin).",
     "System settings: Big slot shows your name or an analog clock of the in-world time; Font; and Notifications, which pop up a System window when a reply gives you items, skills, passives, coin or a status, adds quests, timers or party members, or brings in enemies.",
@@ -7663,7 +7796,7 @@ function classicInfoHtml() {
     <div id="rpg-info-overlay" style="position:absolute; inset:0; background:#0b0b0d; border:1px solid #333; z-index:100001;
       display:flex; flex-direction:column; box-sizing:border-box; padding:10px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid #333; padding-bottom:6px;">
-        <div style="font-weight:bold; color:#ddd;">${isLog ? "\u{1F4DC} UPDATE LOG" : "❓ HELP"}</div>
+        <div style="font-weight:bold; color:#ddd;">${uiSettings.skin === "system" ? sysIcon(isLog ? "log" : "help") + (isLog ? " UPDATE LOG" : " HELP") : isLog ? "\u{1F4DC} UPDATE LOG" : "❓ HELP"}</div>
         <button id="rpg-info-close" style="background:#444; border:1px solid #777; color:#fff; cursor:pointer; font-size:10px; padding:3px 10px; font-weight:bold;">CLOSE</button>
       </div>
       <div data-scroll-key="c:info:${classicInfo}" style="flex:1; overflow:auto; font-size:0.8em; line-height:1.4; padding-right:4px;">${rows}</div>
