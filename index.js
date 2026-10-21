@@ -189,6 +189,78 @@ function escTextarea(s) {
     .replace(/>/g, "&gt;");
 }
 
+// "400 (350+50)" -> { val: "400", math: "350+50" }, the same split
+// renderInlineValue makes for the Status panel's dropdowns
+function splitMathValue(raw) {
+  if (typeof raw === "string" && raw.includes("(")) {
+    const parts = raw.match(/^(.+?)\s*\((.*)\)$/);
+    if (parts) return { val: parts[1].trim(), math: parts[2].trim() };
+  }
+  return { val: raw, math: null };
+}
+
+// A number beside a bar. Plain values print as they are. One with a breakdown
+// shows just its value plus the same small arrow the Status panel uses, and
+// is the one thing in that row you can tap: it pops the breakdown up. (A real
+// dropdown can't open there: the bar stack clips anything that spills out.)
+function barNum(raw) {
+  const { val, math } = splitMathValue(raw);
+  if (!math) return escHtml(val);
+  return `<span class="rpg-mathnum" data-val="${escAttr(val)}" data-math="${escAttr(math)}"` +
+    ` title="${escAttr(val)} = ${escAttr(math)}">${escHtml(val)}<i>\u25BE</i></span>`;
+}
+
+// The number a bar should use: the value in front of any "(breakdown)".
+// Stripping every non-digit instead turned "400 (350+50)" into 40035050,
+// which drew every bar with an equation in its max as empty.
+function barValue(raw) {
+  const { val } = splitMathValue(typeof raw === "string" ? raw : String(raw ?? ""));
+  return parseFloat(String(val ?? "").replace(/[^\d.\-]/g, ""));
+}
+
+function barPair(curr, max) {
+  if (curr === undefined || curr === null || curr === "") return "\u2013";
+  return `${barNum(curr)}/${barNum(max)}`;
+}
+
+let mathPopEl = null, mathPopTimer = null;
+(() => {
+  const st = document.createElement("style");
+  st.textContent = `.rpg-mathpop{position:fixed; z-index:2147483000; max-width:240px; padding:6px 9px;
+    font:12px/1.35 system-ui, sans-serif; color:#e6e3da; background:rgba(12,14,18,.92);
+    border:1px solid rgba(255,255,255,.18); border-radius:5px; box-shadow:0 4px 14px rgba(0,0,0,.45);
+    pointer-events:auto; white-space:normal}
+  .rpg-mathpop b{color:#fff}`;
+  document.head.appendChild(st);
+})();
+function hideMathPop() {
+  if (mathPopEl) { mathPopEl.remove(); mathPopEl = null; }
+  clearTimeout(mathPopTimer);
+}
+function showMathPop(anchor) {
+  const again = mathPopEl && mathPopEl.dataset.for === anchor.dataset.math + anchor.dataset.val;
+  hideMathPop();
+  if (again) return;                                   // a second tap closes it
+  const pop = document.createElement("div");
+  pop.className = "rpg-mathpop";
+  pop.dataset.for = anchor.dataset.math + anchor.dataset.val;
+  pop.innerHTML = `<b>${escHtml(anchor.dataset.val)}</b> = ${escHtml(anchor.dataset.math)}`;
+  // On the page itself, not inside the HUD: the HUD redraws often and its bar
+  // stack clips overflow. Fixed, so it sits by the number wherever that is.
+  document.body.appendChild(pop);
+  const q = anchor.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+  const left = Math.max(6, Math.min(q.left + q.width / 2 - w / 2, window.innerWidth - w - 6));
+  const top = q.bottom + 6 + h > window.innerHeight - 6 ? q.top - h - 6 : q.bottom + 6;
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+  mathPopEl = pop;
+  mathPopTimer = setTimeout(hideMathPop, 6000);
+}
+// any tap elsewhere closes it
+document.addEventListener("pointerdown", (e) => {
+  if (mathPopEl && !e.target.closest?.(".rpg-mathnum, .rpg-mathpop")) hideMathPop();
+}, true);
+
 function renderInlineValue(rawValue) {
   let val = rawValue;
   let math = null;
@@ -348,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-09-26.14";
+const HUD_BUILD = "2026-10-21.5";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -356,7 +428,8 @@ const defaultUiSettings = {
   autoAddBonds: true,     // add party/NPC |Bond:| values to the ledger automatically
   saoPanelLight: 92,      // panel lightness %, lower = dimmer but still solid
   saoCardAlpha: 11,       // % wash behind the player's HP/MP bars; higher = lighter
-  saoFont: "preset",      // "preset" | "sans" | "squarish"
+  saoFont: "preset",      // "preset" | "sans" | "squarish" | "saira" | "teko" | "exo" | "custom"
+  saoCustomFont: "",      // with "custom": any Google Fonts family name
   saoBarStyle: "sao",     // "sao" stepped bars | "alo" arrow-ended ALfheim bars
   saoInk: 70,             // text contrast against the panel, 0 = faint, 100 = maximum
   saoAnimate: true,       // bar tweening, orb unfold, panel and clock fades
@@ -364,10 +437,18 @@ const defaultUiSettings = {
   saoSnap: true,          // snap a dragged piece to the others' edges and centres
   meterColors: {},        // meter name (lowercase) -> "#rrggbb", overrides the auto colour
   tileColors: {},         // ALfheim (New) tile colours you've picked: "@player" or a name key -> "#rrggbb"
+  oocEditNotes: true,     // Edit state -> Save leaves an (OOC: ...) note in the block listing what you changed
+  restoreLostDesc: false, // put back a description the AI dropped entirely (keeps its other changes)
+  fixWeekdays: true,      // a weekday written in Time: that doesn't match the date gets corrected
+  addWeekdays: true,      // a reply's Time: with no weekday gets one added (when the date can be placed)
+  listEditHistory: 0,     // list edits from the Status orb also rewrite this many earlier replies (0-20)
   saoUiScale: 100,        // % size of the bar cluster; a desktop usually wants ~130
   saoTextShadow: false,   // shadow behind the text that sits straight on the chat
   saoTextBacking: false,  // translucent card behind that text instead        // "classic" | "sao"
   barsOnMin: true,        // sao skin: keep the bars visible when minimised
+  sysBigSlot: "name",     // system skin: the big slot shows "name" or an analog "clock"
+  sysNotices: true,       // system skin: "You have acquired..." popups when a reply adds things
+  sysFont: "exo",         // system skin font: a SAO_FONTS key, or "preset" for the classic preset
   fontPreset: "retro_mono",
   fontFamily: "'Courier New', Courier, monospace",
   fontScale: 1.0,
@@ -444,7 +525,7 @@ function applyHudTypography(container) {
     uiSettings.fontFamily = fontPresetToFamily(uiSettings.fontPreset);
   }
 
-  container.style.fontFamily = uiSettings.fontFamily;
+  container.style.fontFamily = uiSettings.skin === "system" ? sysFontStack() : uiSettings.fontFamily;
   container.style.fontSize = `${0.9 * scale}em`;
 }
 
@@ -472,7 +553,9 @@ function listToMap(list) {
   const m = new Map();
   (Array.isArray(list) ? list : []).forEach((i) => {
     const text = String(typeof i === "object" ? (i?.name ?? "") : (i ?? "")).trim();
-    const key = entryBaseName(text).toLowerCase();
+    // keyed by the part before any description, so rewording "Lucky Coin, a
+    // bent copper piece" reads as a change, not a removal plus an addition
+    const key = entryBaseName(descSplit(text).head).toLowerCase();
     if (!key || m.has(key)) return;
     m.set(key, text);
   });
@@ -610,6 +693,228 @@ let alertKey = null;
 let alertSig = "";
 let alertIdx = -1;
 
+// ---- restoring descriptions the AI dropped entirely ----
+// An entry is "Name (Cost) Effect, description [Status]". When a new reply
+// keeps an item but its entry has no description left at all, the old
+// description is put back onto the NEW head, so real changes (+10 -> +15 ATK,
+// a new cost) stay. A description that's only trimmed or reworded is left to
+// the alert. Masteries aren't touched: their text is a progress counter.
+// Split "Name (Cost) Effect, description" at the first separator that isn't
+// inside brackets: a comma, full stop, semicolon or dash followed by a space.
+function descSplit(text) {
+  const core = stripStatusTags(text).replace(/\s+([,.;])/g, "$1");
+  let depth = 0;
+  for (let i = 0; i < core.length; i++) {
+    const c = core[i];
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if ((c === ")" || c === "]" || c === "}") && depth > 0) depth--;
+    else if (depth === 0) {
+      if ((c === "," || c === "." || c === ";") && core[i + 1] === " ") return { head: core.slice(0, i).trim(), tail: core.slice(i) };
+      if ((c === "\u2014" || c === "\u2013" || c === "-") && core[i - 1] === " " && core[i + 1] === " ") return { head: core.slice(0, i).trim(), tail: core.slice(i - 1) };
+    }
+  }
+  return { head: core.trim(), tail: "" };
+}
+
+// Only when the new entry has no description at all and the old one did:
+// the new head (name, cost, effect, tags) is kept, the old description added.
+function restoredEntry(oldText, newText) {
+  const o = descSplit(oldText), n = descSplit(newText);
+  if (n.tail) return null;                                      // still has a description of its own
+  if (o.tail.replace(/^[\s,.;\u2013\u2014-]+/, "").length < 8) return null;  // nothing worth restoring
+  const tags = (String(newText).match(/\[[^\]]*\]/g) || []).join(" ");
+  const head = n.head.replace(/[\s.,;:]+$/, "");
+  return head + o.tail + (tags ? " " + tags : "");
+}
+
+// Everyone whose items, skills and passives are watched: the player first,
+// then party, NPCs and enemies, each with an id that's stable between turns.
+function listOwners(state) {
+  const out = [{ id: "@player", name: "", who: null, ent: state }];
+  ["party", "npcs", "enemies"].forEach((group) => (state?.[group] || []).forEach((u) => {
+    const key = normBondName(u?.name);
+    if (key) out.push({ id: `${group}:${key}`, name: displayName(u.name, "?"), who: { group, key }, ent: u });
+  }));
+  return out;
+}
+
+function findDescriptionRestores(prev, next) {
+  const out = [];
+  const prevOwners = new Map(listOwners(prev).map((o) => [o.id, o]));
+  listOwners(next).forEach((owner) => {
+    const was = prevOwners.get(owner.id);
+    if (!was) return;                                   // new to the scene: nothing to compare
+    WATCHED_LISTS.filter((w) => w.key !== "masteries").forEach(({ key, label }) => {
+      const prevItems = (was.ent?.[key] || []).map((x) => String(x).trim()).filter(Boolean);
+      const used = new Set();
+      (owner.ent?.[key] || []).forEach((x) => {
+        const t = String(x).trim();
+        // same-name variants: pair with the closest earlier one, each only once
+        const pi = bestEntryIndex(prevItems, tItemKey(t), t, used);
+        if (pi >= 0) used.add(pi);
+        const old = pi >= 0 ? prevItems[pi] : undefined;
+        if (!old || old === t) return;
+        const fixed = restoredEntry(old, t);
+        if (fixed && fixed !== t) out.push({ key, label, from: t, to: fixed, who: owner.who, owner: owner.name });
+      });
+    });
+  });
+  return out;
+}
+
+// Replace exactly those entries, each only on its own character's lines,
+// leaving every other byte the AI wrote as it was. Lines are walked in order,
+// tracking the section ([Player], [Party], [NPCs], [Enemies]) and the current
+// |Name:|, so two characters carrying the same item can't be mixed up.
+// Vehicle lines (">") are skipped.
+function applyDescriptionRestores(mes, fixes) {
+  const blockMatch = String(mes).match(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i);
+  if (!blockMatch) return { mes, done: [] };
+  const block = blockMatch[0];
+  const lines = block.split("\n");
+  const owners = [];                      // per line: "@player", "party:kira", ... or null
+  let section = null, unit = null;
+  lines.forEach((ln) => {
+    const h = ln.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (h) {
+      const t = h[1].toLowerCase();
+      section = /player/.test(t) ? "player" : /party/.test(t) ? "party" : /npc/.test(t) ? "npcs" : /enem/.test(t) ? "enemies" : null;
+      unit = null; owners.push(null); return;
+    }
+    const nm = ln.match(/\|\s*Name\s*:\s*([^|]*)\|/i);
+    if (nm && section && section !== "player") unit = normBondName(nm[1]);
+    if (ln.trim().startsWith(">")) { owners.push(null); return; }
+    owners.push(section === "player" ? "@player" : section && unit ? `${section}:${unit}` : null);
+  });
+
+  const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const done = [];
+  fixes.forEach((f) => {
+    const id = f.who ? `${f.who.group}:${f.who.key}` : "@player";
+    const re = new RegExp(`([:;][ \\t]*)${esc(f.from)}([ \\t]*)(?=[;|])`);
+    for (let i = 0; i < lines.length; i++) {
+      if (owners[i] !== id || !re.test(lines[i])) continue;
+      lines[i] = lines[i].replace(re, (m, a, b) => a + f.to + b);
+      done.push(f);
+      break;
+    }
+  });
+  if (!done.length) return { mes, done };
+  return { mes: String(mes).replace(block, lines.join("\n")), done };
+}
+
+// ---- correcting a written weekday ----
+// If Time: carries a weekday ("Mon Jan 7 1023,09:00") that the real calendar
+// disagrees with, the right one is swapped in, in the AI's own style: "Mon"
+// stays three letters, "Monday" stays whole, capitals are kept. Only when the
+// date can really be placed: a Jan..Dec month and a written year. Otherwise
+// it's left alone rather than "corrected" against a guess.
+function weekdayFixFor(inner, opts = {}) {
+  const fix = opts.fix ?? (uiSettings.fixWeekdays !== false);
+  const add = opts.add ?? (uiSettings.addWeekdays !== false);
+  const f = String(inner || "").match(/\|\s*Time\s*:\s*([^|]*)\|/i);
+  if (!f) return null;
+  const parts = f[1].split(",");
+  let written = "";
+  if (parts.length > 2 && WEEKDAY_RE.test(parts[0].trim())) written = parts.shift().trim();
+  const dp = (parts[0] || "").trim().split(/\s+/);
+  if (dp.length > 2 && WEEKDAY_RE.test(dp[0])) written = dp.shift();
+  written = written.replace(/[.,]/g, "");
+  const [month, day, year] = dp;
+  if (!/^\d{1,4}$/.test(year || "")) return null;               // no written year: can't be sure
+  const correct = worldWeekday({ month, day, year }, true);
+  if (!correct) return null;                                    // not a calendar month
+  if (!written) {
+    // none written: add the short form in front of the month
+    return add ? { from: "", to: correct.slice(0, 3), date: `${month} ${day} ${year}`, insert: true } : null;
+  }
+  if (!fix) return null;
+  if (correct.slice(0, 3).toLowerCase() === written.slice(0, 3).toLowerCase()) return null;
+  const long = /^(sun|mon|tues|wednes|thurs|fri|satur)day$/i.test(written);
+  let to = long ? correct : correct.slice(0, 3);
+  if (written === written.toUpperCase()) to = to.toUpperCase();
+  else if (written === written.toLowerCase()) to = to.toLowerCase();
+  return { from: written, to, date: `${month} ${day} ${year}` };
+}
+
+// swap just the weekday word inside Time:, nothing else
+function applyWeekdayFix(mes, fix) {
+  const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let hit = false;
+  const out = String(mes).replace(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i, (block) =>
+    block.replace(/(\|\s*Time\s*:\s*)([^|]*)\|/i, (m0, pre, val) => {
+      const nv = fix.insert
+        ? val.replace(/^(\s*)/, (x, sp) => { hit = true; return sp + fix.to + " "; })
+        : val.replace(new RegExp(`^(\\s*)${esc(fix.from)}(?![A-Za-z])`), (x, sp) => { hit = true; return sp + fix.to; });
+      return pre + nv + "|";
+    }));
+  return hit ? out : mes;
+}
+
+// ---- one pass after a reply settles ----
+// Restoring descriptions and correcting the weekday both edit the reply, so
+// they run together: separately, whichever went first would change the
+// message and make the other give up. The block can be complete while text
+// after it is still streaming in, so this waits until the message has stopped
+// changing. If the block itself changed meanwhile (a swipe, a regenerate),
+// it's dropped: the new version gets its own check.
+let restoreTimer = null;
+function schedulePostReplyFixes(idx, inner, fixes, waited = 0) {
+  clearTimeout(restoreTimer);
+  let ctx;
+  try { ctx = SillyTavern.getContext(); } catch { return; }
+  const snapshot = ctx?.chat?.[idx]?.mes;
+  restoreTimer = setTimeout(() => {
+    const msg = ctx?.chat?.[idx];
+    if (!msg || rpgInnerFromMessage(msg.mes) !== inner) return;
+    if (msg.mes !== snapshot) {
+      if (waited < 120000) schedulePostReplyFixes(idx, inner, fixes, waited + 1500);
+      return;
+    }
+    const before = msg.mes;
+    let mes = before;
+    let weekdayDone = null;
+    if (fixes.weekday) {
+      const m2 = applyWeekdayFix(mes, fixes.weekday);
+      if (m2 !== mes) { mes = m2; weekdayDone = fixes.weekday; }
+    }
+    let done = [];
+    if (fixes.restores?.length) ({ mes, done } = applyDescriptionRestores(mes, fixes.restores));
+    const moved = [];
+    (fixes.positions || []).forEach((f) => {
+      const m2 = editOwnerFieldInMes(mes, f.ownerId, POS_FIELDS[f.listKey], (items) => applyPositionLocks(items, f.locks));
+      if (m2 !== mes) { mes = m2; moved.push(f); }
+    });
+    if (mes === before) return;
+    setMessageText(msg, mes);
+    afterTurnEdit(ctx, idx);
+    if (!window.toastr) return;
+
+    const lines = [];
+    if (weekdayDone) lines.push(weekdayDone.insert
+      ? `Weekday added: <b>${escHtml(weekdayDone.to)}</b> (${escHtml(weekdayDone.date)})`
+      : `Weekday: <b>${escHtml(weekdayDone.from)}</b> \u2192 <b>${escHtml(weekdayDone.to)}</b> (${escHtml(weekdayDone.date)})`);
+    done.forEach((f) => lines.push(`${f.owner ? escHtml(f.owner) + " \u00B7 " : ""}${escHtml(f.label)}: <b>${escHtml(tItemName(f.to))}</b>`));
+    const LIST_LABEL = { inventory: "Items", skills: "Skills", passives: "Passives" };
+    moved.forEach((f) => lines.push(`${f.owner ? escHtml(f.owner) + " \u00B7 " : ""}${LIST_LABEL[f.listKey]}: locked positions kept`));
+    const kinds = [weekdayDone, done.length, moved.length].filter(Boolean).length;
+    const title = kinds > 1 ? "\u{1F4DD} Fixed the reply"
+      : weekdayDone ? (weekdayDone.insert ? "\u{1F4C5} Weekday added" : "\u{1F4C5} Weekday corrected")
+      : moved.length ? "\u{1F512} Locked positions kept"
+      : `\u{1F4DD} Restored ${done.length === 1 ? "a lost description" : done.length + " lost descriptions"}`;
+    window.toastr.info(`${lines.join("<br>")}<br><span style="opacity:.75">Tap to undo.</span>`, title, {
+      escapeHtml: false,
+      onclick: () => {
+        const m = SillyTavern.getContext()?.chat?.[idx];
+        if (!m || m.mes !== mes) return;                       // changed since: leave it
+        setMessageText(m, before);
+        afterTurnEdit(SillyTavern.getContext(), idx);
+        if (window.toastr) window.toastr.info("Undone: the AI's version is back.");
+      },
+    });
+  }, 1500);
+}
+
 function maybeReportListChanges() {
   let ctx = null;
   try { ctx = SillyTavern.getContext(); } catch {}
@@ -622,23 +927,61 @@ function maybeReportListChanges() {
   if (!inner) return;
   const sig = `${idx}|${inner}`;
 
-  if (key !== alertKey) { alertKey = key; alertSig = sig; alertIdx = idx; return; }  // baseline
+  if (key !== alertKey) {                                                           // baseline
+    alertKey = key; alertSig = sig; alertIdx = idx;
+    // Opening or refreshing a chat never edits old messages. But if this first
+    // block is one the AI has only just written (SillyTavern says so; loading
+    // a chat never does), its weekday can still be checked: there's nothing
+    // earlier to compare descriptions with, but a date needs no comparison.
+    if ((uiSettings.fixWeekdays !== false || uiSettings.addWeekdays !== false) && Date.now() - lastReplyAt < 15000 && idx === chat.length - 1) {
+      const weekday = weekdayFixFor(inner);
+      if (weekday) schedulePostReplyFixes(idx, inner, { weekday, restores: [] });
+    }
+    return;
+  }
   if (sig === alertSig) return;                                                     // same message
   const wentBack = idx < alertIdx;                                                  // a deletion
   alertSig = sig; alertIdx = idx;
-  if (wentBack || !uiSettings.changeAlerts) return;
+  if (wentBack) return;
+  // (no early exit when the alert and fix settings are all off: position
+  // locks still need this pass)
+
+  // the weekday needs no earlier turn, so it's checked even on a first reply
+  const weekday = weekdayFixFor(inner);
 
   let prevInner = null;
   for (let i = idx - 1; i >= 0 && !prevInner; i--) {
     const m = chat[i];
     if (m && !m.is_user) prevInner = rpgInnerFromMessage(m.mes);
   }
-  if (!prevInner) return;
+  const a = prevInner ? coreStateOf(prevInner) : null, b = coreStateOf(inner);
 
-  const a = coreStateOf(prevInner), b = coreStateOf(inner);
+  let restoring = [];
+  if (uiSettings.restoreLostDesc && a && b) restoring = findDescriptionRestores(a, b);
+  const positions = b ? positionFixesFor(b) : [];
+  if (weekday || restoring.length || positions.length) schedulePostReplyFixes(idx, inner, { weekday, restores: restoring, positions });
   if (!a || !b) return;
+  // only for a reply that's just arrived: opening a chat, or the HUD tidying
+  // an old block's format, is not something being acquired
+  if (uiSettings.skin === "system" && uiSettings.sysNotices !== false
+      && Date.now() - lastReplyAt < 120000 && idx === chat.length - 1) {
+    try { sysShowNotices(sysNoticesFor(a, b), `${key}|${idx}|${chat[idx]?.swipe_id ?? 0}`); }
+    catch (e) { console.warn("RPG HUD: system notice failed", e); }
+  }
+  if (!uiSettings.changeAlerts) return;
 
-  const diffs = diffLists(snapshotLists(a), snapshotLists(b));
+  // every character, not just the player; each change carries whose it is
+  const prevOwners = new Map(listOwners(a).map((o) => [o.id, o]));
+  const diffs = [];
+  listOwners(b).forEach((owner) => {
+    const was = prevOwners.get(owner.id);
+    if (!was) return;
+    diffLists(snapshotLists(was.ent), snapshotLists(owner.ent)).forEach((d) => {
+      // anything about to be restored isn't worth an alert
+      if (restoring.some((f) => f.from === d.name && (f.who ? `${f.who.group}:${f.who.key}` : "@player") === owner.id)) return;
+      diffs.push({ ...d, kind: d.label, label: owner.name ? `${owner.name} \u00B7 ${d.label}` : d.label });
+    });
+  });
   if (!diffs.length) return;
   console.log("RPG HUD: list changes", diffs);
 
@@ -651,7 +994,7 @@ function maybeReportListChanges() {
   const progressless = (t) => String(t ?? "").replace(/:\s*-?\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?/g, "").trim();
   const hits = diffs
     .filter((d) => (d.type === "lost" || d.type === "changed") && d.before)
-    .filter((d) => d.label !== "Mastery")
+    .filter((d) => d.kind !== "Mastery")
     .filter((d) => progressless(d.before) !== progressless(d.name))
     .filter((d) => (wordDiff(d.before, d.name) || [{ op: "-" }]).some((o) => o.op === "-"))
     .map((d) => ({ ...d, serious: isMeaningfulLoss(d.before, d.name) }))
@@ -955,6 +1298,14 @@ function renderIndicatorDotHtml(status, title) {
 // Closing or switching a chat changes what "latest message" means, so the
 // first reading in any chat is a baseline, never an alert. A missing block is
 // only worth announcing when a new message just arrived in this same chat.
+// set when SillyTavern reports a freshly generated reply (MESSAGE_RECEIVED);
+// replyReceivedAt is used up by the missing-block check, lastReplyAt isn't
+let replyReceivedAt = 0;
+let lastReplyAt = 0;
+function replyEventsSupported() {
+  try { return !!event_types?.MESSAGE_RECEIVED; } catch { return false; }
+}
+
 let lastIndicatorKey = null;
 let lastIndicatorLen = 0;
 // A streaming reply has no block until the end, so "missing" is only real once
@@ -1008,8 +1359,16 @@ function updateLatestStatusAndToast(chat) {
     // only something that just happened: a new reply, or a block that was
     // there a moment ago going missing (a swipe or regenerate without one).
     // Simply opening a chat whose last message lacks a block is neither.
-    const fresh = grew || (changed && prev === "valid");
+    // Only a reply the AI just generated can be "missing" its block. Growth
+    // alone isn't proof: opening or refreshing a chat grows it from nothing,
+    // which fired this toast on every refresh. SillyTavern's MESSAGE_RECEIVED
+    // fires for generated replies (swipes included) and never for messages
+    // loaded from disk. Without that event, fall back to growth.
+    const fresh = replyEventsSupported()
+      ? (replyReceivedAt > 0 && Date.now() - replyReceivedAt < 120000)
+      : (grew || (changed && prev === "valid"));
     if (fresh) {
+      replyReceivedAt = 0;
       notagWatch = { key, idx: len - 1, len: textLen, since: Date.now(), done: false };
     } else if (!notagWatch || notagWatch.key !== key || notagWatch.idx !== len - 1) {
       // nothing being watched
@@ -1022,6 +1381,7 @@ function updateLatestStatusAndToast(chat) {
     }
   } else {
     notagWatch = null;
+    if (latest.status === "valid") replyReceivedAt = 0;   // that reply had its block
   }
   return latest;
 }
@@ -1331,6 +1691,28 @@ const TIMER_MONTHS = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct
 const TIMER_MONTH_DAYS = [31,28,31,30,31,30,31,31,30,31,30,31];
 const YEAR_MINUTES = 365 * 1440;
 
+// Day of the week for the in-story date. If the block says one ("Mon Jan 6
+// 1023"), that wins: the story is the authority. Otherwise it's worked out
+// from the date on the real calendar, so it always advances consistently.
+// A month that isn't Jan..Dec (a fantasy calendar) gets no weekday rather
+// than a wrong one.
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const WEEKDAY_RE = /^(sun|mon|tue|wed|thu|fri|sat)[a-z]*\.?,?$/i;
+
+function worldWeekday(t, long = false) {
+  let i = -1;
+  if (t?.weekday) i = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"].indexOf(String(t.weekday).slice(0, 3).toLowerCase());
+  if (i < 0) {
+    const y = parseInt(t?.year, 10), d = parseInt(t?.day, 10);
+    const m = TIMER_MONTHS.indexOf(String(t?.month || "").trim().slice(0, 3).toLowerCase());
+    if (!Number.isFinite(y) || !d || m < 0) return "";
+    const dt = new Date(Date.UTC(2000, 0, 1));
+    dt.setUTCFullYear(y, m, d);                // setUTCFullYear: years under 100 aren't remapped to 19xx
+    i = dt.getUTCDay();
+  }
+  return long ? WEEKDAYS[i] : WEEKDAYS[i].slice(0, 3);
+}
+
 function monthIndex(m) {
   const i = TIMER_MONTHS.indexOf(String(m || "").trim().slice(0, 3).toLowerCase());
   return i === -1 ? 0 : i;
@@ -1358,7 +1740,9 @@ function nowWorldMinutes() {
 }
 
 function parseDeadline(val) {
-  const s = String(val || "").trim();
+  // an optional weekday in front, like Time: ("Mon Jan 6 1023,14:00" or
+  // "Mon, Jan 6 1023,14:00"): the date is what counts, so it's skipped
+  const s = String(val || "").trim().replace(/^(sun|mon|tue|wed|thu|fri|sat)[a-z]*\.?\s*,?\s+(?=[A-Za-z]{3,9}\s+\d)/i, "");
   const t = rpgState.world_time || {};
 
   const full = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2})(?:\s+(\d{1,4}))?\s*,\s*(\d{1,2}\s*:\s*\d{1,2})$/);
@@ -1371,6 +1755,54 @@ function parseDeadline(val) {
     return target;
   }
   return null;
+}
+
+// ---- durations, for editing deadline timers as "time left" ----
+// "1d 3h", "2h 30m", "45m", "1w", "in 2 days": minutes, or null if the text
+// isn't a duration (so turns, uses and typed dates are left to the parser).
+function parseDuration(text) {
+  const t = String(text || "").trim().toLowerCase().replace(/^(in|\+)\s*/, "");
+  if (!t) return null;
+  const unit = { w: 10080, wk: 10080, wks: 10080, week: 10080, weeks: 10080,
+    d: 1440, day: 1440, days: 1440, h: 60, hr: 60, hrs: 60, hour: 60, hours: 60,
+    m: 1, min: 1, mins: 1, minute: 1, minutes: 1 };
+  const re = /(\d+(?:\.\d+)?)\s*([a-z]+)\s*,?\s*/g;
+  let total = 0, used = 0, m;
+  while ((m = re.exec(t))) {
+    if (m.index !== used || !unit[m[2]]) return null;
+    total += parseFloat(m[1]) * unit[m[2]];
+    used = re.lastIndex;
+  }
+  return used === t.length && used > 0 ? Math.round(total) : null;
+}
+
+// minutes as an exact, editable duration: "1d 3h 15m"
+function durationText(mins) {
+  const a = Math.max(0, Math.round(mins));
+  const d = Math.floor(a / 1440), h = Math.floor((a % 1440) / 60), m = a % 60;
+  const parts = [];
+  if (d) parts.push(`${d}d`);
+  if (h) parts.push(`${h}h`);
+  if (m || !parts.length) parts.push(`${m}m`);
+  return parts.join(" ");
+}
+
+// world minutes back to a deadline in Time: format ("Mon Jan 6 1023,14:00").
+// A weekday is written only if the story's Time: uses one.
+function deadlineText(target) {
+  const t = rpgState.world_time || {};
+  const hasYear = Number.isFinite(parseInt(t.year, 10));
+  let rest = Math.max(0, Math.round(target));
+  const year = hasYear ? Math.floor(rest / YEAR_MINUTES) : null;
+  if (hasYear) rest -= year * YEAR_MINUTES;
+  let day = Math.floor(rest / 1440);
+  const clockMin = rest - day * 1440;
+  let mi = 0;
+  while (mi < 11 && day >= TIMER_MONTH_DAYS[mi]) { day -= TIMER_MONTH_DAYS[mi]; mi++; }
+  const month = TIMER_MONTHS[mi][0].toUpperCase() + TIMER_MONTHS[mi].slice(1);
+  const clock = `${String(Math.floor(clockMin / 60)).padStart(2, "0")}:${String(clockMin % 60).padStart(2, "0")}`;
+  const wd = t.weekday && hasYear ? worldWeekday({ month, day: day + 1, year }) : "";
+  return `${wd ? wd + " " : ""}${month} ${day + 1}${hasYear ? " " + year : ""},${clock}`;
 }
 
 function minutesUntil(targetMin) {
@@ -1692,6 +2124,35 @@ function confirmDanger(title, detail) {
   if (!a) return false;
   const b = confirm(`⚠️ FINAL WARNING\n\nProceed with:\n${detail}\n\nClick OK to confirm permanently.`);
   return b;
+}
+
+// Move the selected character between Party, NPCs and Enemies: take their
+// entry out of one section of the block and append it to another, then write
+// the block back. The selection follows them to their new place, so the view
+// doesn't land on whoever slid into their old slot. Everything on their entry
+// (HP, stats, items, vehicle) moves with them. One thing the block itself
+// decides: enemies carry no Bond on their line, so an enemy's bond lives only
+// on the Bonds list.
+const MOVE_KEYS = { party: "party", npc: "npcs", enemy: "enemies" };
+const MOVE_LABELS = { party: "Party", npc: "NPCs", enemy: "Enemies" };
+
+function moveActiveCharacter(toType) {
+  const info = getActivePointerInfo();
+  const fromKey = MOVE_KEYS[info.type], toKey = MOVE_KEYS[toType];
+  if (!fromKey || !toKey || info.type === toType) return false;
+  const from = rpgState[fromKey];
+  if (!Array.isArray(from) || !from[info.idx]) return false;
+
+  const [unit] = from.splice(info.idx, 1);
+  if (!Array.isArray(rpgState[toKey])) rpgState[toKey] = [];
+  rpgState[toKey].push(unit);
+  charIndex = charIndexFor(toType, rpgState[toKey].length - 1);
+
+  renderRPG();
+  const wrote = writeStateBackToChatMessage(rpgState);
+  if (!wrote) console.warn("RPG HUD: couldn't write back <rpg_state> after moving a character");
+  if (window.toastr) window.toastr.info(`${displayName(unit?.name, "Character")} moved to ${MOVE_LABELS[toType]}.`);
+  return true;
 }
 
 function removeActiveCharacter(e) {
@@ -2304,8 +2765,16 @@ function renderTimersTab() {
       <div style="display:flex; gap:3px; align-items:center; padding:2px 0; border-bottom:1px solid #333;">
         <input class="rpg-timer-name" data-i="${i}" type="text" value="${escAttr(t?.owner ? t.owner + "/" + t.name : (t?.name ?? ""))}"
           style="flex:1 1 auto; min-width:0; background:#222; border:1px solid #555; color:#fff; font-family:inherit; font-size:1em;">
-        <input class="rpg-timer-val" data-i="${i}" type="text" value="${escAttr(t?.value ?? "")}"
-          style="flex:0 0 64px; width:64px; background:#222; border:1px solid #555; color:#90caf9; font-family:inherit; font-size:1em; text-align:center;">
+        ${(() => {
+          // a deadline still ahead is edited as time left; the date is kept
+          // as written unless this field is changed
+          const dl = parseDeadline(t?.value);
+          const left = dl === null ? null : minutesUntil(dl);
+          const shown = left !== null && left > 0 ? durationText(left) : String(t?.value ?? "");
+          return `<input class="rpg-timer-val" data-i="${i}" type="text" value="${escAttr(shown)}" data-shown="${escAttr(shown)}"
+            title="${left !== null && left > 0 ? escAttr("Time left. Due " + String(t.value)) : ""}"
+            style="flex:0 0 78px; width:78px; background:#222; border:1px solid #555; color:${left !== null && left > 0 ? "#ce93d8" : "#90caf9"}; font-family:inherit; font-size:1em; text-align:center;">`;
+        })()}
         <select class="rpg-timer-kind" data-i="${i}"
           style="flex:0 0 62px; background:#222; border:1px solid #555; color:#ddd; font-family:inherit; font-size:0.9em;">${opts(t?.kind)}</select>
         <button class="rpg-timer-del" data-i="${i}" title="Delete"
@@ -2314,7 +2783,8 @@ function renderTimersTab() {
 
     return header + rows + `
       <div style="font-size:0.7em; color:#666; margin-top:4px; line-height:1.35;">
-        Value: <span style="color:#888;">2/3</span> (turns) or <span style="color:#888;">Jan 6,14:00</span> (deadline).<br>
+        Value: <span style="color:#888;">2/3</span> (turns), <span style="color:#888;">2/2x</span> (uses), or time left like
+        <span style="color:#ce93d8;">1d 3h</span> / <span style="color:#ce93d8;">45m</span>, saved as a deadline date for the AI.<br>
         <span style="color:#ce93d8;">EVENT</span> = appointment · <span style="color:#ff5252;">DOOM</span> = threat. Both survive being dropped.<br>
         Name may be <span style="color:#888;">Owner/Skill</span>. Blank name deletes.
       </div>`;
@@ -2378,7 +2848,13 @@ function readTimerInputs() {
   });
   document.querySelectorAll(".rpg-timer-val").forEach((el) => {
     const i = Number(el.dataset.i);
-    if (rpgState.timers[i]) rpgState.timers[i].value = String(el.value || "").trim();
+    const t = rpgState.timers[i];
+    if (!t) return;
+    const typed = String(el.value || "").trim();
+    if (el.dataset.shown !== undefined && typed === el.dataset.shown) return;   // untouched: keep the date as it was
+    const mins = parseDuration(typed);
+    t.value = mins !== null && mins > 0 ? deadlineText(nowWorldMinutes() + mins) : typed;
+    el.dataset.shown = typed;
   });
   document.querySelectorAll(".rpg-timer-kind").forEach((el) => {
     const i = Number(el.dataset.i);
@@ -2652,7 +3128,31 @@ function findLatestRpgMessageIndex(chat) {
   return -1;
 }
 
-function writeStateBackToChatMessage(stateObj) {
+// ---- OOC note for manual edits ----
+// Edit state -> Save leaves one line in the block telling the AI what you
+// changed by hand, so it treats the new values as canon instead of explaining
+// or undoing them. It's written "(OOC: ...)": the parser takes any line
+// starting with "[" as a section header, which would scramble what follows,
+// while a line with no pipes is skipped. Older blocks carrying it drop out of
+// the AI's view through your own regex after a few messages.
+const OOC_PREFIX = "(OOC: The user manually edited the state: ";
+const OOC_SUFFIX = " Treat these as canon. Don't reply to or mention this note, and don't copy it into your next <rpg_state>.)";
+const OOC_LINE_RE = /^[ \t]*\(OOC:[^\n]*\)[ \t]*$/gim;
+
+function oocNoteFor(changes) {
+  return `${OOC_PREFIX}${changes.join("; ")}.${OOC_SUFFIX}`;
+}
+
+// what an existing HUD note in this block already lists, to merge new edits in
+function oocNoteChanges(blockText) {
+  const line = (String(blockText || "").match(OOC_LINE_RE) || []).find((l) => l.trim().startsWith(OOC_PREFIX));
+  if (!line) return [];
+  const body = line.trim().slice(OOC_PREFIX.length);
+  const end = body.lastIndexOf("." + OOC_SUFFIX);
+  return (end >= 0 ? body.slice(0, end) : body).split("; ").map((x) => x.trim()).filter(Boolean);
+}
+
+function writeStateBackToChatMessage(stateObj, opts = {}) {
   const context = SillyTavern.getContext();
   const chat = context?.chat;
   if (!Array.isArray(chat) || chat.length === 0) return false;
@@ -2668,7 +3168,17 @@ function writeStateBackToChatMessage(stateObj) {
   const regex = /<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i;
 
   // Uses the exact same builder to prevent mismatched keys!
-  const finalString = buildPipeString(stateObj);
+  let finalString = buildPipeString(stateObj);
+
+  // The builder writes state, not notes, so an (OOC: ...) line already in the
+  // block would vanish on any rewrite (a bond edit, a move...) before the AI
+  // ever saw it. Carry existing notes over; a new note from Edit state
+  // replaces the HUD's own earlier one.
+  const oldBlock = (msg.mes.match(regex) || [""])[0];
+  let notes = (oldBlock.match(OOC_LINE_RE) || []).map((l) => l.trim());
+  if (opts.oocNote) notes = notes.filter((l) => !l.startsWith(OOC_PREFIX)).concat(opts.oocNote);
+  if (notes.length) finalString = finalString.replace(/<\/rpg_state>\s*$/i, `${notes.join("\n")}\n</rpg_state>`);
+
   msg.mes = msg.mes.replace(regex, finalString);
 
   try { window.saveChat?.(); } catch (e) { console.warn("RPG HUD: saveChat failed", e); }
@@ -2683,7 +3193,7 @@ function buildPipeString(stateObj) {
   let lines = ["[Global]"];
   const wt = stateObj.world_time || {};
   const yearStr = wt.year ? ` ${wt.year}` : "";
-  lines.push(`|Loc:${stateObj.location || "Unknown"}||Time:${wt.month} ${wt.day}${yearStr},${wt.clock}||Weather:${wt.weather || "Unknown"}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
+  lines.push(`|Loc:${stateObj.location || "Unknown"}||Time:${wt.weekday ? wt.weekday + " " : ""}${wt.month} ${wt.day}${yearStr},${wt.clock}||Weather:${wt.weather || "Unknown"}||Combat:${stateObj.combat?.active ? "Round " + (stateObj.combat?.round || 1) : "Off"}|`);
   
   const safeJoin = (arr) => Array.isArray(arr) && arr.length ? arr.map(i => typeof i === 'object' ? i.name : i).join(";") : "";
   
@@ -2818,11 +3328,13 @@ function toggleMinimize(e) {
 }
 function switchTab(tabName) {
   flushInlineEdits();
+  if (tabName !== activeTab) { saoListEdit = null; saoMasteryEdit = null; }
   activeTab = tabName;
   renderRPG();
 }
 function jumpToChar(e) {
   charIndex = parseInt(e.target.value, 10) || 0;
+  saoListEdit = null; saoMasteryEdit = null;
   renderRPG();
 }
 function toggleSettings(e) {
@@ -2888,6 +3400,7 @@ function scrubLegacyBondKeys(obj) {
 }
 
 function saveEditor() {
+  const before = JSON.parse(JSON.stringify(rpgState));   // for the OOC note
   const { root, display, isVehicle } = getActiveData();
   const getEl = (id) => document.getElementById(id);
 
@@ -2977,6 +3490,19 @@ function saveEditor() {
     rpgState.world_time.month = getStr("edit-month");
     rpgState.world_time.day = getVal("edit-day");
 	rpgState.world_time.year = getStr("edit-year").trim();
+    {
+      // after month/day/year, so "Auto" uses the date being saved
+      const wd = getStr("edit-weekday");
+      if (wd === "auto") {
+        const w = worldWeekday({ month: rpgState.world_time.month, day: rpgState.world_time.day, year: rpgState.world_time.year }, false);
+        if (w) rpgState.world_time.weekday = w; else delete rpgState.world_time.weekday;
+      } else if (wd && wd !== "none") {
+        const d = WEEKDAYS.find((x) => x.slice(0, 3).toLowerCase() === wd);
+        rpgState.world_time.weekday = d ? d.slice(0, 3) : wd;
+      } else if (wd === "none") {
+        delete rpgState.world_time.weekday;
+      }
+    }
     rpgState.world_time.clock = getStr("edit-clock");
     rpgState.world_time.weather = getStr("edit-weather");
     rpgState.quests = getList("edit-quests");
@@ -2986,7 +3512,22 @@ function saveEditor() {
 
   renderRPG();
 
-  const ok = writeStateBackToChatMessage(rpgState);
+  // Tell the AI what was changed by hand. Edits made before it has replied
+  // are merged into one note, which sits in the same (latest) block.
+  let oocNote = null;
+  if (uiSettings.oocEditNotes !== false) {
+    const changes = diffTurn(before, rpgState).map((c) => c.text);
+    if (changes.length) {
+      let earlier = [];
+      try {
+        const m = SillyTavern.getContext()?.chat?.[lastRpgMsgIndex]?.mes;
+        earlier = oocNoteChanges((String(m || "").match(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i) || [""])[0]);
+      } catch {}
+      oocNote = oocNoteFor([...earlier, ...changes.filter((c) => !earlier.includes(c))]);
+    }
+  }
+
+  const ok = writeStateBackToChatMessage(rpgState, oocNote ? { oocNote } : {});
   if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> (no message found?)");
 }
 
@@ -3006,6 +3547,8 @@ function renderClassicSkin() {
   saoSaveScroll(container);
   queueMicrotask(() => saoRestoreScroll(container));
 
+  const SYS = uiSettings.skin === "system";   // the System skin is this panel, restyled
+  if (SYS) { sysEnsureCss(); sysEnsureWebFont(); }
   const BOX_RADIUS = "0px";
   const BAR_RADIUS = "4px";
   const FONT_FAMILY = uiSettings.fontFamily || "'Courier New', Courier, monospace";
@@ -3022,7 +3565,19 @@ function renderClassicSkin() {
       const dot = indicatorColor(latest?.status);
       const latestTitle = latest?.detail ? `${latest.label}\n${latest.detail}` : (latest?.label || "");
 
-      container.style.cssText = `
+      container.className = "";
+      container.style.cssText = SYS ? `
+        position: fixed; right: 0;
+        top: clamp(calc(env(safe-area-inset-top, 0px) + 50px), 20vh, calc(100vh - env(safe-area-inset-bottom, 0px) - 50px));
+        transform: translateY(-50%);
+        width: 26px; height: 58px;
+        background: rgba(5,12,24,0.92);
+        border: 1px solid #8fd0ff; border-right: 0;
+        z-index: 99999; cursor: pointer; box-sizing: border-box;
+        box-shadow: 0 0 10px rgba(90,180,255,0.55), inset 0 0 8px rgba(90,180,255,0.25);
+        display: flex; align-items: center; justify-content: center;
+        touch-action: manipulation; user-select: none;
+      ` : `
         position: fixed;
         right: 0;
 
@@ -3077,24 +3632,28 @@ const hudH = Math.max(0, Number(uiSettings.hudHeight) || 0);
 container.style.cssText = `position: fixed; top: 50px; right: 20px;
   width: ${hudW}px;
   ${hudH ? `height:${hudH}px;` : ""}
+  ${SYS ? `background: var(--sys-bg); border: 1px solid var(--sc); color: #e4f3ff;` : `
   background: rgba(10, 10, 15, 0.95);
-  border: 2px solid #C0A040; color: #E0E0E0;
+  border: 2px solid #C0A040; color: #E0E0E0;`}
   padding: 10px 10px 46px 10px;
   z-index: 9999;
   font-family: ${FONT_FAMILY};
   font-size: ${FONT_SIZE};
   display: block !important;
   border-radius: ${BOX_RADIUS};
-  box-shadow: 0 0 10px #000;
+  box-shadow: ${SYS ? "var(--sys-shadow)" : "0 0 10px #000"};
   box-sizing:border-box;
   contain: layout paint;
   overflow: hidden;`;
 
   applyHudTypography(container);
+  if (SYS) container.style.fontFamily = sysFontStack();
+  container.className = SYS ? "rpg-sys" : "";
   container.onclick = null;
 
   try {
     const { root, display, type, isVehicle } = getActiveData();
+    if (SYS) container.className = `rpg-sys rpg-sys-${isVehicle ? "veh" : type}`;
     const context = SillyTavern.getContext();
     const chat = context?.chat;
     latest = updateLatestStatusAndToast(chat);
@@ -3191,7 +3750,12 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
     const time = rpgState.world_time || { month: "???", day: 0, clock: "??:??", weather: "Unknown" };
     const selectStyle = `background: transparent; border: none; color: ${headerColor}; font-weight: bold; font-size: 1em; cursor: pointer; outline: none; max-width: 170px; font-family:${FONT_FAMILY};`;
-    const tabStyle = (name) =>
+    const tabStyle = (name) => SYS
+      ? `flex:0 0 auto; min-width:52px; text-align:center; cursor:pointer; padding:4px 8px; font-size:0.74em; letter-spacing:0.1em; text-transform:uppercase; user-select:none; ` +
+        (activeTab === name
+          ? "border:1px solid var(--sc); color:#fff; background:rgba(90,170,255,0.16); text-shadow:0 0 6px var(--sg); box-shadow:inset 0 0 6px var(--sg);"
+          : "border:1px solid transparent; color:#8fb6d8;")
+      :
       `flex:0 0 auto; min-width:56px; text-align:center; cursor:pointer; padding:5px 8px; font-size:0.8em; border-radius:3px; user-select:none; ` +
       `${activeTab === name ? "background:#C0A040; color:#000; font-weight:bold;" : "background:transparent; color:#ddd;"}`;
 
@@ -3225,6 +3789,17 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-bottom:12px;">
              <button id="rpg-settings-edit" style="background:#333; border:1px solid #4FC3F7; color:#4FC3F7; cursor:pointer; padding:8px 10px; font-weight:bold;">✏️ Edit</button>
              <button id="rpg-settings-remove" style="background:#333; border:1px solid #ff9800; color:#ffcc80; cursor:pointer; padding:8px 10px; font-weight:bold;">🗑️ Remove</button>
+             ${(() => {
+               const info = getActivePointerInfo();
+               if (!MOVE_KEYS[info.type]) return "";
+               const opts = Object.keys(MOVE_KEYS).filter((t) => t !== info.type)
+                 .map((t) => `<option value="${t}">${MOVE_LABELS[t]}</option>`).join("");
+               return `<div style="grid-column:1 / span 2; display:flex; gap:6px; align-items:center;">
+                 <span style="font-size:0.8em; color:#aaa; white-space:nowrap;">Move ${escHtml(displayName(info.name, "character"))} to</span>
+                 <select id="rpg-settings-move-to" style="flex:1; min-width:0; background:#222; border:1px solid #555; color:#ddd; padding:6px;">${opts}</select>
+                 <button id="rpg-settings-move" style="background:#333; border:1px solid #bbb; color:#eee; cursor:pointer; padding:6px 10px; font-weight:bold;">Move</button>
+               </div>`;
+             })()}
              <button id="rpg-settings-clear-npcs" style="background:#333; border:1px solid #00e5ff; color:#b3f5ff; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 NPCs</button>
 
              <button id="rpg-settings-clear-enemies" style="background:#333; border:1px solid #ff5252; color:#ffd0d0; cursor:pointer; padding:8px 10px; font-weight:bold;">🧹 Enemies</button>
@@ -3234,6 +3809,26 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 			 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
     			<span title="Automatically reminds the AI of stats on every message">Auto-Inject Prompt</span>
    			 <input type="checkbox" id="rpg-settings-autoinject" ${autoInjectState ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
+		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="If a reply's Time: has no weekday, add one (when the month and year are written)">Add Weekdays</span>
+   			 <input type="checkbox" id="rpg-settings-addweekday" ${uiSettings.addWeekdays !== false ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
+		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="If a reply writes a weekday in Time: that doesn't match the date, correct it">Fix Weekdays</span>
+   			 <input type="checkbox" id="rpg-settings-fixweekday" ${uiSettings.fixWeekdays !== false ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
+		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="Editing Items, Skills or Passives (tap an icon) also rewrites this many earlier replies">Edits Rewrite Past Replies</span>
+   			 <input type="number" id="rpg-settings-edithist" min="0" max="20" step="1" value="${Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0))}" style="width:52px; background:#222; color:#ddd; border:1px solid #555; text-align:center;">
+		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="When the AI drops an item, skill or passive's description entirely, put it back (keeping its other changes)">Restore Lost Descriptions</span>
+   			 <input type="checkbox" id="rpg-settings-restoredesc" ${uiSettings.restoreLostDesc ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
+		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="Edit -> Save leaves an (OOC: ...) note in the block telling the AI what you changed by hand">Note Edits for AI</span>
+   			 <input type="checkbox" id="rpg-settings-oocnotes" ${uiSettings.oocEditNotes !== false ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
 		  </div>
 		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
     			<span title="Warn when an item/skill/passive loses its description">Change Alerts</span>
@@ -3257,10 +3852,13 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
         <select id="rpg-skin-select" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px;">
             <option value="classic">Classic panel</option>
+            <option value="system">System window</option>
             <option value="sao">SAO overlay</option>
         </select>
 
-        <div style="font-size:0.75em; color:#bbb; margin-bottom:6px;">Font preset</div>
+        ${SYS ? sysSettingsHtml() : ""}
+
+        <div style="font-size:0.75em; color:#bbb; margin-bottom:6px;">${SYS ? "Font preset (with Font: Follow preset)" : "Font preset"}</div>
 
         <select id="rpg-font-preset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px;">
             <option value="retro_mono">Retro Mono (Courier)</option>
@@ -3304,6 +3902,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
 
     container.innerHTML = `
+    ${SYS ? sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLabel, coin, time }) : `
 	<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; padding-bottom:5px; border-bottom:1px solid ${borderColor}; min-height:24px;">
 	  <div style="display:flex; align-items:center; gap:6px; min-width:0;">
 	    <span style="font-size:1.2em;">${icon}</span>
@@ -3323,7 +3922,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       <div style="background:rgba(255,255,255,0.05); padding:5px; border-radius:4px; margin-bottom:5px; font-size:0.85em; text-align:center;">
         <div style="color:#fff; font-weight:bold;">📍 ${escHtml(rpgState.location)}</div>
         <div style="color:#aaa; font-size:0.9em;">
-          📅 ${escHtml(time.month)} ${escHtml(time.day)}${time.year ? `, ${escHtml(time.year)}` : ""}
+          📅 ${worldWeekday(time) ? escHtml(worldWeekday(time)) + ", " : ""}${escHtml(time.month)} ${escHtml(time.day)}${time.year ? `, ${escHtml(time.year)}` : ""}
           &nbsp;|&nbsp;
           ⏰ ${escHtml(time.clock)}
           &nbsp;|&nbsp;
@@ -3362,8 +3961,9 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           ${renderStatBox("SDEF", display.stats?.sdef)}
         </div>
       </div>
+    `}
 
-      <div id="rpg-tab-strip" data-scroll-key="c:strip" style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid #555; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
+      <div id="rpg-tab-strip" data-scroll-key="c:strip" style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid ${SYS ? "rgba(143,208,255,0.35)" : "#555"}; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
         <div id="tab-party" style="${tabStyle("party")}">Party</div>
 		<div id="tab-bonds" style="${tabStyle("bonds")}">Bonds</div>
 	    <div id="tab-timers" style="${tabStyle("timers")}">Timers</div>
@@ -3376,22 +3976,23 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         <div id="tab-log" style="${tabStyle("log")}">Log</div>
       </div>
 
-      <div data-scroll-key="c:body:${activeTab}" style="height: 110px; overflow-y: auto; font-size: 0.8em; padding:5px; background:rgba(0,0,0,0.3); scrollbar-gutter:${activeTab === "log" ? "auto" : "stable"};">
+      ${CLASSIC_ED_CSS}
+      <div data-scroll-key="c:body:${activeTab}" style="height: ${classicEditorOpen() ? 240 : 110}px; overflow-y: auto; font-size: 0.8em; padding:5px; background:${SYS ? "rgba(4,12,24,0.55); border:1px solid rgba(143,208,255,0.22)" : "rgba(0,0,0,0.3)"}; scrollbar-gutter:${activeTab === "log" ? "auto" : "stable"};">
         ${activeTab === "party" ? renderPartyTab() : ""}
         ${activeTab === "log" ? classicLogHtml() : ""}
 		${activeTab === "bonds" ? renderBondsTab() : ""}
 		${activeTab === "timers" ? renderTimersTab() : ""}
-        ${activeTab === "inventory" ? makeList(inv, "No Items") : ""}
-        ${activeTab === "skills" ? makeList(skills, "No Skills Learned") : ""}
-        ${activeTab === "passives" ? makeList(passives, "No Passives") : ""}
-        ${activeTab === "mastery" ? makeList(masteries, "No Mastery Tracking") : ""}
-        ${activeTab === "quests" ? makeList(rpgState.quests, "No Active Quests") : ""}
+        ${activeTab === "inventory" ? classicIconList("inventory", inv, "No Items") : ""}
+        ${activeTab === "skills" ? classicIconList("skills", skills, "No Skills Learned") : ""}
+        ${activeTab === "passives" ? classicIconList("passives", passives, "No Passives") : ""}
+        ${activeTab === "mastery" ? classicMasteryHtml(masteries) : ""}
+        ${activeTab === "quests" ? classicQuestHtml() : ""}
         ${activeTab === "env" ? makeList(rpgState.env_effects, "No Environmental Effects") : ""}
       </div>
 
       ${renderEnemySummary()}
 
-    <div style="
+    <div class="rpg-c-btns" style="
 	  position:absolute; left:10px; bottom:8px;
 	  display:flex; gap:6px;
 	">
@@ -3408,10 +4009,22 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    display:flex; align-items:center; justify-content:center;
 	    box-sizing:border-box;
 	  ">↻</button>
+	  <button id="rpg-help-btn" title="Help" style="
+	    position:relative; background:#333; border:1px solid #777; color:#fff;
+	    cursor:pointer; width:34px; height:26px;
+	    display:flex; align-items:center; justify-content:center;
+	    box-sizing:border-box;
+	  ">?</button>
+	  <button id="rpg-log-btn" title="Update log" style="
+	    position:relative; background:#333; border:1px solid #777; color:#fff;
+	    cursor:pointer; width:34px; height:26px;
+	    display:flex; align-items:center; justify-content:center;
+	    box-sizing:border-box;
+	  ">📜${changelogUnseen() ? `<span style="position:absolute; top:-3px; right:-3px; width:8px; height:8px; border-radius:50%; background:#ff5252; box-shadow:0 0 0 2px #111;"></span>` : ""}</button>
 	</div>
 
 
-      <div style="position:absolute; right:10px; bottom:10px; font-size:0.8em; color:#FFD700;">💰 ${escHtml(coin)}</div>
+      ${SYS ? "" : `<div style="position:absolute; right:10px; bottom:10px; font-size:0.8em; color:#FFD700;">💰 ${escHtml(coin)}</div>`}
 
       <div id="rpg-resize-left" title="Resize"
         style="position:absolute; left:-8px; top:0; bottom:0; width:16px;
@@ -3419,6 +4032,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
       ${settingsPanelHtml}
       ${errorPanelHtml}
+      ${classicInfoHtml()}
     `;
 
 {
@@ -3476,7 +4090,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     };
 
     bind("rpg-min-btn", toggleMinimize);
-    bind("rpg-settings-btn", toggleSettings);
+    bind("rpg-settings-btn", (e) => { classicInfo = null; toggleSettings(e); });
     bind("rpg-error-close", closePipeErrorPanel);
     
     const errorScroll = document.getElementById("rpg-error-scroll");
@@ -3556,6 +4170,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     bind("tab-env", () => switchTab("env"));
     bind("tab-log", () => switchTab("log"));
     classicBindLog();
+    classicBindEditors();
+    classicBindInfo();
 	  
 	if (isSettingsOpen) {
 	  bind("rpg-settings-close", toggleSettings);
@@ -3563,6 +4179,38 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	
 	  bind("rpg-settings-reset", resetRPG);
 	  bind("rpg-settings-remove", removeActiveCharacter);
+	  const ehEl = document.getElementById("rpg-settings-edithist");
+	  if (ehEl) {
+	    ehEl.onclick = (e) => e.stopPropagation();
+	    ehEl.onkeydown = (e) => e.stopPropagation();
+	    ehEl.onchange = () => { uiSettings.listEditHistory = Math.max(0, Math.min(20, parseInt(ehEl.value, 10) || 0)); saveUiSettings(); };
+	  }
+	  const awEl = document.getElementById("rpg-settings-addweekday");
+	  if (awEl) {
+	    awEl.onclick = (e) => e.stopPropagation();
+	    awEl.onchange = () => { uiSettings.addWeekdays = awEl.checked; saveUiSettings(); };
+	  }
+	  const wdEl = document.getElementById("rpg-settings-fixweekday");
+	  if (wdEl) {
+	    wdEl.onclick = (e) => e.stopPropagation();
+	    wdEl.onchange = () => { uiSettings.fixWeekdays = wdEl.checked; saveUiSettings(); };
+	  }
+	  const rdEl = document.getElementById("rpg-settings-restoredesc");
+	  if (rdEl) {
+	    rdEl.onclick = (e) => e.stopPropagation();
+	    rdEl.onchange = () => { uiSettings.restoreLostDesc = rdEl.checked; saveUiSettings(); };
+	  }
+	  const oocEl = document.getElementById("rpg-settings-oocnotes");
+	  if (oocEl) {
+	    oocEl.onclick = (e) => e.stopPropagation();
+	    oocEl.onchange = () => { uiSettings.oocEditNotes = oocEl.checked; saveUiSettings(); };
+	  }
+	  bind("rpg-settings-move", () => {
+	    const to = document.getElementById("rpg-settings-move-to")?.value;
+	    if (to) moveActiveCharacter(to);
+	  });
+	  const mvSel = document.getElementById("rpg-settings-move-to");
+	  if (mvSel) mvSel.onclick = (e) => e.stopPropagation();
 	  bind("rpg-settings-clear-npcs", (e) => clearArray("npc", e));
 	  bind("rpg-settings-clear-enemies", (e) => clearArray("enemy", e));
 	  bind("rpg-settings-clear-party", (e) => clearArray("party", e));
@@ -3594,6 +4242,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    skinEl.onchange = () => { setSkin(skinEl.value); };
 	    skinEl.onclick = (e) => e.stopPropagation();
 	  }
+
+	  if (SYS) sysBindSettings(container);
 
 	  const caEl = document.getElementById("rpg-settings-changealerts");
 	  if (caEl) caEl.onchange = () => {
@@ -3686,7 +4336,7 @@ function rpgTurnsOf(chat) {
   return out;
 }
 
-const tNum = (v) => { const n = parseFloat(String(v ?? "").replace(/[^\d.\-]/g, "")); return Number.isFinite(n) ? n : null; };
+const tNum = (v) => { const n = barValue(v); return Number.isFinite(n) ? n : null; };
 const tSigned = (n) => (n > 0 ? `+${n}` : `${n}`);
 const tNameKey = (u) => normBondName(u?.name);
 
@@ -3694,24 +4344,38 @@ const tNameKey = (u) => normBondName(u?.name);
 // and "Iron Sword +15 ATK" are the same item upgraded, not a swap.
 // the name alone, as written: "Iron Sword +10 ATK [X]" -> "Iron Sword"
 function tItemName(text) {
-  return entryBaseName(text)
+  return entryBaseName(descSplit(text).head)
     .replace(/:\s*-?\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?.*$/, "")
     .replace(/\s[+\-\u2212]\s?\d.*$/, "")
     .trim() || String(text ?? "").trim();
 }
 
 function tItemKey(text) {
-  return entryBaseName(text)
+  // the name, in front of any ", description" (commas inside brackets don't count)
+  return entryBaseName(descSplit(text).head)
     .replace(/:\s*-?\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?.*$/, "")   // "Sword: 45/100"
     .replace(/\s[+\-\u2212]\s?\d.*$/, "")                              // "Sword +10 ATK"
     .trim().toLowerCase();
 }
 
+// Keys for a list where a repeated name gets "#2", "#3"..., so two variants
+// of the same skill are two entries in the log rather than one.
+function tUniqueKeys(list) {
+  const seen = new Map();
+  return (Array.isArray(list) ? list : []).map((i) => {
+    const k = tItemKey(String(typeof i === "object" ? (i?.name ?? "") : (i ?? "")).trim());
+    const n = (seen.get(k) || 0) + 1;
+    seen.set(k, n);
+    return n === 1 ? k : `${k}#${n}`;
+  });
+}
+
 function tListMap(list) {
   const m = new Map();
-  (Array.isArray(list) ? list : []).forEach((i) => {
+  const keys = tUniqueKeys(list);
+  (Array.isArray(list) ? list : []).forEach((i, idx) => {
     const text = String(typeof i === "object" ? (i?.name ?? "") : (i ?? "")).trim();
-    const key = tItemKey(text);
+    const key = keys[idx];
     if (key && !m.has(key)) m.set(key, text);
   });
   return m;
@@ -3738,13 +4402,13 @@ function tDiffVitals(out, label, a, b, who) {
   const hp0 = tNum(a?.hp_curr), hp1 = tNum(b?.hp_curr);
   if (hp0 !== null && hp1 !== null && hp0 !== hp1) {
     out.push({ tone: hp1 < hp0 ? "bad" : "good", u: { f: "hp", who },
-      text: `${pre}HP ${hp0} \u2192 ${hp1}${b?.hp_max ? "/" + b.hp_max : ""} (${tSigned(hp1 - hp0)})` });
+      text: `${pre}HP ${hp0} \u2192 ${hp1}${b?.hp_max ? "/" + splitMathValue(String(b.hp_max)).val : ""} (${tSigned(hp1 - hp0)})` });
   }
   const ea = getEnergy(a || {}, false), eb = getEnergy(b || {}, false);
   const e0 = tNum(ea.curr), e1 = tNum(eb.curr);
   if (e0 !== null && e1 !== null && e0 !== e1) {
     out.push({ tone: "neutral", u: { f: "mp", who },
-      text: `${pre}${eb.label || "MP"} ${e0} \u2192 ${e1}${eb.max ? "/" + eb.max : ""} (${tSigned(e1 - e0)})` });
+      text: `${pre}${eb.label || "MP"} ${e0} \u2192 ${e1}${eb.max ? "/" + splitMathValue(String(eb.max)).val : ""} (${tSigned(e1 - e0)})` });
   }
 
   // "Healthy", "None" and the like mean no status, so going from Poisoned to
@@ -3770,17 +4434,20 @@ function tDiffVitals(out, label, a, b, who) {
   ma.forEach((m, key) => { if (!mbKeys.has(key)) out.push({ tone: "neutral", text: `${pre}\u2212 ${m.name}`, u: { f: "meter", who, key } }); });
 }
 
-function tDiffLists(out, a, b) {
+// One character's items, skills, passives and masteries. `owner` is shown in
+// front for anyone but the player, and `who` says whose list an undo touches.
+function tDiffLists(out, a, b, owner = "", who = null) {
   WATCHED_LISTS.forEach(({ key, label }) => {
+    const tag = owner ? `${owner} \u00B7 ${label}` : label;
     const A = tListMap(a?.[key]), B = tListMap(b?.[key]);
     B.forEach((text, k) => {
-      if (!A.has(k)) { out.push({ tone: "good", text: `+ ${label}: ${text}`, u: { f: "list", key, k } }); return; }
+      if (!A.has(k)) { out.push({ tone: "good", text: `+ ${tag}: ${text}`, u: { f: "list", key, k, who } }); return; }
       const before = A.get(k);
       if (before === text || stripStatusTags(before) === stripStatusTags(text)) return;
-      out.push({ tone: "neutral", text: `~ ${label}: ${stripStatusTags(before)} \u2192 ${stripStatusTags(text)}`, u: { f: "list", key, k },
-        diff: { label, name: tItemName(text), before: stripStatusTags(before), after: stripStatusTags(text) } });
+      out.push({ tone: "neutral", text: `~ ${tag}: ${stripStatusTags(before)} \u2192 ${stripStatusTags(text)}`, u: { f: "list", key, k, who },
+        diff: { label: tag, name: tItemName(text), before: stripStatusTags(before), after: stripStatusTags(text) } });
     });
-    A.forEach((text, k) => { if (!B.has(k)) out.push({ tone: "bad", text: `\u2212 ${label}: ${text}`, u: { f: "list", key, k } }); });
+    A.forEach((text, k) => { if (!B.has(k)) out.push({ tone: "bad", text: `\u2212 ${tag}: ${text}`, u: { f: "list", key, k, who } }); });
   });
 }
 
@@ -3823,6 +4490,7 @@ function diffTurn(a, b) {
         return;
       }
       tDiffVitals(out, name, A.get(key), u, { group, key });
+      tDiffLists(out, A.get(key), u, name, { group, key });
     });
     A.forEach((u, key) => {
       if (!B.has(key)) out.push({ tone: group === "enemies" ? "good" : "neutral",
@@ -3899,8 +4567,14 @@ function applyTurnUndo(b, a, u) {
       break;
     }
     case "list": {
-      const list = Array.isArray(b[u.key]) ? b[u.key] : (b[u.key] = []);
-      putBack(list, (x) => tItemKey(tItemText(x)) === u.k, (a[u.key] || []).find((x) => tItemKey(tItemText(x)) === u.k));
+      // the player's list, or the character's named by who
+      if (!tb) break;
+      const list = Array.isArray(tb[u.key]) ? tb[u.key] : (tb[u.key] = []);
+      const src = ta?.[u.key] || [];
+      const bk = tUniqueKeys(list), ak = tUniqueKeys(src);
+      const i = bk.indexOf(u.k), j = ak.indexOf(u.k);
+      if (j >= 0) { if (i >= 0) list[i] = tClone(src[j]); else list.push(tClone(src[j])); }
+      else if (i >= 0) list.splice(i, 1);
       break;
     }
     case "unit": {
@@ -3949,7 +4623,7 @@ function buildTurnLog(chat) {
     out.push({
       idx: turns[i].idx,
       n: i,
-      when: `${wt.month || "?"} ${wt.day ?? "?"} ${wt.clock || ""}`.trim(),
+      when: `${worldWeekday(wt) ? worldWeekday(wt) + " " : ""}${wt.month || "?"} ${wt.day ?? "?"} ${wt.clock || ""}`.trim(),
       where: turns[i].state.location || "",
       changes,
     });
@@ -3969,7 +4643,7 @@ function buildTurnLog(chat) {
 
 function setSkin(name) {
   flushInlineEdits();
-  uiSettings.skin = name === "sao" ? "sao" : "classic";
+  uiSettings.skin = name === "sao" || name === "system" ? name : "classic";
   saveUiSettings();
   isSettingsOpen = false;
   saoPanel = null;
@@ -4021,18 +4695,56 @@ const SAO_FONTS = {
   // far less antialiasing than a humanist sans, so they render cleaner small.
   squarish: "'Rajdhani','Bahnschrift','DIN Alternate','Avenir Next Condensed'," +
             "'Futura','Century Gothic','Segoe UI',sans-serif",
+  // narrow and squared, closest to the ALfheim (New) names
+  saira: "'Saira Condensed','Rajdhani','Bahnschrift','DIN Alternate','Avenir Next Condensed','Segoe UI',sans-serif",
+  // narrower and more stylised still
+  teko: "'Teko','Saira Condensed','Rajdhani','Bahnschrift','Avenir Next Condensed','Segoe UI',sans-serif",
+  // clean and slightly futuristic, suits Aincrad
+  exo: "'Exo 2','Rajdhani','Segoe UI',system-ui,sans-serif",
 };
+
+// What each web font needs fetched. Weights listed only where the family is
+// known to have them: Google refuses the whole request if one is missing.
+const SAO_WEBFONTS = {
+  squarish: "Rajdhani:wght@500;600;700",
+  saira: "Saira+Condensed:wght@500;600;700",
+  teko: "Teko:wght@400;500;600",
+  exo: "Exo+2:wght@500;600;700",
+};
+
+// Custom: any Google Fonts family you type. Letters, digits and spaces only,
+// since it goes into both a URL and a CSS font-family.
+function saoCustomFontName() {
+  return String(uiSettings.saoCustomFont || "").replace(/[^A-Za-z0-9 ]/g, "").replace(/\s+/g, " ").trim().slice(0, 40);
+}
+
+function saoFontStack() {
+  if (uiSettings.saoFont === "custom") {
+    const n = saoCustomFontName();
+    return n ? `'${n}',${SAO_FONTS.squarish}` : SAO_FONTS.squarish;
+  }
+  return SAO_FONTS[uiSettings.saoFont] || uiSettings.fontFamily || SAO_FONTS.sans;
+}
 
 // Rajdhani isn't installed anywhere by default, so fetch it once when asked.
 // If there's no network the stack above falls through to a local face.
 function saoEnsureWebFont() {
-  if (uiSettings.saoFont !== "squarish") return;
-  if (document.getElementById("rpg-sao-webfont")) return;
-  const link = document.createElement("link");
-  link.id = "rpg-sao-webfont";
-  link.rel = "stylesheet";
-  link.href = "https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap";
-  document.head.appendChild(link);
+  let family = SAO_WEBFONTS[uiSettings.saoFont];
+  if (uiSettings.saoFont === "custom") {
+    const n = saoCustomFontName();
+    family = n ? n.replace(/ /g, "+") : null;    // regular weight only: every family has it
+  }
+  if (!family) return;
+  const href = `https://fonts.googleapis.com/css2?family=${family}&display=swap`;
+  let link = document.getElementById("rpg-sao-webfont");
+  if (link && link.getAttribute("href") === href) return;
+  if (!link) {
+    link = document.createElement("link");
+    link.id = "rpg-sao-webfont";
+    link.rel = "stylesheet";
+    document.head.appendChild(link);
+  }
+  link.href = href;
 }
 
 function saoPanelVars() {
@@ -4420,8 +5132,8 @@ function saoHpStops(p) {
 }
 
 function saoPct(currRaw, maxRaw) {
-  const a = parseFloat(String(currRaw ?? "").replace(/[^\d.\-]/g, ""));
-  const b = parseFloat(String(maxRaw ?? "").replace(/[^\d.\-]/g, ""));
+  const a = barValue(currRaw);
+  const b = barValue(maxRaw);
   if (!isFinite(a) || !isFinite(b) || b <= 0) return 0;
   return clamp((a / b) * 100, 0, 100);
 }
@@ -4439,7 +5151,7 @@ function aloBarSvg(W, H, pctVal, c1, c2) {
   const d = `M${x0} ${y0}H${x0 + w - tip}L${x0 + w} ${y0 + h / 2}L${x0 + w - tip} ${y0 + h}H${x0}Z`;
   const id = "a" + (++saoSvgUid);
   const fx = x0 + w * clamp(pctVal, 0, 100) / 100;
-  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
     <defs>
       <linearGradient id="g${id}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/>
@@ -4542,7 +5254,7 @@ function saoBarSvg(W, H, pctVal, c1, c2) {
     ? `<polygon points="${x0},${y0} ${topX},${y0} ${botX},${y0 + h} ${x0},${y0 + h}" fill="url(#g${id})" clip-path="url(#c${id})"/>`
     : "";
 
-  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" shape-rendering="geometricPrecision" xmlns="http://www.w3.org/2000/svg">
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="none" shape-rendering="geometricPrecision" xmlns="http://www.w3.org/2000/svg">
     <defs>
       <linearGradient id="m${id}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="${SAO_RIM.hi}"/><stop offset="1" stop-color="${SAO_RIM.lo}"/>
@@ -4562,7 +5274,10 @@ function saoBarSvg(W, H, pctVal, c1, c2) {
 // Bars can only be drawn once they have a real pixel width, so the markup
 // ships empty and this fills every .rpg-sao-bar after layout.
 function saoDrawBar(el, p) {
-  const W = el.clientWidth, H = el.clientHeight;
+  // the box's exact size: clientWidth/Height round to whole pixels, and at a
+  // Bar size like 70% (5.6px tall) the drawing then didn't match its box
+  const q = el.getBoundingClientRect();
+  const W = Math.round(q.width * 100) / 100, H = Math.round(q.height * 100) / 100;
   if (!W || !H) return;
   el.innerHTML = saoBarSvg(W, H, p, el.dataset.c1 || "#b9f56d", el.dataset.c2 || "#63c322");
 }
@@ -4659,7 +5374,7 @@ function aloPlateSvg(W, H, geo, hp, mp, hpc, mpc) {
   const id = "p" + (++saoSvgUid);
   const w = (p) => (bw * clamp(p, 0, 100)) / 100;
 
-  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
     <defs>
       <linearGradient id="h${id}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="${hpc[0]}"/><stop offset="1" stop-color="${hpc[1]}"/></linearGradient>
@@ -4720,7 +5435,7 @@ function saoPaintAloPlates() {
 
   plates.forEach((el) => {
     const small = el.classList.contains("small");
-    const H = el.clientHeight;
+    const H = Math.round(el.getBoundingClientRect().height * 100) / 100;
     if (!H) return;
     const nameEl0 = el.querySelector(".rpg-alo-name");
     const nameW = small ? 0 : Math.min(nameEl0 ? nameEl0.scrollWidth : 0, ALO_NAME_CAP.big * ui);
@@ -4795,7 +5510,7 @@ function blkBarSvg(W, H, pctVal, c1, c2) {
   const fw = (W - 1) * clamp(pctVal, 0, 100) / 100;
   // the band near the end is a gentle step up from the fill, not a highlight
   const base = blkShade(c2, 5), light = blkShade(base, 9);
-  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
     <defs>
       <linearGradient id="f${id}" x1="0" y1="0" x2="1" y2="0">
         <stop offset="0" stop-color="${base}"/><stop offset=".72" stop-color="${base}"/>
@@ -4985,24 +5700,28 @@ function blkUnitRow(view, idx, key, opts = {}) {
   const hs = view.isVeh ? SAO_PALETTE.vehicle : saoHpStops(hp);
   const full = opts.name ?? view.name;
   const { name, title } = aloSplitTitle(full);
-  const num = (a, b) => (a === undefined || a === null || a === "") ? "\u2013" : `${escHtml(a)}/${escHtml(b)}`;
+  const num = barPair;
   const initial = (String(name).replace(/^[^\p{L}\p{N}]+/u, "")[0] || "?").toUpperCase();
   return `<div class="rpg-blk-row${big ? " big" : ""}${foe ? " foe" : ""}">
+    <div class="rpg-blk-top">
     <div class="rpg-blk-plate"></div>
-    <div class="rpg-blk-tile" data-tkey="${escAttr(opts.kind === "player" ? "@player" : blkNameKey(name))}"
-      style="background-color:${foe ? "#a8322a" : opts.kind === "player" ? blkPlayerTileColor() : blkTileColor(name)}">${
-      blkIcon(opts.kind || (foe ? "enemy" : big ? "player" : "party")) || escHtml(initial)}</div>
     <div class="rpg-blk-head">
       <span class="rpg-blk-name rpg-sao-jump" data-idx="${idx}" title="${escAttr(full)}">${escHtml(name)}</span>
       ${title ? `<span class="rpg-blk-title">${escHtml(title)}</span>` : ""}
       <span class="rpg-blk-chips">${blkChips(opts.status, big ? 8 : 6)}</span>
     </div>
+    </div>
+    <div class="rpg-blk-line">
+    <div class="rpg-blk-tile" data-tkey="${escAttr(opts.kind === "player" ? "@player" : blkNameKey(name))}"
+      style="background-color:${foe ? "#a8322a" : opts.kind === "player" ? blkPlayerTileColor() : blkTileColor(name)}">${
+      blkIcon(opts.kind || (foe ? "enemy" : big ? "player" : "party")) || escHtml(initial)}</div>
     <div class="rpg-blk-bars">
       ${saoBarHtml("blkhp", hp, hs[0], hs[1], `${key}:hp`)}
       ${saoBarHtml("blkmp", mp, BLK_MP[0], BLK_MP[1], `${key}:mp`)}
     </div>
     <div class="rpg-blk-nums"><span>${opts.hpText ?? num(view.hp_curr, view.hp_max)}</span>
       <span>${opts.mpText ?? num(view.en?.curr, view.en?.max)}</span></div>
+    </div>
   </div>`;
 }
 
@@ -5011,7 +5730,7 @@ function aloUnitRow(view, idx, key, foe) {
   const mp = saoPct(view.en?.curr, view.en?.max);
   const hs = saoUnitStops(view);
   const { name, title } = aloSplitTitle(view.name);
-  const num = (a, b) => (a === undefined || a === null || a === "") ? "\u2013" : `${escHtml(a)}/${escHtml(b)}`;
+  const num = barPair;
   return `<div class="rpg-alo-row">
     <div class="rpg-alo-unit rpg-sao-jump${foe ? " foe" : ""}" data-idx="${idx}" title="${escAttr(view.name)}">
       <div class="rpg-alo-label"><span class="rpg-alo-uname">${escHtml(name)}</span>${
@@ -5080,7 +5799,7 @@ function saoSlimRow(name, curr, max, stops, jumpIdx, foe, key) {
     ? `<span class="${cls}">${escHtml(name)}</span>`
     : `<button class="${cls} rpg-sao-jump" data-idx="${jumpIdx}" title="Open ${escAttr(name)}">${escHtml(name)}</button>`;
   return `<div class="rpg-sao-row">${tag}${saoBarHtml("slim", p, stops[0], stops[1], key)}
-    <span class="rpg-sao-num">${escHtml(curr)}/${escHtml(max)}</span></div>`;
+    <span class="rpg-sao-num">${barPair(curr, max)}</span></div>`;
 }
 
 // A unit in an active vehicle is displayed as the vehicle, the way the
@@ -5121,15 +5840,16 @@ function saoMeterRows(view, owner) {
     const c = saoMeterColor(m.name);
     return `<div class="rpg-sao-row sub"><span class="rpg-sao-tag">${escHtml(m.name)}</span>`
       + saoBarHtml("slim", saoPct(m.curr, m.max), c[0], c[1], `${owner || "?"}/m:${normBondName(m.name)}`)
-      + `<span class="rpg-sao-num">${escHtml(m.curr)}/${escHtml(m.max)}</span></div>`;
+      + `<span class="rpg-sao-num">${barPair(m.curr, m.max)}</span></div>`;
   }).join("");
 }
 
 function saoDivider(label, key, color) {
   if (!color && key === "npcs") color = "#bcd4e8";
   const open = !saoCollapsed[key];
-  return `<div class="rpg-sao-div" ${color ? `style="color:${color}"` : ""}>${escHtml(label)}
-    <button class="rpg-sao-caret" data-k="${key}" aria-expanded="${open}">${open ? "&#9662;" : "&#9656;"}</button>
+  return `<div class="rpg-sao-div" ${color ? `style="color:${color}"` : ""}><span class="rpg-sao-divlabel" data-k="${key}"
+      title="${open ? "Collapse" : "Expand"}">${escHtml(label)}</span>
+    <button class="rpg-sao-caret" data-k="${key}" aria-expanded="${open}" aria-label="${open ? "Collapse" : "Expand"} ${escAttr(label)}">${open ? "&#9662;" : "&#9656;"}</button>
   </div>`;
 }
 
@@ -5168,6 +5888,12 @@ function saoStatusPanel() {
         <input type="text" inputmode="numeric" id="rpg-sao-livebond" value="${b === null ? "" : b >= 101 ? "\u221E" : b}"
           placeholder="none" title="0\u2013100, or \u221E. Leave empty for no bond. Enter to save."> / 100</b></div>`;
     }
+    if (MOVE_KEYS[type]) {
+      h += `<div class="rpg-sao-vline rpg-sao-move"><span>Move to</span><b>` +
+        Object.keys(MOVE_KEYS).filter((t) => t !== type).map((t) =>
+          `<button class="rpg-sao-mini rpg-sao-moveto" data-to="${t}">${MOVE_LABELS[t]}</button>`).join("") +
+        `</b></div>`;
+    }
     const stats = display.stats || {};
     const keys = Object.keys(stats);
     if (keys.length) {
@@ -5188,9 +5914,18 @@ function saoStatusPanel() {
     if (saoSub === "masteries") {
       h += saoMasteriesSection(list);
     } else {
-      h += list.length
-        ? `<ul class="rpg-sao-entries">` + list.map(saoListItem).join("") + `</ul>`
-        : `<p class="rpg-sao-empty">Nothing recorded.</p>`;
+      if (saoListEdit && saoListEdit.key === saoSub) {
+        h += saoListEditorHtml(saoSub);
+      } else {
+        // icons double as the way in: tap one to edit this list
+        h += list.length
+          ? `<ul class="rpg-sao-entries with-icons">` + (() => {
+              const who = activeListOwner();
+              const lockedSet = new Set(who === undefined ? [] : lockedIndices(list.map(String), posLocksFor(ownerIdOf(who), saoSub)).map((l) => l.i));
+              return list.map((it, i) => saoListItemWithIcon(saoSub, it, true, i, lockedSet)).join("");
+            })() + `</ul>`
+          : `<p class="rpg-sao-empty">Nothing recorded. <button class="rpg-sao-mini rpg-sao-ico" data-list="${saoSub}">+ Add</button></p>`;
+      }
     }
   }
   return { title: name, body: h };
@@ -5227,6 +5962,7 @@ function saoMetersSection(display) {
   if (saoMeterEdit) {
     const rows = saoMeterEdit.map((m, i) => `
       <div class="rpg-sao-mrow-edit" data-i="${i}">
+        ${reorderBtns("meter", i, saoMeterEdit.length)}
         <input type="color" class="rpg-sao-m-color" data-i="${i}" value="${escAttr(m.color)}"
           title="Colour${m.custom ? "" : " (automatic)"}">
         <input type="text" class="rpg-sao-m-name" data-i="${i}" value="${escAttr(m.name)}" placeholder="Name">
@@ -5258,6 +5994,454 @@ function saoMetersSection(display) {
 
   return `<div class="rpg-sao-subhead"><span class="rpg-sao-sub">Meters</span>
       <button class="rpg-sao-mini" id="rpg-sao-m-edit">&#9998; Edit</button></div>${list}`;
+}
+
+
+// =====================================================================
+// LIST ICONS + EDITING (Status orb: Items, Skills, Passive)
+// An entry's icon comes from its name (the part before any description):
+// weapons are checked first, so "Angel Halo (Blade)" is a sword, not jewellery.
+// Tapping an icon opens that list for editing in place.
+// =====================================================================
+const ico = (d, extra = "") => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/>${extra}</svg>`;
+const LIST_ICONS = {
+  sword:   ico("M20 4v4l-9.5 9.5-4-4L16 4z M5 13l6 6 M7.5 16.5 4 20"),
+  dagger:  ico("M18 4.5v3.5l-6.5 6.5-3-3L15 5z M6.5 11.5l6 6 M8.5 15.5 5 19"),
+  spear:   ico("M4 20 14.5 9.5 M14.5 9.5l1.6-5.2 4.6-1.6-1.6 4.6z"),
+  axe:     ico("M5 20 14 11 M12.5 3.5c4.5.3 7.7 3.5 8 8l-3.2 1L11.5 6.7z"),
+  hammer:  ico("M5 20l8-8 M10.6 5.6l4.2-2.4 5.9 5.9-2.4 4.2z"),
+  bow:     ico("M5 3.5c8.3 0 15.5 7.2 15.5 15.5 M5 3.5 20.5 19 M3.5 9.5 9 4"),
+  gun:     ico("M3 8.5h16l1 2.5h-8.5l-1.3 2.5H7.6L6.6 19H3.5z M12 11v2"),
+  staff:   ico("M5 20l9.5-9.5", '<circle cx="17" cy="7" r="3.2"/>'),
+  shield:  ico("M12 3l7 2.8v5.4c0 4.4-2.9 7.8-7 9.8-4.1-2-7-5.4-7-9.8V5.8z"),
+  armor:   ico("M8 3.5h8l4 3.7-3 3V20.5H7V10.2l-3-3z M10 3.5c0 1.4.9 2.4 2 2.4s2-1 2-2.4"),
+  ring:    ico("M10 6.5l2-3 2 3-2 2z", '<circle cx="12" cy="14.5" r="5.3"/>'),
+  potion:  ico("M9.5 3h5 M10.5 3v5.2L5.7 16.8a2.6 2.6 0 0 0 2.3 3.9h8a2.6 2.6 0 0 0 2.3-3.9L13.5 8.2V3 M7.4 14.5h9.2"),
+  food:    ico("M12 7.5c-3-2-7.2 0-7.2 4.9s3 8.1 5.2 8.1c1 0 1.4-.5 2-.5s1 .5 2 .5c2.2 0 5.2-3.2 5.2-8.1S15 5.5 12 7.5z M12 7.5c0-2 1-3.3 3-4"),
+  key:     ico("M10.4 12.6 20 3 M17 6l2.2 2.2 M14.6 8.4l2.2 2.2", '<circle cx="7.6" cy="15.4" r="3.6"/>'),
+  book:    ico("M5 4.5h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z M5 17.5a3 3 0 0 1 3-3h11"),
+  gem:     ico("M5.5 9.5l3.2-5h6.6l3.2 5L12 20.5z M5.5 9.5h13 M9.5 9.5 12 20.5l2.5-11"),
+  coin:    ico("", '<circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="4"/>'),
+  bag:     ico("M5.5 8.5h13l1.2 12H4.3z M9 8.5V7a3 3 0 0 1 6 0v1.5"),
+  phone:   ico("M8 2.5h8a1.6 1.6 0 0 1 1.6 1.6v15.8a1.6 1.6 0 0 1-1.6 1.6H8a1.6 1.6 0 0 1-1.6-1.6V4.1A1.6 1.6 0 0 1 8 2.5z M10.5 18.3h3"),
+  laptop:  ico("M5.5 5.5h13v9h-13z M2.8 18.5h18.4l-1.7-4H4.5z"),
+  camera:  ico("M4 8.2h3.4l1.6-2.6h6l1.6 2.6H20v10.6H4z", '<circle cx="12" cy="13.4" r="3.4"/>'),
+  misc:    ico("M9 9.2a3 3 0 1 1 4.6 2.5c-1 .6-1.6 1.3-1.6 2.6 M12 17.6v.4"),
+  quest:   ico("M6 21V3.5 M6 4.5h11.5l-2.5 4 2.5 4H6"),
+  // skills and passives
+  fire:    ico("M12 3c.9 3.1 5 5 5 10.2a5 5 0 0 1-10 0c0-3 1.8-4.2 2-6.2 1.1.9 1.9 2 2 3.3 1.2-2.1 1.3-4.6 1-7.3z"),
+  ice:     ico("M12 3v18 M4.2 7.5l15.6 9 M4.2 16.5l15.6-9 M9.5 4.5 12 7l2.5-2.5 M9.5 19.5 12 17l2.5 2.5"),
+  bolt:    ico("M13.5 3 6 13.5h5.3L10.5 21 18 10.5h-5.3z"),
+  heal:    ico("M9.5 4h5v5.5H20v5h-5.5V20h-5v-5.5H4v-5h5.5z"),
+  dark:    ico("M15.5 4a8.2 8.2 0 1 0 4.8 13.2A6.4 6.4 0 0 1 15.5 4z"),
+  wind:    ico("M3 9h11a3 3 0 1 0-3-3 M3 14h15a3 3 0 1 1-3 3 M3 19h6"),
+  burst:   ico("M12 3l2.1 6H20l-4.8 3.6 1.9 6.9L12 15.6 6.9 19.5l1.9-6.9L4 9h5.9z"),
+  badge:   ico("M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z", '<circle cx="12" cy="12" r="2.4"/>'),
+};
+
+// first match wins, so weapons come before anything they might be mistaken for
+const ITEM_KINDS = [
+  ["dagger", /\b(dagger|knife|dirk|stiletto|kunai|tanto|shiv)\b/],
+  ["sword",  /(sword|blade|rapier|katana|sabre|saber|claymore|scimitar|cutlass|estoc|falchion|odachi|zweihander|wakizashi|longsword|greatsword)/],
+  ["spear",  /\b(spear|lance|pike|halberd|glaive|trident|naginata|polearm|javelin|partisan)\b/],
+  ["axe",    /\b(axe|hatchet|battleaxe|greataxe|tomahawk)\b/],
+  ["hammer", /\b(hammer|mace|maul|club|flail|morningstar|warhammer|cudgel)\b/],
+  ["bow",    /\b(bow|crossbow|longbow|shortbow|arrows?|bolts?|quiver)\b/],
+  ["gun",    /\b(gun|pistol|rifle|revolver|musket|shotgun|blaster|sniper|carbine|ammo|bullets?)\b/],
+  // electronics. Left out on purpose, since they usually mean something else in
+  // fantasy: "tablet" (stone, medicine), "cell" (prison), "chip", "notebook"
+  ["phone",  /\b(phone|smartphone|cellphone|iphone|mobile|radio|walkie|walkie-talkie|communicator|comms?|pager|beeper|pda|handset|headset|earpiece|transceiver|transmitter|receiver|scanner|tracker|gadget|device|smartwatch)\b/],
+  ["laptop", /\b(laptop|computer|pc|terminal|console|datapad|monitor|keyboard|usb|drive|disk|disc|server|hard drive|flash drive)\b/],
+  ["camera", /\b(camera|camcorder|polaroid|binoculars|telescope|spyglass)\b/],
+  ["staff",  /\b(staff|wand|rod|scepter|sceptre|orb|focus)\b/],
+  ["shield", /\b(shield|buckler|aegis)\b/],
+  ["armor",  /\b(armou?r|mail|plate|helm|helmet|gauntlets?|greaves|boots|cloak|robes?|coat|shirt|dress|jacket|tunic|hood|gloves|cape|vest|pants|trousers|uniform|outfit|clothes|clothing|garb|leathers?|hat|mask|belt)\b/],
+  ["potion", /\b(potion|elixir|tonic|draught|vial|flask|antidote|salve|crystal|bandages?|medicine|pills?|herbs?)\b/],
+  ["food",   /\b(food|bread|rations?|meat|apple|fruit|stew|cheese|jerky|berr(y|ies)|fish|cake|pie|drink|water|ale|wine|tea|soup|meal)\b/],
+  ["key",    /\b(key|keycard|keys)\b/],
+  ["book",   /\b(scroll|book|tome|map|letter|note|journal|grimoire|manual|page|diary|contract)\b/],
+  ["ring",   /\b(ring|amulet|necklace|pendant|bracelet|earrings?|charm|talisman|brooch|circlet|crown|halo|locket|keychain|keyring|trinket|bauble|accessory|accessories|pin|badge|emblem|anklet|tiara|choker|strap|watch|wristwatch)\b/],
+  ["gem",    /\b(gem|jewel|ruby|emerald|sapphire|diamond|ore|ingot|shard|stone|pearl|materials?|hide|pelt|scales?|fang|claw|bone|crystals)\b/],
+  ["coin",   /\b(coins?|gold|purse|pouch|money|col)\b/],
+  ["bag",    /\b(rope|torch|lantern|pickaxe|shovel|lockpicks?|tools?|kit|compass|tent|bedroll|bag|backpack|satchel|flint|whetstone|sheath|scabbard|holster|case)\b/],
+];
+const SKILL_KINDS = [
+  ["heal",   /\b(heal\w*|cure|regen\w*|restor\w*|mend\w*|revive|resurrect\w*|holy)\b/],
+  ["fire",   /\b(fire\w*|flame\w*|burn\w*|blaze|inferno|ember|scorch\w*|pyro\w*|magma|lava)\b/],
+  ["ice",    /\b(ice|icy|frost\w*|freez\w*|cold|snow|blizzard|glacia\w*|cryo\w*)\b/],
+  ["bolt",   /\b(lightning|thunder\w*|shock\w*|bolt|spark\w*|static|volt\w*|electr\w*)\b/],
+  ["dark",   /\b(dark\w*|shadow\w*|curse\w*|void|necro\w*|death|drain\w*|blood)\b/],
+  ["wind",   /\b(wind|gust|dash\w*|blink|teleport\w*|step|veil|phase|evade|evasion|dodge|haste|swift\w*|sprint)\b/],
+  ["shield", /\b(guard\w*|shield\w*|barrier|protect\w*|ward\w*|parry|block\w*|fortif\w*|resist\w*|armou?r)\b/],
+];
+
+// Items: what kind of thing is it? Names put the main noun last ("Sword Charm
+// Keychain" is a keychain, "Iron Sword" a sword), so:
+//   1. a type in brackets wins: "Angel Halo (Blade)" is a sword
+//   2. then the name's last word, quantities and stat bonuses aside
+//   3. then any word, in category order ("Ring of Fire" ends on "Fire")
+// [...] notes are ignored entirely: "Keychain [Attached to Katana]" is a keychain.
+function listIconKind(listKey, text) {
+  if (listKey === "quests") return "quest";
+  if (listKey === "inventory") {
+    const head = String(descSplit(text).head || text).toLowerCase();
+    const paren = (head.match(/\(([^)]*)\)/g) || []).join(" ");
+    const base = head.replace(/\([^)]*\)/g, " ")
+      .replace(/\s[+\-\u2212]\s?\d.*$/, "")              // "+10 ATK" and on
+      .replace(/\b(x\d+|\d+x|\d+)\b/g, " ")               // "x3", "3x", bare numbers
+      .replace(/\s+/g, " ").trim();
+    const last = base.split(" ").pop() || "";
+    for (const part of [paren, last, base]) {
+      if (!part) continue;
+      for (const [kind, re] of ITEM_KINDS) if (re.test(part)) return kind;
+    }
+    return "misc";
+  }
+  // skills and passives: the whole entry speaks to what they do
+  const all = stripStatusTags(String(text)).toLowerCase();
+  for (const [kind, re] of SKILL_KINDS) if (re.test(all)) return kind;
+  return listKey === "passives" ? "badge" : "burst";
+}
+
+function listIconHtml(listKey, text, editable) {
+  const kind = listIconKind(listKey, text);
+  return editable
+    ? `<button class="rpg-sao-ico" data-list="${listKey}" title="${escAttr(kind === "misc" ? "Misc" : kind)} \u00B7 tap to edit this list">${LIST_ICONS[kind]}</button>`
+    : `<span class="rpg-sao-ico">${LIST_ICONS[kind]}</span>`;
+}
+
+// ---- reordering rows in any of the Status orb's editors ----
+// Buttons, not dragging: they're easier to hit on a touch screen. Each editor
+// keeps its rows in a plain list, so moving one is a swap with a neighbour;
+// Save then writes them in the new order. Order isn't an edit, so it's only
+// written to the latest reply, never pushed into earlier ones.
+function reorderBtns(kind, i, n) {
+  return `<span class="rpg-sao-reorder">` +
+    `<button class="rpg-sao-mv" data-kind="${kind}" data-i="${i}" data-d="-1"${i === 0 ? " disabled" : ""} title="Move up">\u25B2</button>` +
+    `<button class="rpg-sao-mv" data-kind="${kind}" data-i="${i}" data-d="1"${i === n - 1 ? " disabled" : ""} title="Move down">\u25BC</button></span>`;
+}
+
+function reorderRows(kind) {
+  if (kind === "list") return saoListEdit?.rows || null;
+  if (kind === "mastery") return Array.isArray(saoMasteryEdit) ? saoMasteryEdit : null;
+  if (kind === "meter") return Array.isArray(saoMeterEdit) ? saoMeterEdit : null;
+  return null;
+}
+
+// ---- telling same-name entries apart ----
+// "Vorpal Strike (Lv1)" and "Vorpal Strike (Lv3)" share the name key
+// "vorpal strike". When a key matches more than one entry, the one whose text
+// is most like the target wins. A lone match is taken by name alone, so a
+// reworded description never breaks anything.
+function textWords(t) {
+  return new Set(stripStatusTags(String(t ?? "")).toLowerCase().split(/[^a-z0-9+*.\-]+/).filter(Boolean));
+}
+function textSimilarity(a, b) {
+  if (String(a).trim() === String(b).trim()) return 2;            // identical beats everything
+  const A = textWords(a), B = textWords(b);
+  let n = 0;
+  A.forEach((w) => { if (B.has(w)) n++; });
+  return n / Math.max(1, Math.max(A.size, B.size));
+}
+// index in items of the entry best matching (key, text), skipping taken ones
+function bestEntryIndex(items, key, text, taken = new Set()) {
+  let best = -1, score = -1;
+  items.forEach((t, i) => {
+    if (taken.has(i) || tItemKey(t) !== key) return;
+    const sc = text ? textSimilarity(t, text) : 0;
+    if (sc > score) { score = sc; best = i; }
+  });
+  return best;
+}
+
+// ---- position locks ----
+// A locked entry keeps its place in its list (1st, 2nd, 3rd...). After each
+// new reply, locked entries the AI moved are put back; the unlocked ones keep
+// their own order around them. Locks are matched by name, so a reworded
+// description doesn't break one, and kept per chat:
+//   { chatKey: { ownerId: { listKey: { itemKey: position } } } }
+const POSLOCKS_KEY = "rpgHud:posLocks";
+const POS_FIELDS = { inventory: "INV", skills: "Skills", passives: "Passives" };
+
+function posLocksAll() {
+  try { return JSON.parse(localStorage.getItem(POSLOCKS_KEY) || "{}") || {}; } catch { return {}; }
+}
+// Locks are a list of { key, text, pos }. The text is what tells same-name
+// variants apart; older saves were { itemKey: pos } and still load.
+function posLocksFor(ownerId, listKey) {
+  let key = "";
+  try { key = currentChatKey(SillyTavern.getContext()); } catch {}
+  const raw = posLocksAll()?.[key]?.[ownerId]?.[listKey];
+  if (Array.isArray(raw)) return raw;
+  return raw ? Object.entries(raw).map(([k, pos]) => ({ key: k, text: "", pos })) : [];
+}
+
+// which indices in items are locked, and to where
+function lockedIndices(items, locks) {
+  const taken = new Set(), out = [];
+  [...locks].sort((a, b) => a.pos - b.pos).forEach((l) => {
+    const i = bestEntryIndex(items, l.key, l.text, taken);
+    if (i >= 0) { taken.add(i); out.push({ i, pos: l.pos }); }
+  });
+  return out;
+}
+function savePosLocks(ownerId, listKey, list) {
+  const map = list;
+  let key = "";
+  try { key = currentChatKey(SillyTavern.getContext()); } catch { return; }
+  const all = posLocksAll();
+  const chat = (all[key] = all[key] || {});
+  const owner = (chat[ownerId] = chat[ownerId] || {});
+  if (map.length) owner[listKey] = map; else delete owner[listKey];
+  if (!Object.keys(owner).length) delete chat[ownerId];
+  if (!Object.keys(chat).length) delete all[key];
+  try { localStorage.setItem(POSLOCKS_KEY, JSON.stringify(all)); } catch {}
+}
+
+// Put locked entries back at their positions; everything else keeps its order.
+function applyPositionLocks(items, locks) {
+  const locked = lockedIndices(items, locks);
+  if (!locked.length) return items.slice();
+  const lockedSet = new Set(locked.map((l) => l.i));
+  const out = items.filter((_, i) => !lockedSet.has(i));
+  locked.sort((a, b) => a.pos - b.pos).forEach((l) => out.splice(Math.min(l.pos, out.length), 0, items[l.i]));
+  return out;
+}
+
+const ownerIdOf = (who) => (who ? `${who.group}:${who.key}` : "@player");
+
+// Rewrite one character's list field inside a message's block, walking the
+// lines so the right character's field is the one changed.
+function editOwnerFieldInMes(mes, ownerId, field, fn) {
+  const bm = String(mes).match(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i);
+  if (!bm) return mes;
+  const lines = bm[0].split("\n");
+  let section = null, unit = null, changed = false;
+  const re = new RegExp(`(\\|\\s*${field}\\s*:)([^|]*)(\\|)`, "i");
+  for (let li = 0; li < lines.length; li++) {
+    const ln = lines[li];
+    const h = ln.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (h) { const t = h[1].toLowerCase(); section = /player/.test(t) ? "player" : /party/.test(t) ? "party" : /npc/.test(t) ? "npcs" : /enem/.test(t) ? "enemies" : null; unit = null; continue; }
+    const nm = ln.match(/\|\s*Name\s*:\s*([^|]*)\|/i);
+    if (nm && section && section !== "player") unit = normBondName(nm[1]);
+    if (ln.trim().startsWith(">")) continue;
+    const id = section === "player" ? "@player" : section && unit ? `${section}:${unit}` : null;
+    if (id !== ownerId || !re.test(ln)) continue;
+    lines[li] = ln.replace(re, (m, a, val, z) => {
+      const items = val.split(";").map((x) => x.trim()).filter(Boolean);
+      const out = fn(items);
+      if (out.join(";") === items.join(";")) return m;
+      changed = true;
+      return a + out.join(";") + z;
+    });
+  }
+  return changed ? String(mes).replace(bm[0], lines.join("\n")) : mes;
+}
+
+// lists in a new reply whose locked entries have moved
+function positionFixesFor(state) {
+  const out = [];
+  listOwners(state).forEach((owner) => {
+    Object.keys(POS_FIELDS).forEach((listKey) => {
+      const locks = posLocksFor(owner.id, listKey);
+      if (!locks.length) return;
+      const items = (owner.ent?.[listKey] || []).map((x) => String(x).trim()).filter(Boolean);
+      const fixed = applyPositionLocks(items, locks);
+      if (fixed.join(";") !== items.join(";")) out.push({ ownerId: owner.id, owner: owner.name, listKey, locks });
+    });
+  });
+  return out;
+}
+
+// ---- the editor ----
+let saoListEdit = null;   // null, or { key, rows: [{ text, orig }] }
+
+function saoListEditorHtml(key) {
+  const label = { inventory: "Items", skills: "Skills", passives: "Passives", quests: "Quests" }[key] || key;
+  const isQuests = key === "quests";
+  const n = saoListEdit.rows.length;
+  const rows = saoListEdit.rows.map((r, i) => `
+    <div class="rpg-sao-ledit">
+      ${reorderBtns("list", i, n)}
+      <span class="rpg-sao-ico">${LIST_ICONS[listIconKind(key, r.text)]}</span>
+      <textarea class="rpg-sao-ledit-text" data-i="${i}" rows="2" spellcheck="false">${escHtml(r.text)}</textarea>
+      <span class="rpg-sao-ledit-side">
+        <button class="rpg-sao-ledit-del" data-i="${i}" title="Remove">&#10005;</button>
+        ${isQuests ? "" : `<button class="rpg-sao-ledit-lock${r.locked ? " on" : ""}" data-i="${i}"
+          title="${r.locked ? "Locked to this position: the AI can't move it. Tap to unlock." : "Lock to this position"}">${r.locked ? LOCK_ICON.on : LOCK_ICON.off}</button>`}
+      </span>
+    </div>`).join("");
+  const depth = Math.max(0, parseInt(uiSettings.listEditHistory, 10) || 0);
+  return `<div class="rpg-sao-meditor rpg-sao-leditor">
+      ${rows || `<p class="rpg-sao-empty">Empty. Add one below.</p>`}
+      <button class="rpg-sao-mini" id="rpg-sao-ledit-add">+ Add</button>
+      <p class="rpg-sao-hint">${isQuests
+        ? "Quests are shared by everyone. Saving updates the latest reply."
+        : depth
+        ? `Saving also updates ${depth} earlier repl${depth === 1 ? "y" : "ies"} (setting: Edits rewrite past replies).`
+        : "Saving updates the latest reply. To also update earlier ones, see the setting Edits rewrite past replies."}</p>
+      <div class="rpg-sao-medit-actions">
+        <button class="rpg-sao-mini" id="rpg-sao-ledit-cancel">Cancel</button>
+        <button class="rpg-sao-mini primary" id="rpg-sao-ledit-save">Save ${escHtml(label)}</button>
+      </div>
+    </div>`;
+}
+
+function saoListItemWithIcon(listKey, it, editable, idx = -1, lockedSet = null) {
+  const locked = !!lockedSet && lockedSet.has(idx);
+  return saoListItem(it).replace(/^<li>/, `<li class="has-ico${locked ? " pos-locked" : ""}">${listIconHtml(listKey, it, editable)}<div class="rpg-sao-li-body">`)
+    .replace(/<\/li>$/, `</div>${locked ? `<span class="rpg-sao-poslock" title="Locked to this position">${LOCK_ICON.on}</span>` : ""}</li>`);
+}
+
+// the active character as the block sees it: null for the player
+function activeListOwner() {
+  const info = getActivePointerInfo();
+  if (info.type === "player") return null;
+  const group = { party: "party", npc: "npcs", enemy: "enemies" }[info.type];
+  return group ? { group, key: normBondName(info.name) } : undefined;
+}
+
+// Rewrite one list field for one character in up to `depth` replies before
+// the latest: entries matched by name (not exact text, since descriptions
+// drift), changed or removed. Additions aren't pushed into the past.
+function rewriteListHistory(who, listKey, edits, depth) {
+  const field = { inventory: "INV", skills: "Skills", passives: "Passives" }[listKey];
+  if (!field || depth <= 0 || !edits.length) return 0;
+  let ctx;
+  try { ctx = SillyTavern.getContext(); } catch { return 0; }
+  const chat = ctx?.chat || [];
+  const ownerId = who ? `${who.group}:${who.key}` : "@player";
+  let touched = 0, seen = 0;
+  for (let i = lastRpgMsgIndex - 1; i >= 0 && seen < depth; i--) {
+    const msg = chat[i];
+    if (!msg || msg.is_user || !rpgInnerFromMessage(msg.mes)) continue;
+    seen++;
+    const blockMatch = msg.mes.match(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i);
+    const lines = blockMatch[0].split("\n");
+    let section = null, unit = null, changed = false;
+    for (let li = 0; li < lines.length; li++) {
+      const ln = lines[li];
+      const h = ln.match(/^\s*\[([^\]]+)\]\s*$/);
+      if (h) { const t = h[1].toLowerCase(); section = /player/.test(t) ? "player" : /party/.test(t) ? "party" : /npc/.test(t) ? "npcs" : /enem/.test(t) ? "enemies" : null; unit = null; continue; }
+      const nm = ln.match(/\|\s*Name\s*:\s*([^|]*)\|/i);
+      if (nm && section && section !== "player") unit = normBondName(nm[1]);
+      if (ln.trim().startsWith(">")) continue;
+      const id = section === "player" ? "@player" : section && unit ? `${section}:${unit}` : null;
+      if (id !== ownerId) continue;
+      const re = new RegExp(`(\\|\\s*${field}\\s*:)([^|]*)(\\|)`, "i");
+      if (!re.test(ln)) continue;
+      lines[li] = ln.replace(re, (m, a, val, z) => {
+        const items = val.split(";").map((x) => x.trim()).filter(Boolean);
+        // each edit takes the single closest same-name entry, so a variant
+        // with the same name is never edited or removed along with it
+        const taken = new Set(), plan = new Map();
+        edits.forEach((e) => {
+          const i = bestEntryIndex(items, tItemKey(e.from), e.from, taken);
+          if (i >= 0) { taken.add(i); plan.set(i, e); }
+        });
+        if (!plan.size) return m;
+        changed = true;
+        const out = [];
+        items.forEach((x, i) => { const e = plan.get(i); if (!e) out.push(x); else if (e.to) out.push(e.to); });
+        return a + out.join(";") + z;
+      });
+    }
+    if (changed) {
+      setMessageText(msg, msg.mes.replace(blockMatch[0], lines.join("\n")));
+      touched++;
+    }
+  }
+  if (touched) {
+    try { window.saveChat?.(); } catch {}
+    invalidateHistoryMemory();
+    turnLogCache = { sig: "", turns: [] };
+  }
+  return touched;
+}
+
+function saoSaveListEdit() {
+  const key = saoListEdit.key;
+  const isQuests = key === "quests";
+  const active = getActiveData();
+  const display = isQuests ? rpgState : active.display;
+  const isVehicle = isQuests ? true : active.isVehicle;   // quests: no locks, no history
+  const before = (Array.isArray(display[key]) ? display[key] : []).map(String);
+  // ";" and "|" would split the entry apart in the block
+  let rows = saoListEdit.rows.map((r) => ({ orig: r.orig, locked: !!r.locked, text: String(r.text || "").replace(/;/g, ",").replace(/\|/g, "/").replace(/\s*\n\s*/g, " ").trim() }))
+    .filter((r) => r.text);
+  const kept = new Set(rows.map((r) => r.orig).filter(Boolean));
+  let removed = before.filter((t) => !kept.has(t));
+  if (removed.length) {
+    const sure = confirm(`Remove ${removed.length === 1 ? "this entry" : "these entries"}?\n\n` +
+      removed.map((t) => "\u2022 " + tItemName(t)).join("\n") + "\n\nCancel keeps them.");
+    if (!sure) { rows = rows.concat(removed.map((t) => ({ orig: t, text: t }))); removed = []; }
+  }
+  display[key] = rows.map((r) => r.text);
+  // position locks: each locked row's final place in the list
+  const ownerForLocks = activeListOwner();
+  if (ownerForLocks !== undefined && !isVehicle) {
+    const list = [];
+    rows.forEach((r, i) => { if (r.locked) list.push({ key: tItemKey(r.text), text: r.text, pos: i }); });
+    savePosLocks(ownerIdOf(ownerForLocks), key, list);
+  }
+  const edits = rows.filter((r) => r.orig && r.orig !== r.text).map((r) => ({ from: r.orig, to: r.text }))
+    .concat(removed.map((t) => ({ from: t, to: null })));
+  saoListEdit = null;
+  renderRPG();
+  const ok = writeStateBackToChatMessage(rpgState);
+  if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after list edit");
+
+  const depth = Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0));
+  const who = activeListOwner();
+  if (depth && edits.length && !isVehicle && who !== undefined) {
+    const n = rewriteListHistory(who, key, edits, depth);
+    if (window.toastr) window.toastr.info(n ? `Also updated ${n} earlier repl${n === 1 ? "y" : "ies"}.` : "No earlier replies needed changing.");
+  }
+  try { checkMessage(); } catch {}
+}
+
+function saoBindListEditor() {
+  document.querySelectorAll(".rpg-quest-edit").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const items = (Array.isArray(rpgState.quests) ? rpgState.quests : []).map(String);
+      saoListEdit = { key: "quests", rows: items.map((t) => ({ text: t, orig: t, locked: false })) };
+      renderRPG();
+    };
+  });
+  document.querySelectorAll(".rpg-sao-ico[data-list]").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const { display } = getActiveData();
+      const key = el.dataset.list;
+      const who = activeListOwner();
+      const items = (Array.isArray(display[key]) ? display[key] : []).map(String);
+      const lockedSet = new Set(who === undefined ? [] : lockedIndices(items, posLocksFor(ownerIdOf(who), key)).map((l) => l.i));
+      saoListEdit = { key, rows: items.map((t, i) => ({ text: t, orig: t, locked: lockedSet.has(i) })) };
+      renderRPG();
+    };
+  });
+  const box = document.querySelector(".rpg-sao-leditor");
+  if (!box || !saoListEdit) return;
+  box.querySelectorAll(".rpg-sao-ledit-text").forEach((el) => {
+    el.oninput = () => { const r = saoListEdit.rows[+el.dataset.i]; if (r) r.text = el.value; };
+    el.onclick = (e) => e.stopPropagation();
+    el.onkeydown = (e) => e.stopPropagation();
+  });
+  box.querySelectorAll(".rpg-sao-ledit-lock").forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); const r = saoListEdit.rows[+el.dataset.i]; if (r) { r.locked = !r.locked; renderRPG(); } };
+  });
+  box.querySelectorAll(".rpg-sao-ledit-del").forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); saoListEdit.rows.splice(+el.dataset.i, 1); renderRPG(); };
+  });
+  const one = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
+  one("rpg-sao-ledit-add", () => {
+    saoListEdit.rows.push({ text: "", orig: "" });
+    renderRPG();
+    requestAnimationFrame(() => { const t = document.querySelectorAll(".rpg-sao-ledit-text"); t[t.length - 1]?.focus(); });
+  });
+  one("rpg-sao-ledit-cancel", () => { saoListEdit = null; renderRPG(); });
+  one("rpg-sao-ledit-save", saoSaveListEdit);
 }
 
 // ---- masteries: "Name: 45/100" gets a bar, same rule as the classic skin ----
@@ -5299,6 +6483,7 @@ function saoMasteriesSection(list) {
   if (saoMasteryEdit) {
     const rows = saoMasteryEdit.map((m, i) => `
       <div class="rpg-sao-mast-edit">
+        ${reorderBtns("mastery", i, saoMasteryEdit.length)}
         <input type="text" class="rpg-sao-ms-name" data-i="${i}" value="${escAttr(m.name)}" placeholder="Name">
         <input type="text" class="rpg-sao-ms-curr" data-i="${i}" value="${escAttr(m.curr)}" inputmode="decimal" placeholder="\u2013">
         <span class="rpg-sao-m-slash">/</span>
@@ -5569,9 +6754,11 @@ function saoQuestsPanel() {
   if (saoQuestTab === "log") return { title: "Turn log", body: tabs + saoLogHtml() };
 
   const quests = Array.isArray(rpgState.quests) ? rpgState.quests : [];
+  if (saoListEdit && saoListEdit.key === "quests") return { title: "Quests", body: tabs + saoListEditorHtml("quests") };
   return {
     title: "Quests",
-    body: tabs + (quests.length
+    body: tabs + `<div class="rpg-sao-subhead"><span class="rpg-sao-sub">Active</span>
+        <button class="rpg-sao-mini rpg-quest-edit">&#9998; Edit</button></div>` + (quests.length
       ? quests.map((q) => `<div class="rpg-sao-quest">${escHtml(q)}</div>`).join("")
       : `<p class="rpg-sao-empty">No active quests.</p>`),
   };
@@ -5582,7 +6769,7 @@ function saoQuestsPanel() {
 function saoPanelScrollKey() {
   if (saoPanel === "status") return `status:${charIndex}:${saoSub}`;
   if (saoPanel === "quests") return `quests:${saoQuestTab}`;
-  if (saoPanel === "gear" && saoHelpOpen) return "help";
+  if (saoPanel === "gear" && saoHelpOpen) return saoHelpOpen === "log" ? "whatsnew" : saoHelpOpen === "layout" ? "layout" : "help";
   return `panel:${saoPanel}`;
 }
 
@@ -5660,6 +6847,61 @@ function afterTurnEdit(ctx, idx) {
   renderRPG();
 }
 
+// ---- locked changes ----
+// A lock keeps one change of the newest turn through "Undo last turn": the
+// rest of the turn is undone around it. Locks belong to one turn (chat + the
+// message it lives in), so a new reply starts with none, and they're saved
+// per chat so a refresh keeps them. A change is identified by what it
+// touched (its undo note), not its wording.
+const LOCKS_KEY = "rpgHud:turnLocks";
+const lockId = (u) => JSON.stringify(u, Object.keys(u).sort().concat(["group", "key"]));
+
+function lockScope(ctx, idx) { return `${currentChatKey(ctx)}|${idx}`; }
+
+function loadLocks(scope) {
+  try {
+    const all = JSON.parse(localStorage.getItem(LOCKS_KEY) || "{}");
+    return new Set(Array.isArray(all[scope]) ? all[scope] : []);
+  } catch { return new Set(); }
+}
+
+function saveLocks(scope, set) {
+  try {
+    const all = JSON.parse(localStorage.getItem(LOCKS_KEY) || "{}");
+    if (set.size) all[scope] = [...set]; else delete all[scope];
+    const keys = Object.keys(all);                     // keep the store small
+    keys.slice(0, Math.max(0, keys.length - 30)).forEach((k) => delete all[k]);
+    localStorage.setItem(LOCKS_KEY, JSON.stringify(all));
+  } catch {}
+}
+
+function newestTurnLocks(ctx) {
+  const turns = rpgTurnsOf(ctx?.chat);
+  if (turns.length < 2) return { scope: null, set: new Set() };
+  const scope = lockScope(ctx, turns[turns.length - 1].idx);
+  return { scope, set: loadLocks(scope) };
+}
+
+function toggleLock(id) {
+  let ctx;
+  try { ctx = SillyTavern.getContext(); } catch { return; }
+  const { scope, set } = newestTurnLocks(ctx);
+  if (!scope) return;
+  if (set.has(id)) set.delete(id); else set.add(id);
+  saveLocks(scope, set);
+  renderRPG();
+}
+
+// the newest turn's changes that are locked
+function lockedChanges(ctx) {
+  const turns = rpgTurnsOf(ctx?.chat);
+  if (turns.length < 2) return [];
+  const { set } = newestTurnLocks(ctx);
+  if (!set.size) return [];
+  const last = turns[turns.length - 1], prev = turns[turns.length - 2];
+  return diffTurn(prev.state, last.state).filter((c) => c.u && set.has(lockId(c.u)));
+}
+
 function saoUndoLastTurn() {
   let ctx;
   try { ctx = SillyTavern.getContext(); } catch { return; }
@@ -5668,23 +6910,35 @@ function saoUndoLastTurn() {
   const last = turns[turns.length - 1], prev = turns[turns.length - 2];
   const msg = ctx.chat[last.idx];
 
+  const keep = lockedChanges(ctx);
   const ok = confirm(
     "Undo the latest turn?\n\n" +
-    "Its rpg_state goes back to exactly how it was the turn before, reverting " +
-    "every change that turn made. The story text isn't touched.\n\n" +
+    (keep.length
+      ? `Every change that turn made is reverted except the ${keep.length} you locked:\n` +
+        keep.slice(0, 8).map((c) => "  \u2022 " + c.text).join("\n") + (keep.length > 8 ? "\n  \u2022 \u2026" : "") + "\n\n"
+      : "Its rpg_state goes back to exactly how it was the turn before, reverting every change that turn made. ") +
+    "The story text isn't touched.\n\n" +
     "You can redo it until the chat changes."
   );
   if (!ok) return;
 
   const before = msg.mes;
-  const after = before.replace(/(<rpg_state\b[^>]*>)[\s\S]*?(<\/rpg_state>)/i,
-    (m, open, close) => `${open}\n${prev.inner}\n${close}`);
+  let after;
+  if (keep.length) {
+    // start from the turn before, then carry each locked change forward
+    const next = tClone(prev.state);
+    keep.forEach((c) => applyTurnUndo(next, last.state, c.u));
+    after = before.replace(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/i, buildPipeString(next));
+  } else {
+    after = before.replace(/(<rpg_state\b[^>]*>)[\s\S]*?(<\/rpg_state>)/i,
+      (m, open, close) => `${open}\n${prev.inner}\n${close}`);
+  }
   if (after === before) return;
 
   setMessageText(msg, after);
   turnUndo = { key: currentChatKey(ctx), idx: last.idx, before, after };
   afterTurnEdit(ctx, last.idx);
-  if (window.toastr) window.toastr.info("Latest turn undone.");
+  if (window.toastr) window.toastr.info(keep.length ? `Latest turn undone, keeping ${keep.length} locked change${keep.length === 1 ? "" : "s"}.` : "Latest turn undone.");
 }
 
 // Revert one change from the newest turn: reparse that turn's block, put the
@@ -5740,6 +6994,689 @@ function saoRedoLastTurn() {
 // Quests orb, drawn with classic's inline styles for its dark panel. Its tab
 // body drops scrollbar-gutter:stable: with it, Chromium left the good/bad
 // bullets unpainted, and a log that almost always scrolls gains nothing from it.
+
+// =====================================================================
+// CLASSIC: list icons + editors
+// Same editors as the SAO Status orb (so saving, history rewriting, position
+// locks and reordering all behave the same), drawn in classic's dark style.
+// The SAO editors' markup is reused inside .rpg-c-ed, which gives it a dark
+// look; everything outside .rpg-c-ed is untouched.
+// =====================================================================
+const CLASSIC_ED_CSS = `<style>
+.rpg-c-ed{--rpg-sao-ink:#e6e6e6; --rpg-sao-ink-dim:#9a9a9a; --rpg-sao-chip:#262626; --rpg-sao-rule:#555;
+  font-size:1.05em; color:#e6e6e6}
+.rpg-c-ed .rpg-sao-ico{flex:0 0 auto; display:grid; place-items:center; width:24px; height:24px; padding:0;
+  border-radius:3px; border:1px solid #5a5a5a; background:#262626; color:#ddd}
+.rpg-c-ed button.rpg-sao-ico{cursor:pointer; -webkit-tap-highlight-color:transparent}
+.rpg-c-ed button.rpg-sao-ico:hover{border-color:#C0A040; color:#ffd54f}
+.rpg-c-ed .rpg-sao-ico svg{width:15px; height:15px; display:block; fill:none; stroke:currentColor; stroke-width:1.7;
+  stroke-linecap:round; stroke-linejoin:round}
+.rpg-c-li{display:flex; gap:7px; align-items:center; padding:4px 0; border-bottom:1px solid #333}
+.rpg-c-li-body{flex:1; min-width:0; overflow-wrap:anywhere}
+.rpg-c-poslock{flex:0 0 auto; color:#ffc107; display:grid}
+.rpg-c-ed .rpg-sao-mini{padding:2px 8px; font:inherit; font-size:.9em; font-weight:bold; cursor:pointer;
+  background:#333; color:#ddd; border:1px solid #666; border-radius:2px}
+.rpg-c-ed .rpg-sao-mini.primary{background:#2e7d32; border-color:#4caf50; color:#fff}
+.rpg-c-ed .rpg-sao-medit-actions{display:flex; gap:6px; justify-content:flex-end; margin-top:6px}
+.rpg-c-ed .rpg-sao-hint{font-size:.85em; color:#999; margin:4px 0}
+.rpg-c-ed .rpg-sao-empty{opacity:.6; font-style:italic; margin:2px 0}
+.rpg-c-ed .rpg-sao-ledit{display:flex; gap:6px; align-items:flex-start; margin-bottom:6px}
+.rpg-c-ed .rpg-sao-ledit > .rpg-sao-ico{align-self:center}
+.rpg-sao-ledit > .rpg-sao-ico{align-self:center}
+.rpg-c-ed .rpg-sao-ledit-text{flex:1; min-width:0; box-sizing:border-box; resize:vertical; font:inherit; line-height:1.35;
+  padding:3px 5px; color:#eee; background:#1b1b1b; border:1px solid #555; border-radius:2px}
+.rpg-c-ed .rpg-sao-ledit-side{flex:0 0 auto; display:flex; flex-direction:column; gap:4px}
+.rpg-c-ed .rpg-sao-ledit-del, .rpg-c-ed .rpg-sao-ms-del, .rpg-c-ed .rpg-sao-ledit-lock{width:22px; height:22px; padding:0;
+  cursor:pointer; display:grid; place-items:center; font-size:12px; border-radius:2px;
+  background:#262626; border:1px solid #555; color:#bbb}
+.rpg-c-ed .rpg-sao-ledit-del:hover, .rpg-c-ed .rpg-sao-ms-del:hover{color:#ef5350; border-color:#ef5350}
+.rpg-c-ed .rpg-sao-ledit-lock.on{color:#ffc107; border-color:#ffc107; background:rgba(255,193,7,.15)}
+.rpg-c-ed .rpg-sao-reorder{flex:0 0 auto; display:flex; flex-direction:column; gap:2px}
+.rpg-c-ed .rpg-sao-mv{width:18px; height:13px; padding:0; cursor:pointer; font-size:8px; line-height:1; border-radius:2px;
+  color:#ddd; background:#262626; border:1px solid #555}
+.rpg-c-ed .rpg-sao-mv:disabled{opacity:.3; cursor:default}
+@media (pointer:coarse){ .rpg-c-ed .rpg-sao-mv{width:22px; height:18px; font-size:9px} }
+.rpg-c-ed .rpg-sao-subhead{display:none}
+.rpg-c-ed .rpg-sao-mast-edit{display:grid; align-items:center; gap:4px; margin-bottom:5px;
+  grid-template-columns:auto minmax(0,1fr) 44px 8px 44px 22px}
+.rpg-c-ed .rpg-sao-mast-edit input[type=text]{min-width:0; width:100%; box-sizing:border-box; font:inherit;
+  padding:2px 4px; color:#eee; background:#1b1b1b; border:1px solid #555; border-radius:2px}
+.rpg-c-ed .rpg-sao-m-slash{text-align:center; color:#888}
+</style>`;
+
+const LIST_TAB_KEYS = { inventory: "inventory", skills: "skills", passives: "passives" };
+
+function classicIconList(listKey, items, emptyText) {
+  if (saoListEdit && saoListEdit.key === listKey) return `<div class="rpg-c-ed">${saoListEditorHtml(listKey)}</div>`;
+  if (!items.length) {
+    return `<div class="rpg-c-ed"><div style="opacity:0.5; font-style:italic;">${escHtml(emptyText)}
+      <button class="rpg-sao-mini rpg-sao-ico" data-list="${listKey}" style="display:inline-grid; width:auto; height:auto; padding:1px 7px; border-radius:2px; margin-left:4px;">+ Add</button></div></div>`;
+  }
+  const who = activeListOwner();
+  const lockedSet = new Set(who === undefined ? [] : lockedIndices(items.map(String), posLocksFor(ownerIdOf(who), listKey)).map((l) => l.i));
+  return `<div class="rpg-c-ed">` + items.map((it, i) => {
+    const text = String(it);
+    const p = text.match(/:\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
+    const bar = p ? `<div style="width:100%; background:#444; height:4px; margin-top:3px; border-radius:2px; overflow:hidden;"><div style="height:100%; background:#7e57c2; width:${clamp(parseFloat(p[2]) > 0 ? (parseFloat(p[1]) / parseFloat(p[2])) * 100 : 0, 0, 100)}%"></div></div>` : "";
+    return `<div class="rpg-c-li">${listIconHtml(listKey, text, true)}<div class="rpg-c-li-body">${escHtml(text)}${bar}</div>${
+      lockedSet.has(i) ? `<span class="rpg-c-poslock" title="Locked to this position">${LOCK_ICON.on}</span>` : ""}</div>`;
+  }).join("") + `</div>`;
+}
+
+function classicMasteryHtml(items) {
+  const editBtn = (id, label, color) => `<button id="${id}" style="background:#333; border:1px solid ${color}; color:${color};
+      cursor:pointer; font-size:0.9em; padding:1px 7px; font-weight:bold;">${label}</button>`;
+  if (Array.isArray(saoMasteryEdit)) {
+    return `<div class="rpg-c-ed">${saoMasteriesSection(items)}</div>`;
+  }
+  return `<div style="display:flex; justify-content:flex-end; margin-bottom:3px;">${editBtn("rpg-sao-ms-edit", "✎", "#4FC3F7")}</div>` +
+    makeList(items, "No Mastery Tracking");
+}
+
+function classicQuestHtml() {
+  if (saoListEdit && saoListEdit.key === "quests") return `<div class="rpg-c-ed">${saoListEditorHtml("quests")}</div>`;
+  return `<div style="display:flex; justify-content:flex-end; margin-bottom:3px;">
+      <button class="rpg-quest-edit" style="background:#333; border:1px solid #4FC3F7; color:#4FC3F7; cursor:pointer; font-size:0.9em; padding:1px 7px; font-weight:bold;">\u270E</button></div>` +
+    makeList(rpgState.quests, "No Active Quests");
+}
+
+// the classic tab body grows while an editor is open, so rows aren't cramped
+function classicEditorOpen() {
+  return !!(saoListEdit && (LIST_TAB_KEYS[activeTab] === saoListEdit.key || (activeTab === "quests" && saoListEdit.key === "quests")))
+    || (activeTab === "mastery" && Array.isArray(saoMasteryEdit));
+}
+
+function classicBindEditors() {
+  saoBindListEditor();
+  saoBindMasteryEditor();
+  document.querySelectorAll(".rpg-c-ed .rpg-sao-mv").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const rows = reorderRows(el.dataset.kind);
+      const i = +el.dataset.i, j = i + (+el.dataset.d);
+      if (!rows || j < 0 || j >= rows.length) return;
+      [rows[i], rows[j]] = [rows[j], rows[i]];
+      renderRPG();
+    };
+  });
+}
+
+
+// =====================================================================
+// SYSTEM SKIN
+// The classic panel, restyled as a glowing status window. It shares every
+// tab, editor and overlay with classic; only the top of the panel (title,
+// big slot, info lines, bars and stats) is its own. It also has the optional
+// "You have acquired..." notifications, raised from the same once-per-reply
+// pass that drives Change Alerts.
+// =====================================================================
+
+const SYS_CSS = `
+.rpg-sys{--sc:#8fd0ff; --sg:rgba(90,180,255,.55); --st:rgba(50,120,210,.22);
+  --sys-bg:repeating-linear-gradient(115deg, rgba(140,200,255,.045) 0 1px, transparent 1px 13px),
+    radial-gradient(120% 60% at 20% 0%, var(--st), transparent 60%),
+    radial-gradient(100% 50% at 90% 100%, rgba(40,90,180,.16), transparent 60%), rgba(4,9,18,.94);
+  --sys-shadow:0 0 0 1px rgba(0,0,0,.55), 0 0 16px var(--sg), inset 0 0 0 3px rgba(4,9,18,.85),
+    inset 0 0 0 4px rgba(143,208,255,.28), inset 0 0 26px rgba(60,140,230,.14)}
+.rpg-sys-enemy{--sc:#ff8080; --sg:rgba(255,80,80,.5); --st:rgba(200,50,60,.24)}
+.rpg-sys-veh{--sc:#d6a2ff; --sg:rgba(190,120,255,.5); --st:rgba(140,70,210,.22)}
+.rpg-sys::before,.rpg-sys::after{content:""; position:absolute; width:14px; height:14px; pointer-events:none;
+  border:0 solid var(--sc); filter:drop-shadow(0 0 3px var(--sg)); z-index:1}
+.rpg-sys::before{top:5px; left:5px; border-top-width:2px; border-left-width:2px}
+.rpg-sys::after{bottom:5px; right:5px; border-bottom-width:2px; border-right-width:2px}
+.rpg-sys .sys-svg{fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round}
+
+.rpg-sys .sys-head{position:relative; display:flex; justify-content:center; align-items:center; min-height:30px; margin:2px 0 8px}
+.rpg-sys .sys-kind{position:absolute; left:4px; top:50%; transform:translateY(-50%); font-size:.62em; letter-spacing:.16em;
+  color:var(--sc); opacity:.9; text-shadow:0 0 6px var(--sg)}
+.rpg-sys .sys-ctl{position:absolute; right:0; top:50%; transform:translateY(-50%); display:flex; align-items:center; gap:6px}
+.rpg-sys .sys-plate{border:1px solid var(--sc); padding:3px 18px 2px calc(18px + .22em); font-size:1.2em; font-weight:600;
+  letter-spacing:.22em; color:#f2faff; text-shadow:0 0 8px var(--sg),0 0 2px #fff; background:rgba(12,30,56,.55);
+  box-shadow:0 0 10px var(--sg), inset 0 0 10px rgba(90,170,255,.18)}
+.rpg-sys #rpg-min-btn{width:28px !important; height:20px !important; background:rgba(10,26,48,.9) !important;
+  border:1px solid rgba(143,208,255,.6) !important; color:#dff1ff !important}
+
+.rpg-sys .sys-hero{margin:2px 0 8px}
+.rpg-sys .sys-hero.name{text-align:center}
+.rpg-sys .sys-big{font-size:1.9em; font-weight:700; line-height:1.1; color:#f4fbff; letter-spacing:.02em;
+  text-shadow:0 0 10px var(--sg), 0 0 2px rgba(255,255,255,.8); overflow-wrap:anywhere}
+.rpg-sys .sys-big.m{font-size:1.6em} .rpg-sys .sys-big.s{font-size:1.3em}
+.rpg-sys .sys-rule{height:1px; margin:6px 8%; background:linear-gradient(90deg,transparent,var(--sc),transparent); opacity:.6}
+.rpg-sys .sys-info{display:grid; grid-template-columns:auto minmax(0,1fr); gap:1px 8px; font-size:.8em; text-align:left; align-items:baseline}
+.rpg-sys .sys-info .k{color:#8fb6d8; letter-spacing:.08em; font-size:.82em; white-space:nowrap}
+.rpg-sys .sys-info .v{color:#eaf6ff; font-weight:600; overflow-wrap:anywhere; min-width:0}
+.rpg-sys .sys-info .v.bad{color:#ff9a9a; text-shadow:0 0 6px rgba(255,80,80,.5)}
+.rpg-sys .sys-info .v.ok{color:#a6ecd0}
+.rpg-sys .sys-hero.clock{display:flex; align-items:center; gap:12px}
+.rpg-sys .sys-clock{flex:0 0 auto; width:64px; height:64px; color:var(--sc); filter:drop-shadow(0 0 4px var(--sg))}
+.rpg-sys .sys-clock svg{display:block; width:100%; height:100%}
+.rpg-sys .sys-hero.clock .sys-info{flex:1; min-width:0}
+.rpg-sys .sys-pick{position:relative; display:inline-block; max-width:100%; cursor:pointer}
+.rpg-sys .sys-pick select{position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; font-size:16px;
+  -webkit-appearance:none; appearance:none; border:0; margin:0}
+.rpg-sys .sys-caret{font-size:.5em; opacity:.7; margin-left:.35em; vertical-align:middle; text-shadow:none}
+
+.rpg-sys .sys-panels{display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:8px; margin-bottom:8px}
+.rpg-sys .sys-box{border:1px solid rgba(143,208,255,.42); padding:7px 10px; background:rgba(8,20,38,.45);
+  box-shadow:inset 0 0 12px rgba(60,140,230,.10); min-width:0}
+.rpg-sys .sys-bar + .sys-bar{margin-top:6px}
+.rpg-sys .sys-bar-lab{display:flex; align-items:center; gap:5px; font-size:.72em; letter-spacing:.08em; color:#a9cbe8}
+.rpg-sys .sys-bar-lab .sys-svg{width:12px; height:12px; color:#e6f5ff; flex:0 0 auto}
+.rpg-sys .sys-bar-num{margin-left:auto; color:#dff1ff; letter-spacing:0; font-size:1.05em; white-space:nowrap}
+.rpg-sys .sys-cap{height:8px; margin-top:3px; border:1px solid rgba(190,230,255,.75); border-radius:6px; padding:1px;
+  box-sizing:border-box; box-shadow:0 0 6px var(--sg), inset 0 0 4px rgba(90,170,255,.3)}
+.rpg-sys .sys-cap i{display:block; height:100%; border-radius:4px; background:linear-gradient(90deg,#a9dcff,#f4fbff);
+  box-shadow:0 0 6px rgba(190,230,255,.9)}
+.rpg-sys .sys-cap.low i{background:linear-gradient(90deg,#ff6b6b,#ffb3b3); box-shadow:0 0 6px rgba(255,90,90,.9)}
+.rpg-sys .sys-cap.tint i{background:var(--mc); box-shadow:0 0 6px var(--mc)}
+.rpg-sys .sys-stats{display:grid; grid-template-columns:1fr 1fr; gap:6px 12px; align-content:center}
+.rpg-sys .sys-stat{display:flex; align-items:center; gap:5px; font-size:.78em; color:#a9cbe8; letter-spacing:.06em; min-width:0}
+.rpg-sys .sys-stat .sys-svg{width:14px; height:14px; color:#e6f5ff; filter:drop-shadow(0 0 3px var(--sg)); flex:0 0 auto}
+.rpg-sys .sys-stat b{margin-left:auto; font-size:1.3em; color:#f4fbff; text-shadow:0 0 8px var(--sg); letter-spacing:0; font-weight:600;
+  white-space:nowrap}
+
+.rpg-sys .rpg-c-btns button{background:rgba(10,26,48,.9) !important; border:1px solid rgba(143,208,255,.55) !important;
+  color:#dff1ff !important; box-shadow:0 0 6px rgba(90,170,255,.2)}
+.rpg-sys #rpg-settings-overlay,.rpg-sys #rpg-info-overlay{background:#04090f !important; border-color:var(--sc) !important}
+.rpg-sys .rpg-c-li{border-bottom-color:rgba(143,208,255,.15)}
+.rpg-sys .rpg-c-ed .rpg-sao-ico{border-color:rgba(143,208,255,.45); background:rgba(10,26,48,.85); color:#dff1ff;
+  box-shadow:0 0 5px rgba(90,170,255,.18)}
+.rpg-sys .rpg-c-ed button.rpg-sao-ico:hover{border-color:var(--sc); color:#fff}
+.rpg-sys .rpg-c-ed .rpg-sao-mini{background:rgba(10,26,48,.9); border-color:rgba(143,208,255,.5); color:#dff1ff}
+.rpg-sys .rpg-c-ed .rpg-sao-ledit-text,.rpg-sys .rpg-c-ed .rpg-sao-mast-edit input[type=text]{background:rgba(6,16,30,.9);
+  border-color:rgba(143,208,255,.35); color:#eaf6ff}
+.rpg-sys .rpg-c-ed .rpg-sao-ledit-del,.rpg-sys .rpg-c-ed .rpg-sao-ms-del,.rpg-sys .rpg-c-ed .rpg-sao-ledit-lock,
+.rpg-sys .rpg-c-ed .rpg-sao-mv{background:rgba(10,26,48,.9); border-color:rgba(143,208,255,.4); color:#cfe6f8}
+
+#rpg-sys-notices{position:fixed; top:calc(env(safe-area-inset-top, 0px) + 14px); left:50%; transform:translateX(-50%);
+  z-index:100003; display:flex; flex-direction:column; gap:8px; width:min(330px, calc(100vw - 24px)); pointer-events:none;
+  font-size:15px}
+.rpg-sys-note{--sc:#8fd0ff; --sg:rgba(90,180,255,.55); pointer-events:auto; position:relative; cursor:pointer;
+  padding:10px 14px 12px; text-align:center; color:#e4f3ff; border:1px solid var(--sc);
+  background:repeating-linear-gradient(115deg, rgba(140,200,255,.05) 0 1px, transparent 1px 13px),
+    radial-gradient(120% 70% at 50% 0%, rgba(50,120,210,.28), transparent 65%), rgba(4,9,18,.95);
+  box-shadow:0 0 0 1px rgba(0,0,0,.5), 0 0 18px var(--sg), inset 0 0 0 3px rgba(4,9,18,.85), inset 0 0 0 4px rgba(143,208,255,.28);
+  transform-origin:50% 50%; animation:rpgSysIn .38s ease-out}
+.rpg-sys-note.warn{--sc:#ff8080; --sg:rgba(255,80,80,.5)}
+.rpg-sys-note .plate{display:inline-block; border:1px solid var(--sc); padding:2px 14px 1px calc(14px + .2em); margin-bottom:7px;
+  font-size:.78em; font-weight:600; letter-spacing:.2em; color:#f2faff; text-shadow:0 0 6px var(--sg); box-shadow:0 0 8px var(--sg)}
+.rpg-sys-note .msg{font-size:.92em; line-height:1.4; overflow-wrap:anywhere}
+.rpg-sys-note .msg b{color:#cfeaff; text-shadow:0 0 6px var(--sg); font-weight:600}
+.rpg-sys-note.out{animation:rpgSysOut .3s ease-in forwards}
+@keyframes rpgSysIn{0%{opacity:0; transform:scale(.6,.05)} 55%{opacity:1; transform:scale(1.02,1.04)} 100%{transform:none}}
+@keyframes rpgSysOut{to{opacity:0; transform:scale(.9,.05)}}
+@media (prefers-reduced-motion: reduce){ .rpg-sys-note,.rpg-sys-note.out{animation-duration:.01s} }
+`;
+
+function sysEnsureCss() {
+  let el = document.getElementById("rpg-sys-css");
+  if (el && el.textContent === SYS_CSS) return;
+  if (!el) {
+    el = document.createElement("style");
+    el.id = "rpg-sys-css";
+    document.head.appendChild(el);
+  }
+  el.textContent = SYS_CSS;
+}
+
+function sysFontStack() {
+  const k = uiSettings.sysFont || "exo";
+  if (k === "preset") return uiSettings.fontFamily || SAO_FONTS.sans;
+  return SAO_FONTS[k] || SAO_FONTS.exo;
+}
+
+function sysEnsureWebFont() {
+  const family = SAO_WEBFONTS[uiSettings.sysFont || "exo"];
+  if (!family) return;
+  const href = `https://fonts.googleapis.com/css2?family=${family}&display=swap`;
+  let link = document.getElementById("rpg-sys-webfont");
+  if (link && link.getAttribute("href") === href) return;
+  if (!link) {
+    link = document.createElement("link");
+    link.id = "rpg-sys-webfont";
+    link.rel = "stylesheet";
+    document.head.appendChild(link);
+  }
+  link.href = href;
+}
+
+const SYS_ICON_PATHS = {
+  hp: '<path d="M8 3v10M3 8h10" stroke-width="2.4"/>',
+  mp: '<path d="M8 2.5c2.6 3.2 4 5.3 4 7.1a4 4 0 0 1-8 0c0-1.8 1.4-3.9 4-7.1z"/>',
+  bond: '<path d="M8 13.2S2.5 9.8 2.5 6.2A2.9 2.9 0 0 1 8 4.9a2.9 2.9 0 0 1 5.5 1.3c0 3.6-5.5 7-5.5 7z"/>',
+  meter: '<path d="M2.8 11.5a5.5 5.5 0 1 1 10.4 0"/><path d="M8 10l2.8-2.8"/>',
+  atk: '<path d="M13.2 2.8L6.6 9.4M4.6 7.9l3.5 3.5M5.8 10.2L2.8 13.2M13.2 2.8l-2.6.4M13.2 2.8l-.4 2.6"/>',
+  matk: '<path d="M2.8 13.2L9.6 6.4"/><path d="M12 1.8v4.4M9.8 4h4.4"/>',
+  def: '<path d="M8 2l5 2v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V4z"/>',
+  satk: '<path d="M8 14c-2.6 0-4.3-1.8-4.3-4.1 0-2.6 2.3-3.7 2.6-6.4 1.6 1 2.6 2.4 2.6 4 .7-.4 1.2-1.2 1.3-2 1.4 1.2 2.1 2.7 2.1 4.4C12.3 12.2 10.6 14 8 14z"/>',
+  sdef: '<path d="M8 2l5 2v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V4z"/><path d="M8 5.6v4.8M5.6 8h4.8"/>',
+  coin: '<circle cx="8" cy="8" r="5.6"/><circle cx="8" cy="8" r="2.8"/>',
+};
+const sysIcon = (k) => `<svg class="sys-svg" viewBox="0 0 16 16" aria-hidden="true">${SYS_ICON_PATHS[k] || ""}</svg>`;
+
+// An analog face for the in-world time. "14:30", "2:30 PM", "02.30pm" all read.
+function sysClockSvg(clock) {
+  const m = String(clock || "").match(/(\d{1,2})\s*[:.h]\s*(\d{2})(?:\s*([ap])\.?\s*m\.?)?/i);
+  let h = 0, mi = 0;
+  const ok = !!m;
+  if (m) {
+    h = +m[1]; mi = Math.min(59, +m[2]);
+    if (m[3]) { const pm = /p/i.test(m[3]); if (h === 12) h = 0; if (pm) h += 12; }
+  }
+  const ha = ((h % 12) + mi / 60) * 30, ma = mi * 6;
+  let ticks = "";
+  for (let i = 0; i < 12; i++) {
+    const major = i % 3 === 0;
+    ticks += `<line x1="50" y1="${major ? 9 : 11}" x2="50" y2="${major ? 17 : 15}" stroke="currentColor" stroke-width="${major ? 3 : 1.6}"
+      stroke-linecap="round" transform="rotate(${i * 30} 50 50)"/>`;
+  }
+  const hand = "#f4fbff";
+  return `<svg viewBox="0 0 100 100" aria-label="${escAttr(ok ? `Time ${clock}` : "Time unknown")}" role="img">
+    <circle cx="50" cy="50" r="47" fill="rgba(8,20,38,.6)" stroke="currentColor" stroke-width="2"/>
+    <circle cx="50" cy="50" r="41" fill="none" stroke="currentColor" stroke-opacity=".35" stroke-width="1"/>
+    ${ticks}
+    <text x="50" y="74" text-anchor="middle" font-size="11" letter-spacing="1" fill="#a9cbe8" style="font-family:inherit">${ok ? (h >= 12 ? "PM" : "AM") : "?"}</text>
+    ${ok ? `<line x1="50" y1="53" x2="50" y2="28" stroke="${hand}" stroke-width="4.5" stroke-linecap="round" transform="rotate(${ha.toFixed(1)} 50 50)"/>
+    <line x1="50" y1="56" x2="50" y2="16" stroke="${hand}" stroke-width="2.6" stroke-linecap="round" transform="rotate(${ma} 50 50)"/>` : ""}
+    <circle cx="50" cy="50" r="3.6" fill="${hand}"/>
+  </svg>`;
+}
+
+function sysBar(icon, label, curr, max, extra = {}) {
+  const maxNum = safeParseFloatOrInf(max, 0);
+  if (extra.skipEmpty && Number.isFinite(maxNum) && maxNum <= 0) return "";
+  const pct = extra.pct ?? percentFrom(curr, max);
+  const cls = extra.tint ? "tint" : (extra.lowWarn && pct <= 25 ? "low" : "");
+  return `<div class="sys-bar">
+      <div class="sys-bar-lab">${sysIcon(icon)}<span>${escHtml(label)}</span>
+        <span class="sys-bar-num">${extra.numHtml ?? `${renderInlineValue(curr)} / ${renderInlineValue(max)}`}</span></div>
+      <div class="sys-cap ${cls}"${extra.tint ? ` style="--mc:${escAttr(extra.tint)}"` : ""}><i style="width:${pct}%"></i></div>
+    </div>`;
+}
+
+function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLabel, coin, time }) {
+  const kind = isVehicle ? "VEHICLE" : ({ player: "PLAYER", party: "PARTY", npc: "NPC", enemy: "ENEMY" }[type] || "");
+  const name = isVehicle ? displayName(display.name, "Vehicle")
+    : type === "player" ? playerDisplayName() : displayName(display.name, "Unit");
+  const pick = (inner) => `<span class="sys-pick">${inner}<span class="sys-caret">▾</span>` +
+    `<select id="rpg-char-select" title="Switch character">${getCharOptions()}</select></span>`;
+  const clockMode = uiSettings.sysBigSlot === "clock";
+
+  const wd = worldWeekday(time);
+  const dateText = `${wd ? wd + ", " : ""}${time.month ?? "???"} ${time.day ?? ""}${time.year ? ", " + time.year : ""}`;
+  const effects = (Array.isArray(display.status_effects) ? display.status_effects : [])
+    .map((x) => String(x).trim()).filter((x) => x && !BLK_NO_STATUS.test(x));
+  const rows = [];
+  if (clockMode) rows.push(["NAME", pick(escHtml(name)), ""]);
+  rows.push(["LOCATION", escHtml(rpgState.location || "Unknown"), ""]);
+  rows.push(["TIME", `${escHtml(dateText)} · ${escHtml(time.clock ?? "??:??")}`, ""]);
+  if (time.weather && !/^unknown$/i.test(String(time.weather))) rows.push(["WEATHER", escHtml(time.weather), ""]);
+  if (rpgState?.combat?.active) rows.push(["COMBAT", `Round ${escHtml(rpgState.combat.round ?? 1)}`, "bad"]);
+  rows.push(["CONDITION", effects.length ? effects.map(escHtml).join(", ") : "Healthy", effects.length ? "bad" : "ok"]);
+  const info = `<div class="sys-info">${rows.map(([k, v, c]) => `<span class="k">${k}:</span><span class="v ${c}">${v}</span>`).join("")}</div>`;
+
+  const size = name.length > 18 ? " s" : name.length > 11 ? " m" : "";
+  const hero = clockMode
+    ? `<div class="sys-hero clock"><div class="sys-clock">${sysClockSvg(time.clock)}</div>${info}</div>`
+    : `<div class="sys-hero name"><div class="sys-big${size}">${pick(escHtml(name))}</div><div class="sys-rule"></div>${info}</div>`;
+
+  // bars: HP, MP/EN, bond for party and NPCs, then any meters
+  const { curr: eCurr, max: eMax, label: eLabel } = getEnergy(display, isVehicle);
+  let bars = sysBar("hp", hpLabel, display.hp_curr, display.hp_max, { lowWarn: true })
+    + sysBar("mp", eLabel, eCurr, eMax, { skipEmpty: true });
+  if ((type === "party" || type === "npc") && !isVehicle) {
+    const bond = clamp(parseBondValue(root.bond), Number.NEGATIVE_INFINITY, 101);
+    bars += sysBar("bond", "BOND", 0, 0, {
+      pct: bond >= 101 ? 100 : clamp(Math.abs(bond), 0, 100),
+      numHtml: `${bond >= 101 ? "∞" : escHtml(bond)} / 100`,
+      tint: bond < 0 ? "#ff6b6b" : "#f48fb1",
+    });
+  }
+  (Array.isArray(display.meters) ? display.meters : []).forEach((mt) => {
+    if (!mt || typeof mt !== "object") return;
+    const nm = mt.name ?? mt.label ?? "Meter";
+    bars += sysBar("meter", String(nm).toUpperCase(), mt.curr ?? mt.value ?? 0, mt.max ?? 100,
+      { skipEmpty: true, tint: meterColorByName(nm) });
+  });
+
+  const stat = (icon, label, raw) => {
+    const has = raw !== undefined && raw !== null && String(raw).trim() !== "";
+    return `<div class="sys-stat">${sysIcon(icon)}<span>${label}</span><b>${has ? renderInlineValue(raw) : "—"}</b></div>`;
+  };
+  const st = display.stats || {};
+  const hasStats = ["atk", "def", "matk", "sdef", "satk"].some((k) => st[k] !== undefined && st[k] !== null && String(st[k]).trim() !== "");
+  const stats = !hasStats && !toNumberOr(coin, 0) ? "" : stat("atk", "ATK", st.atk) + stat("def", "DEF", st.def)
+    + stat("matk", "MATK", st.matk) + stat("sdef", "SDEF", st.sdef)
+    + stat("satk", "SATK", st.satk) + stat("coin", "COIN", coin);
+
+  return `
+    <div class="sys-head">
+      <span class="sys-kind">${kind}</span>
+      <div class="sys-plate">STATUS</div>
+      <div class="sys-ctl">
+        <span id="rpg-latest-indicator" style="cursor:pointer; user-select:none;">${renderIndicatorDotHtml(latest.status, latestTitle)}</span>
+        <button id="rpg-min-btn" title="Minimize" style="cursor:pointer; font-size:12px; padding:0; font-weight:bold; line-height:18px; box-sizing:border-box;">_</button>
+      </div>
+    </div>
+    ${hero}
+    <div class="sys-panels">
+      <div class="sys-box">${bars}</div>
+      ${stats ? `<div class="sys-box sys-stats">${stats}</div>` : ""}
+    </div>`;
+}
+
+// ---- settings (inside the classic settings overlay, when this skin is on) ----
+function sysSettingsHtml() {
+  const sel = "width:100%; background:#0d1a2c; border:1px solid #3d6a94; color:#dff1ff; padding:6px; margin-bottom:8px;";
+  const lab = "font-size:0.75em; color:#9fc6e6; margin-bottom:4px;";
+  const opt = (v, t, cur) => `<option value="${v}"${cur === v ? " selected" : ""}>${t}</option>`;
+  const big = uiSettings.sysBigSlot === "clock" ? "clock" : "name";
+  const font = uiSettings.sysFont || "exo";
+  return `
+    <div style="margin:0 0 10px; padding:8px; border:1px solid rgba(143,208,255,0.35); background:rgba(90,170,255,0.06);">
+      <div style="${lab}">Big slot</div>
+      <select id="rpg-sys-bigslot" style="${sel}">${opt("name", "Name", big)}${opt("clock", "Clock (in-world time)", big)}</select>
+      <div style="${lab}">Font</div>
+      <select id="rpg-sys-font" style="${sel}">${opt("exo", "Exo 2", font)}${opt("squarish", "Squarish (Rajdhani)", font)}${opt("saira", "Saira Condensed", font)}${opt("teko", "Teko", font)}${opt("sans", "Sans", font)}${opt("preset", "Follow preset", font)}</select>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+        <span title="A System popup when a reply gives you items, skills or passives, adds quests, timers or party members, or starts a fight">Notifications</span>
+        <input type="checkbox" id="rpg-sys-notices-cb" ${uiSettings.sysNotices !== false ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
+      </div>
+      <button id="rpg-sys-testnote" style="width:100%; background:#0d1a2c; border:1px solid #3d6a94; color:#dff1ff; padding:6px; cursor:pointer;">Show a test notification</button>
+    </div>`;
+}
+
+function sysBindSettings() {
+  const stop = (el) => { if (el) el.onclick = (e) => e.stopPropagation(); };
+  const big = document.getElementById("rpg-sys-bigslot");
+  if (big) { stop(big); big.onchange = () => { uiSettings.sysBigSlot = big.value; saveUiSettings(); renderRPG(); }; }
+  const font = document.getElementById("rpg-sys-font");
+  if (font) { stop(font); font.onchange = () => { uiSettings.sysFont = font.value; saveUiSettings(); renderRPG(); }; }
+  const nt = document.getElementById("rpg-sys-notices-cb");
+  if (nt) { stop(nt); nt.onchange = () => { uiSettings.sysNotices = nt.checked; saveUiSettings(); }; }
+  const test = document.getElementById("rpg-sys-testnote");
+  if (test) test.onclick = (e) => {
+    e.stopPropagation();
+    sysShowNotices([
+      { plate: "NOTIFICATION", html: "You have acquired <b>[Health Potion]</b>." },
+      { plate: "NOTIFICATION", html: "You have learned the skill <b>[Shadow Step]</b>." },
+      { plate: "QUEST INFO", html: "A new quest has been registered:<br><b>Find the missing scout</b>" },
+    ]);
+  };
+}
+
+// ---- notifications ----
+// What a reply changed, phrased the way a System window would put it. Player
+// lists only (a party member's new item isn't yours), plus the party, foes,
+// quests, timers, coin and combat.
+function sysNoticesFor(a, b) {
+  const out = [];
+  const nm = (t) => `<b>[${escHtml(tItemName(t))}]</b>`;
+  const join = (arr) => arr.length === 1 ? arr[0]
+    : arr.length === 2 ? `${arr[0]} and ${arr[1]}`
+    : `${arr.slice(0, 2).join(", ")} and ${arr.length - 2} more`;
+  const trunc = (t, n = 90) => { t = String(t).trim(); return t.length > n ? t.slice(0, n - 1).trimEnd() + "…" : t; };
+  const keyOf = (u) => normBondName(u?.name);
+
+  {
+    const had = new Set((a.enemies || []).map(keyOf));
+    const fresh = (b.enemies || []).filter((u) => !had.has(keyOf(u))).map((u) => `<b>${escHtml(displayName(u.name, "?"))}</b>`);
+    const parts = [];
+    if (!a.combat?.active && b.combat?.active) parts.push("Combat has begun.");
+    if (fresh.length) parts.push(fresh.length === 1 ? `Hostile detected: ${fresh[0]}.` : `${fresh.length} hostiles detected: ${join(fresh)}.`);
+    if (parts.length) out.push({ plate: "WARNING", warn: true, html: parts.join("<br>") });
+  }
+
+  const added = (key) => {
+    const A = tListMap(a[key]), B = tListMap(b[key]);
+    const list = [];
+    B.forEach((text, k) => { if (!A.has(k)) list.push(nm(text)); });
+    return list;
+  };
+  const items = added("inventory");
+  if (items.length) out.push({ plate: "NOTIFICATION", html: `You have acquired ${join(items)}.` });
+  const skills = added("skills");
+  if (skills.length) out.push({ plate: "NOTIFICATION",
+    html: skills.length === 1 ? `You have learned the skill ${skills[0]}.` : `You have learned new skills: ${join(skills)}.` });
+  const passives = added("passives");
+  if (passives.length) out.push({ plate: "NOTIFICATION",
+    html: passives.length === 1 ? `You have gained the passive ${passives[0]}.` : `You have gained new passives: ${join(passives)}.` });
+  const masteries = added("masteries");
+  if (masteries.length) out.push({ plate: "NOTIFICATION", html: `New mastery: ${join(masteries)}.` });
+
+  const c0 = tNum(a.dankcoin), c1 = tNum(b.dankcoin);
+  if (c0 !== null && c1 !== null && c1 > c0) out.push({ plate: "NOTIFICATION", html: `You have obtained <b>${escHtml(c1 - c0)}</b> coin.` });
+
+  {
+    const real = (list) => (list || []).map((x) => String(x).trim()).filter((x) => x && !BLK_NO_STATUS.test(x));
+    const had = new Set(real(a.status_effects));
+    const fresh = real(b.status_effects).filter((x) => !had.has(x)).map((x) => `<b>[${escHtml(x)}]</b>`);
+    if (fresh.length) out.push({ plate: "NOTIFICATION", html: `You are now affected by ${join(fresh)}.` });
+  }
+
+  {
+    const had = new Set((a.party || []).map(keyOf));
+    (b.party || []).filter((u) => !had.has(keyOf(u))).forEach((u) =>
+      out.push({ plate: "NOTIFICATION", html: `<b>${escHtml(displayName(u.name, "?"))}</b> has joined your party.` }));
+  }
+
+  {
+    const qa = new Set((a.quests || []).map((q) => String(q).trim()));
+    const qb = new Set((b.quests || []).map((q) => String(q).trim()));
+    qb.forEach((q) => { if (q && !qa.has(q)) out.push({ plate: "QUEST INFO", html: `A new quest has been registered:<br><b>${escHtml(trunc(q))}</b>` }); });
+    qa.forEach((q) => { if (q && !qb.has(q)) out.push({ plate: "QUEST INFO", html: `Quest closed:<br><b>${escHtml(trunc(q))}</b>` }); });
+  }
+  {
+    const had = new Set((a.timers || []).map(tTimerKey));
+    (b.timers || []).filter((t) => !had.has(tTimerKey(t))).forEach((t) =>
+      out.push({ plate: "QUEST INFO", html: `Timer started: <b>${escHtml(t.name || "Timer")}</b>${t.value ? ` (${escHtml(t.value)})` : ""}` }));
+  }
+  // the bigger news first, so it survives the cap
+  const rank = (n) => n.warn ? 0 : n.plate === "QUEST INFO" ? 2 : /coin\.$|affected by/.test(n.html) ? 3 : 1;
+  return out.map((n, i) => [n, i]).sort((x, y) => rank(x[0]) - rank(y[0]) || x[1] - y[1]).map((x) => x[0]);
+}
+
+// Each reply (each swipe of it) announces a thing once, however many times the
+// block is re-read or tidied afterwards.
+const sysNoticeSeen = new Map();   // reply key -> Set of messages shown
+function sysShowNotices(list, replyKey = "") {
+  if (replyKey) {
+    let seen = sysNoticeSeen.get(replyKey);
+    if (!seen) {
+      seen = new Set();
+      sysNoticeSeen.set(replyKey, seen);
+      if (sysNoticeSeen.size > 50) sysNoticeSeen.delete(sysNoticeSeen.keys().next().value);
+    }
+    list = list.filter((n) => !seen.has(n.html));
+    list.forEach((n) => seen.add(n.html));
+  }
+  if (!list.length) return;
+  sysEnsureCss();
+  sysEnsureWebFont();
+  let root = document.getElementById("rpg-sys-notices");
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "rpg-sys-notices";
+    document.body.appendChild(root);
+  }
+  root.style.fontFamily = sysFontStack();
+  const shown = list.slice(0, 5);
+  if (list.length > 5) {
+    const n = list.length - 5;
+    shown.push({ plate: "NOTIFICATION", html: `And ${n} more change${n === 1 ? "" : "s"}. See the Log tab.` });
+  }
+  shown.forEach((n, i) => {
+    setTimeout(() => {
+      const el = document.createElement("div");
+      el.className = "rpg-sys-note" + (n.warn ? " warn" : "");
+      el.innerHTML = `<div class="plate">${n.plate}</div><div class="msg">${n.html}</div>`;
+      const close = () => {
+        if (el.dataset.out) return;
+        el.dataset.out = "1";
+        el.classList.add("out");
+        setTimeout(() => el.remove(), 320);
+      };
+      el.onclick = (e) => { e.stopPropagation(); close(); };
+      root.appendChild(el);
+      while (root.children.length > 6) root.firstElementChild.remove();
+      setTimeout(close, 5200 + i * 400);
+    }, i * 260);
+  });
+}
+
+// =====================================================================
+// UPDATE LOG + CLASSIC HELP
+// The update log is shared by both skins. When the build changes, the log
+// button shows a dot until the log is opened once.
+// =====================================================================
+const CHANGELOG = [
+  { build: "2026-10-21.5", items: [
+    "New skin: System window. A glowing status panel with the same tabs and editors as classic. Pick it under Skin in settings (either skin).",
+    "System settings: Big slot shows your name or an analog clock of the in-world time; Font; and Notifications, which pop up a System window when a reply gives you items, skills, passives, coin or a status, adds quests, timers or party members, or brings in enemies.",
+  ] },
+  { build: "2026-10-21.4", items: [
+    "Fix: at Bar sizes that make a bar a fraction of a pixel tall (like 70%), bars were drawn slightly shrunk and centred, leaving a gap after the tile. They now fill their box exactly, in every bar style.",
+    "Party, NPC and enemy sections are dimmed again (build .3 had briefly undimmed them while chasing this).",
+  ] },
+
+  { build: "2026-10-21.2", items: [
+    "Settings: Layout report, which measures how this device draws the bar rows, for tracking down device-only layout bugs.",
+  ] },
+  { build: "2026-10-21.1", items: [
+    "Fix: on iPhone, ALfheim (New) bars sat detached from the tile. The tile and bars now share one row, so they can't drift apart.",
+    "Fix: on narrow phone screens your own HP/MP numbers were cut off; bars now shorten to fit.",
+  ] },
+  { build: "2026-10-13.1", items: [
+    "Timer editor: deadlines show as time left (1d 3h, 45m). Type a duration and it's saved as a deadline date for the AI. Untouched timers keep their exact date.",
+  ] },
+  { build: "2026-10-12.2", items: [
+    "Fix: timer deadlines with a weekday in front (Mon Jan 6 1023,14:00) count down again instead of showing as raw text.",
+  ] },
+  { build: "2026-10-12.1", items: [
+    "Add weekdays (on by default): a new reply's Time: without a weekday gets one written in.",
+    "Edit state has a Weekday choice: None, Auto, or a specific day.",
+    "Fix: position locks no longer stop working when alerts and the other auto-fixes are all off.",
+  ] },
+  { build: "2026-10-11.4", items: [
+    "Classic: a ? help button and a \u{1F4DC} update log beside settings. The log is also in the SAO settings menu as What's new.",
+  ] },
+  { build: "2026-10-11.3", items: [
+    "Quests can be edited in both skins (✎): reorder, delete, add.",
+    "Item, skill and passive icons sit beside the middle of long entries instead of the top.",
+  ] },
+  { build: "2026-10-11.1–.2", items: [
+    "Classic gets the item, skill and passive icons (squared) and the same editors as SAO: tap an icon to edit.",
+    "Classic Mastery tab gets a ✎ editor, like Bonds.",
+    "Classic settings: Edits Rewrite Past Replies.",
+  ] },
+  { build: "2026-09-26.29–.31", items: [
+    "▲▼ reordering in the item/skill/passive, mastery and meter editors.",
+    "Position locks: lock an entry to its place in the list; if the AI reorders it, it's put back.",
+    "Same-name variants (Vorpal Strike Lv1 / Lv3) are told apart by locks, history rewriting, restore and the turn log.",
+  ] },
+  { build: "2026-09-26.26–.28", items: [
+    "Icons for items, skills and passives in the Status orb; tap one to edit that list.",
+    "Edits rewrite past replies (0–20): list edits also fix that many earlier replies.",
+    "Icons pick by bracket type, then the name's last word. Accessories, phones, laptops and cameras added.",
+  ] },
+  { build: "2026-09-26.24–.25", items: [
+    "Day of the week shown with the date everywhere.",
+    "Fix weekdays: a wrong weekday written in Time: is corrected to the real calendar (tap the toast to undo).",
+  ] },
+  { build: "2026-09-26.20–.23", items: [
+    "Restore lost descriptions: puts back a description the AI dropped entirely, for any character.",
+    "Description alerts and the turn log cover party, NPCs and enemies, not just you.",
+    "Turn log: lock a change so Undo last turn keeps it.",
+    "The no-state toast no longer fires on page refresh.",
+    "More fonts: Saira Condensed, Teko, Exo 2, or any Google Font.",
+  ] },
+  { build: "2026-09-26.14–.19", items: [
+    "Move characters between Party, NPCs and Enemies.",
+    "Edit state → Save leaves an (OOC: ...) note telling the AI what you changed.",
+    "Edit a character's own Bond from their Stats tab; deleting a bond no longer scrubs live bonds.",
+    "Bars with an equation in their max now fill properly; tap a number to see its breakdown.",
+    "Bigger tap targets for the collapse arrows; no stray scrolling when minimised.",
+  ] },
+  { build: "2026-09-26.1–.13", items: [
+    "ALfheim (New) bar style, with status tiles, emblem tiles and pickable tile colours.",
+    "Tap through the bars to whatever is behind them.",
+    "Classic: a Log tab with undo, a −1 button on charge timers, scroll position kept.",
+    "Bond editor now actually writes into the message.",
+    "Build stamp at the bottom of the SAO settings menu.",
+  ] },
+];
+
+const SEEN_BUILD_KEY = "rpgHud:seenBuild";
+function changelogUnseen() {
+  try { return localStorage.getItem(SEEN_BUILD_KEY) !== HUD_BUILD; } catch { return false; }
+}
+function markChangelogSeen() {
+  try { localStorage.setItem(SEEN_BUILD_KEY, HUD_BUILD); } catch {}
+}
+
+function changelogPanel() {
+  const item = (name, text) => `<div class="rpg-sao-help-item"><dt>${name}</dt><dd>${text}</dd></div>`;
+  return {
+    title: "What's new",
+    body: `<dl class="rpg-sao-help">` +
+      CHANGELOG.map((c) => item(`Build ${escHtml(c.build)}`, c.items.map((t) => "• " + escHtml(t)).join("<br>"))).join("") +
+      `</dl><p class="rpg-sao-empty">You're on build ${escHtml(HUD_BUILD)}.</p>`,
+  };
+}
+
+// ---- classic: help and log as overlays, like settings ----
+let classicInfo = null;   // null | "help" | "log"
+
+const CLASSIC_HELP = [
+  ["The dot", "Top right. Green: the latest reply has a valid state. Yellow: the block is broken (tap for details). Grey: no block."],
+  ["Tabs", "Party, Bonds, Timers, Items, Skills, Passive, Mastery, Quest, Environment and Log. Pick a character from the name dropdown to see their tabs."],
+  ["Editing lists", "In Items, Skills and Passive, tap any icon to edit that list: change text, ✕ to delete, ▲▼ to reorder, + Add. Mastery and Quest have a ✎ button instead."],
+  ["Position locks", "In the item, skill and passive editor, the padlock under ✕ pins an entry to its place. If the AI reorders the list, locked entries are put back; the rest keep their order."],
+  ["Edits Rewrite Past Replies", "Settings. List edits also fix this many earlier replies, so the AI can't copy the old version back from history. 0 means the latest reply only."],
+  ["Bonds", "✎ to edit, + to add. Deleting asks whether to also remove the name from earlier Bonds lists; characters' own Bond values are left alone."],
+  ["Timers", "Turns (2/3), deadlines (Jan 6 1023,14:00) or uses (2/2x). Charge timers have a −1 button to spend one."],
+  ["Log", "What changed each turn. Undo last turn reverts the newest turn; ↶ reverts a single change; the padlock keeps a change through Undo last turn. Redo puts it back."],
+  ["Edit state", "Settings → ✏️ Edit: edit everything about the selected character. With Note Edits for AI on, saving leaves an (OOC: ...) line telling the AI what you changed."],
+  ["Move", "Settings: move the selected character between Party, NPCs and Enemies."],
+  ["Change Alerts", "A toast when an item, skill or passive's description changes or loses detail, for anyone."],
+  ["Restore Lost Descriptions", "If the AI drops a description entirely, the old one is put back onto the new entry. Tap the toast to undo."],
+  ["Add Weekdays", "If a new reply's Time: has no weekday, one is written in. Tap the toast to undo. Edit state also has a Weekday choice: Auto, a specific day, or None."],
+  ["Fix Weekdays", "If the AI writes a weekday in Time: that doesn't match the date, it's corrected. Tap the toast to undo."],
+  ["Scan (↻)", "Re-reads the latest reply and writes the state back into it."],
+];
+
+const SYS_HELP = [
+  ["System window", "The panel shows the selected character. Tap the big name (or NAME, with the clock) to switch character. The frame turns red for enemies and purple for vehicles."],
+  ["Big slot", "Settings → Big slot: the character's name, or an analog clock of the in-world time."],
+  ["Notifications", "Settings → Notifications: a System popup when a reply gives you items, skills, passives, coin or a status, adds quests, timers or party members, or brings in enemies. Tap one to dismiss it. Your own edits never trigger them."],
+];
+
+function classicInfoHtml() {
+  if (!classicInfo) return "";
+  const isLog = classicInfo === "log";
+  const rows = isLog
+    ? CHANGELOG.map((c) => `<div style="margin-bottom:10px;"><div style="color:#FFD700; font-weight:bold; margin-bottom:3px;">Build ${escHtml(c.build)}</div>` +
+        c.items.map((t) => `<div style="color:#ccc; padding-left:10px; text-indent:-10px; margin-bottom:2px;">• ${escHtml(t)}</div>`).join("") + `</div>`).join("")
+      + `<div style="opacity:.6; font-style:italic;">You're on build ${escHtml(HUD_BUILD)}.</div>`
+    : (uiSettings.skin === "system" ? [...SYS_HELP, ...CLASSIC_HELP] : CLASSIC_HELP).map(([k, v]) => `<div style="margin-bottom:9px;"><div style="color:#4FC3F7; font-weight:bold;">${escHtml(k)}</div><div style="color:#ccc;">${escHtml(v)}</div></div>`).join("");
+  return `
+    <div id="rpg-info-overlay" style="position:absolute; inset:0; background:#0b0b0d; border:1px solid #333; z-index:100001;
+      display:flex; flex-direction:column; box-sizing:border-box; padding:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid #333; padding-bottom:6px;">
+        <div style="font-weight:bold; color:#ddd;">${isLog ? "\u{1F4DC} UPDATE LOG" : "❓ HELP"}</div>
+        <button id="rpg-info-close" style="background:#444; border:1px solid #777; color:#fff; cursor:pointer; font-size:10px; padding:3px 10px; font-weight:bold;">CLOSE</button>
+      </div>
+      <div data-scroll-key="c:info:${classicInfo}" style="flex:1; overflow:auto; font-size:0.8em; line-height:1.4; padding-right:4px;">${rows}</div>
+    </div>`;
+}
+
+function classicBindInfo() {
+  const one = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
+  one("rpg-help-btn", () => { classicInfo = classicInfo === "help" ? null : "help"; isSettingsOpen = false; renderRPG(); });
+  one("rpg-log-btn", () => { classicInfo = classicInfo === "log" ? null : "log"; isSettingsOpen = false; markChangelogSeen(); renderRPG(); });
+  one("rpg-info-close", () => { classicInfo = null; renderRPG(); });
+}
+
 function classicLogHtml() {
   let chat = [], ctx = null;
   try { ctx = SillyTavern.getContext(); chat = ctx?.chat || []; } catch {}
@@ -5748,7 +7685,7 @@ function classicLogHtml() {
   const btn = "padding:1px 7px; font-size:0.9em; cursor:pointer; background:#333; color:#ddd; border:1px solid #666; border-radius:2px;";
   const tools = (turns.length || redo)
     ? `<div style="display:flex; gap:5px; justify-content:flex-end; margin-bottom:5px;">
-        ${turns.length ? `<button id="rpg-c-undo" style="${btn}" title="Revert everything the latest turn changed">\u21B6 Undo last turn</button>` : ""}
+        ${turns.length ? `<button id="rpg-c-undo" style="${btn}" title="Revert everything the latest turn changed, except what you've locked">\u21B6 Undo last turn${(() => { const n = lockedChanges(ctx).length; return n ? ` \u00B7 keep ${n}` : ""; })()}</button>` : ""}
         ${redo ? `<button id="rpg-c-redo" style="${btn}">\u21B7 Redo</button>` : ""}
       </div>`
     : "";
@@ -5757,6 +7694,7 @@ function classicLogHtml() {
   }
 
   const dot = { good: "#66bb6a", bad: "#ef5350", neutral: "#888" };
+  const locks = newestTurnLocks(ctx).set;
   const html = turns.slice(0, saoLogShown).map((t, ti) => `
     <div style="padding:4px 0 5px; border-bottom:1px solid #333;">
       <div class="rpg-c-turnhead" data-mes="${t.idx}" title="Jump to this message"
@@ -5771,7 +7709,11 @@ function classicLogHtml() {
             ? `~ ${escHtml(c.diff.label)}: <b>${escHtml(c.diff.name)}</b><br><span style="color:#aaa;">${wordDiffHtml(c.diff.before, c.diff.after, "toast")}</span>`
             : escHtml(c.text)}</span>
           ${ti === 0 && c.u
-            ? `<button class="rpg-c-revert" data-ci="${ci}" data-text="${escAttr(c.text)}" title="Undo just this change"
+            ? `<button class="rpg-c-lock" data-lid="${escAttr(lockId(c.u))}" title="${locks.has(lockId(c.u)) ? "Locked: kept by Undo last turn. Tap to unlock." : "Lock: keep this when undoing the whole turn"}"
+                 style="flex:0 0 auto; display:grid; place-items:center; width:20px; padding:2px 0; cursor:pointer; border-radius:2px;
+                        background:${locks.has(lockId(c.u)) ? "rgba(255,193,7,0.18)" : "none"}; color:${locks.has(lockId(c.u)) ? "#ffc107" : "#888"};
+                        border:1px solid ${locks.has(lockId(c.u)) ? "#ffc107" : "#555"};">${locks.has(lockId(c.u)) ? LOCK_ICON.on : LOCK_ICON.off}</button>
+               <button class="rpg-c-revert" data-ci="${ci}" data-text="${escAttr(c.text)}" title="Undo just this change"
                  style="flex:0 0 auto; padding:0 4px; font-size:0.85em; cursor:pointer; background:none; color:#aaa; border:1px solid #555; border-radius:2px;">\u21B6</button>`
             : ""}
         </div>`).join("")
@@ -5789,6 +7731,9 @@ function classicBindLog() {
   one("rpg-c-undo", saoUndoLastTurn);
   one("rpg-c-redo", saoRedoLastTurn);
   one("rpg-c-log-more", () => { saoLogShown += 20; renderRPG(); });
+  document.querySelectorAll(".rpg-c-lock").forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); toggleLock(el.dataset.lid); };
+  });
   document.querySelectorAll(".rpg-c-revert").forEach((el) => {
     el.onclick = (e) => { e.stopPropagation(); saoUndoChange(parseInt(el.dataset.ci, 10), el.dataset.text); };
   });
@@ -5805,6 +7750,11 @@ function classicBindLog() {
   });
 }
 
+const LOCK_ICON = {
+  on: '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><rect x="3" y="7" width="10" height="7.5" rx="1.3" fill="currentColor"/><path d="M5.2 7V5.2a2.8 2.8 0 0 1 5.6 0V7" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>',
+  off: '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><rect x="3" y="7" width="10" height="7.5" rx="1.3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.2 7V5.2a2.8 2.8 0 0 1 5.4-1" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>',
+};
+
 function saoLogHtml() {
   let chat = [];
   try { chat = SillyTavern.getContext()?.chat || []; } catch {}
@@ -5814,7 +7764,7 @@ function saoLogHtml() {
   const redo = saoCanRedo(ctx);
   const tools = (turns.length || redo)
     ? `<div class="rpg-sao-logtools">
-        ${turns.length ? `<button class="rpg-sao-mini" id="rpg-sao-undo" title="Revert everything the latest turn changed">\u21B6 Undo last turn</button>` : ""}
+        ${turns.length ? `<button class="rpg-sao-mini" id="rpg-sao-undo" title="Revert everything the latest turn changed, except what you've locked">\u21B6 Undo last turn${(() => { const n = lockedChanges(ctx).length; return n ? ` \u00B7 keep ${n}` : ""; })()}</button>` : ""}
         ${redo ? `<button class="rpg-sao-mini" id="rpg-sao-redo">\u21B7 Redo</button>` : ""}
       </div>`
     : "";
@@ -5822,6 +7772,7 @@ function saoLogHtml() {
     return tools + `<p class="rpg-sao-empty">Nothing yet. Each reply that carries an rpg_state adds a turn here.</p>`;
   }
 
+  const locks = newestTurnLocks(ctx).set;
   const html = turns.slice(0, saoLogShown).map((t, ti) => `
     <div class="rpg-sao-turn${ti === 0 ? " newest" : ""}">
       <button class="rpg-sao-turnhead" data-mes="${t.idx}" title="Jump to this message">
@@ -5829,11 +7780,12 @@ function saoLogHtml() {
         <span class="w">${escHtml(t.when)}${t.where ? " \u00B7 " + escHtml(t.where) : ""}</span>
       </button>
       ${t.changes.length
-        ? `<ul class="rpg-sao-changes">${t.changes.map((c, ci) => `<li class="${c.tone}">
+        ? `<ul class="rpg-sao-changes">${t.changes.map((c, ci) => `<li class="${c.tone}${ti === 0 && c.u && locks.has(lockId(c.u)) ? " locked" : ""}">
             <span>${c.diff
               ? `~ ${escHtml(c.diff.label)}: <b>${escHtml(c.diff.name)}</b><br><span class="rpg-wd">${wordDiffHtml(c.diff.before, c.diff.after, "log")}</span>`
               : escHtml(c.text)}</span>${ti === 0 && c.u
-              ? `<button class="rpg-sao-revert" data-ci="${ci}" data-text="${escAttr(c.text)}" title="Undo just this change">\u21B6</button>`
+              ? `<span class="rpg-sao-chgbtns"><button class="rpg-sao-lock${locks.has(lockId(c.u)) ? " on" : ""}" data-lid="${escAttr(lockId(c.u))}"
+                   title="${locks.has(lockId(c.u)) ? "Locked: kept by Undo last turn. Tap to unlock." : "Lock: keep this when undoing the whole turn"}">${locks.has(lockId(c.u)) ? LOCK_ICON.on : LOCK_ICON.off}</button><button class="rpg-sao-revert" data-ci="${ci}" data-text="${escAttr(c.text)}" title="Undo just this change">\u21B6</button></span>`
               : ""}</li>`).join("")}</ul>`
         : `<p class="rpg-sao-empty small">No changes.</p>`}
     </div>`).join("");
@@ -5849,7 +7801,7 @@ function saoPlacePanel() {
   const env = Array.isArray(rpgState.env_effects) ? rpgState.env_effects : [];
   let h = `<div class="rpg-sao-place">${escHtml(rpgState.location || "Unknown")}</div>`;
   h += `<div class="rpg-sao-weather">${getWeatherEmoji(t.weather)} ${escHtml(t.weather || "Unknown")}
-        &#183; ${escHtml(t.clock || "??:??")}, ${escHtml(t.month || "?")} ${escHtml(t.day ?? "?")} ${escHtml(t.year || "")}</div>`;
+        &#183; ${escHtml(t.clock || "??:??")}, ${worldWeekday(t, true) ? escHtml(worldWeekday(t, true)) + ", " : ""}${escHtml(t.month || "?")} ${escHtml(t.day ?? "?")} ${escHtml(t.year || "")}</div>`;
   h += env.length
     ? env.map((e) => `<div class="rpg-sao-env">${escHtml(e)}</div>`).join("")
     : `<p class="rpg-sao-empty">No environmental effects.</p>`;
@@ -5892,6 +7844,50 @@ function saoTimersHtml() {
 }
 
 // the classic caret/error overlay, dropped into a SAO panel
+// ---- layout report: how this device actually draws the ALfheim (New) rows ----
+// For layout bugs that only show on one device: measured here, copied by the
+// user, so the real numbers can be compared with what the CSS intends.
+let layoutReportText = "";
+function measureLayoutReport() {
+  const r1 = (n) => Math.round(n * 10) / 10;
+  const box = (el) => { if (!el) return "missing"; const q = el.getBoundingClientRect(); return `x ${r1(q.left)} w ${r1(q.width)} | y ${r1(q.top)} h ${r1(q.height)}`; };
+  const cs = (el, ...props) => { if (!el) return ""; const c = getComputedStyle(el); return props.map((k) => `${k}=${c.getPropertyValue(k)}`).join(" "); };
+  const lines = [
+    `build ${HUD_BUILD} | style ${uiSettings.saoBarStyle} | bar size ${uiSettings.saoUiScale ?? 100}% | font ${uiSettings.saoFont} | backing ${!!uiSettings.saoTextBacking}`,
+    `screen ${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}x | ${navigator.userAgent}`,
+  ];
+  const v = document.querySelector(".rpg-sao-vitals");
+  lines.push(`vitals: ${box(v)} | ${cs(v, "width", "max-width", "zoom", "transform")}`);
+  [...document.querySelectorAll(".rpg-blk-row")].slice(0, 4).forEach((row, i) => {
+    const name = row.querySelector(".rpg-blk-name")?.textContent || "?";
+    const tile = row.querySelector(".rpg-blk-tile"), bars = row.querySelector(".rpg-blk-bars"),
+          hp = row.querySelector(".rpg-sao-bar.blkhp"), line = row.querySelector(".rpg-blk-line"),
+          svg = hp?.querySelector("svg"), group = row.closest(".rpg-sao-slim");
+    const t = tile?.getBoundingClientRect(), h = hp?.getBoundingClientRect();
+    lines.push(``, `#${i + 1} ${name}${group ? " (in a group)" : " (you)"}  GAP tile->bar = ${t && h ? r1(h.left - t.right) : "?"} (should be -3 x bar size)`);
+    lines.push(`  row:   ${box(row)} | ${cs(row, "display", "--bt", "--bl", "--bb", "font-size")}`);
+    lines.push(`  line:  ${box(line)} | ${cs(line, "display", "justify-content", "gap")}`);
+    lines.push(`  tile:  ${box(tile)} | ${cs(tile, "width", "margin-left", "margin-right", "flex", "border-left-width")}`);
+    lines.push(`  bars:  ${box(bars)} | ${cs(bars, "margin-left", "flex", "width")}`);
+    lines.push(`  hp:    ${box(hp)} | ${cs(hp, "width", "margin-left")}`);
+    lines.push(`  svg:   ${box(svg)}`);
+    if (group) lines.push(`  group: ${box(group)} | ${cs(group, "padding-left", "margin-left", "opacity", "display")}`);
+  });
+  if (!document.querySelector(".rpg-blk-row")) lines.push("", "No ALfheim (New) rows on screen. Switch Bar style to ALfheim (New) and make sure a party member or NPC is showing.");
+  layoutReportText = lines.join("\n");
+}
+
+function layoutReportPanel() {
+  return {
+    title: "Layout report",
+    body: `<p class="rpg-sao-hint">Measured on this device just now. Tap Copy and paste it to Claude.</p>
+      <textarea id="rpg-sao-layout-text" readonly spellcheck="false"
+        style="width:100%; box-sizing:border-box; height:40svh; font:11px/1.35 ui-monospace,monospace; white-space:pre;
+               color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule)">${escHtml(layoutReportText)}</textarea>
+      <div class="rpg-sao-medit-actions"><button class="rpg-sao-mini primary" id="rpg-sao-layout-copy">Copy</button></div>`,
+  };
+}
+
 function saoErrorPanel() {
   return {
     title: "Parse error",
@@ -5921,7 +7917,15 @@ function saoHelpPanel() {
       + item("Move HUD pieces",
           "Drag the bars, the orb column and the clock wherever you like. Buttons stop responding while you're arranging, so a tap can't fire by accident. Reset puts them back.")
       + item("Turn log",
-          "In the Quests orb, the Log tab lists what changed each turn \u2014 HP, items, bonds, where you went, how much time passed. It's worked out from your chat history rather than stored, so it follows swipes and edits and covers old chats too. Tap a turn to jump to its message. Undo last turn reverts everything the newest turn changed; the \u21B6 beside a single change in the newest turn reverts just that one. Redo puts either back.")
+          "In the Quests orb, the Log tab lists what changed each turn \u2014 HP, items, bonds, where you went, how much time passed. It's worked out from your chat history rather than stored, so it follows swipes and edits and covers old chats too. Tap a turn to jump to its message. Undo last turn reverts everything the newest turn changed; the \u21B6 beside a single change in the newest turn reverts just that one. The padlock beside a change locks it: Undo last turn then reverts everything except what's locked. Redo puts any of these back.")
+      + item("Add weekdays",
+          "If a new reply's Time: has no weekday, the HUD writes the short one in (\u201cSun Jan 5 1023\u201d) once the reply has finished, so the AI can see it too. Only when the month is Jan\u2013Dec and the year is written. Tap the toast to undo. You can also pick a weekday, or None, in Edit state.")
+      + item("Fix weekdays",
+          "If a reply writes a weekday in Time: (\u201cMon Jan 7 1023\u201d) that the real calendar disagrees with, it's corrected in the AI's own style, once the reply has finished. Only when the month is Jan\u2013Dec and the year is written. A toast says what changed; tap it to undo.")
+      + item("Restore lost descriptions",
+          "Works for everyone: you, party members, NPCs and enemies. When a reply keeps an item, skill or passive but drops its description entirely, the old description is put back onto the new entry, so other changes (+10 to +15 ATK, a new cost) stay. A description that was only trimmed or reworded is left alone. A toast says what was restored; tap it to undo. Masteries are never touched.")
+      + item("Note edits for AI",
+          "When on, saving from Edit state adds one (OOC: ...) line to the block listing exactly what you changed, and asks the AI to treat it as canon without replying to it. Several edits before the AI answers are merged into one note. Other HUD edits keep the note in place. Edits made directly in the panels don't add one.")
       + item("Charges",
           "A timer written as 2/2x, 2x or \u201c2 uses\u201d counts uses instead of turns, for effects like \u201cblock the next 2 attacks\u201d. It never ticks down on its own; the AI lowers it when it's used, or tap \u22121 in the timer list.")
       + item("Meters",
@@ -5971,13 +7975,21 @@ function saoSettingsHtml() {
     + row("rpg-sao-clear-party", "&#9634;", "Clear party")
     + row("rpg-sao-rescan", "&#8635;", "Rescan now")
     + row("rpg-sao-diagnose", "!", "Parse diagnostics")
-    + row("rpg-sao-help", "?", saoHelpOpen ? "Hide help" : "What these do")
+    + row("rpg-sao-help", "?", saoHelpOpen === true ? "Hide help" : "What these do")
+    + row("rpg-sao-whatsnew", "\u2726", saoHelpOpen === "log" ? "Hide what's new" : `What's new${changelogUnseen() ? " \u2022" : ""}`)
     + row("rpg-sao-move", "\u2725", "Move HUD pieces")
     + row("rpg-sao-reset", "\u21BA", "Reset settings")
+    + row("rpg-sao-layoutrep", "\u2316", saoHelpOpen === "layout" ? "Hide layout report" : "Layout report")
     + row("rpg-sao-insert", "&#8595;", "Insert state")
     + row("rpg-sao-remind", "&#9993;", "Remind state")
     + toggle("rpg-sao-sw-alerts", "Change alerts", !!uiSettings.changeAlerts)
     + toggle("rpg-sao-sw-inject", "Auto-inject", !!autoInjectState)
+    + toggle("rpg-sao-sw-ooc", "Note edits for AI", uiSettings.oocEditNotes !== false)
+    + toggle("rpg-sao-sw-restore", "Restore lost descriptions", !!uiSettings.restoreLostDesc)
+    + toggle("rpg-sao-sw-addwd", "Add weekdays", uiSettings.addWeekdays !== false)
+    + toggle("rpg-sao-sw-weekday", "Fix weekdays", uiSettings.fixWeekdays !== false)
+    + `<div class="rpg-sao-mrow toggle"><span title="Editing Items, Skills or Passives from the Status orb also rewrites this many earlier replies">Edits rewrite past replies</span>
+        <input id="rpg-sao-edithist" type="number" min="0" max="20" step="1" value="${Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0))}"></div>`
     + toggle("rpg-sao-sw-bars", "Keep bars when minimised", !!uiSettings.barsOnMin)
     + toggle("rpg-sao-sw-shadow", "Text shadow", !!uiSettings.saoTextShadow)
     + toggle("rpg-sao-sw-backing", "Text backing", !!uiSettings.saoTextBacking)
@@ -6008,13 +8020,23 @@ function saoSettingsHtml() {
         </select></div>`
     + `<div class="rpg-sao-mrow toggle"><span>Font</span>
         <select id="rpg-sao-font">
-          <option value="preset"${!SAO_FONTS[uiSettings.saoFont] ? " selected" : ""}>Follow preset</option>
+          <option value="preset"${!SAO_FONTS[uiSettings.saoFont] && uiSettings.saoFont !== "custom" ? " selected" : ""}>Follow preset</option>
           <option value="sans"${uiSettings.saoFont === "sans" ? " selected" : ""}>Sans</option>
-          <option value="squarish"${uiSettings.saoFont === "squarish" ? " selected" : ""}>Squarish</option>
+          <option value="squarish"${uiSettings.saoFont === "squarish" ? " selected" : ""}>Squarish (Rajdhani)</option>
+          <option value="saira"${uiSettings.saoFont === "saira" ? " selected" : ""}>Saira Condensed</option>
+          <option value="teko"${uiSettings.saoFont === "teko" ? " selected" : ""}>Teko</option>
+          <option value="exo"${uiSettings.saoFont === "exo" ? " selected" : ""}>Exo 2</option>
+          <option value="custom"${uiSettings.saoFont === "custom" ? " selected" : ""}>Custom\u2026</option>
         </select></div>`
+    + (uiSettings.saoFont === "custom"
+      ? `<div class="rpg-sao-mrow toggle rpg-sao-customfont"><input id="rpg-sao-customfont" type="text"
+           value="${escAttr(saoCustomFontName())}" placeholder="Any Google Font, e.g. Orbitron"
+           spellcheck="false" autocomplete="off"></div>`
+      : "")
     + `<div class="rpg-sao-mrow toggle"><span>Skin</span>
         <select id="rpg-sao-skin">
           <option value="classic">Classic</option>
+          <option value="system">System</option>
           <option value="sao" selected>SAO</option>
         </select></div>`
     + `<div class="rpg-sao-build">build ${HUD_BUILD}</div>`;
@@ -6076,7 +8098,7 @@ function renderSaoSkin() {
     (uiSettings.saoTextShadow ? "rpg-sao-sh " : "") +
     (uiSettings.saoTextBacking ? "rpg-sao-bk" : "") + anim;
   container.style.cssText += `
-    font-family:${SAO_FONTS[uiSettings.saoFont] || uiSettings.fontFamily || SAO_FONTS.sans};
+    font-family:${saoFontStack()};
     font-size:${0.9 * (uiSettings.fontScale || 1)}em;`;
   container.onclick = null;
 
@@ -6107,8 +8129,8 @@ function renderSaoSkin() {
     // --- vitals ---
     let vitals = "";
     if (showBars) {
-      const hpText = demo ? "720/1000" : `${escHtml(pView.hp_curr)}/${escHtml(pView.hp_max)}`;
-      const mpText = demo ? "240/500" : `${escHtml(en.curr)}/${escHtml(en.max)}`;
+      const hpText = demo ? "720/1000" : barPair(pView.hp_curr, pView.hp_max);
+      const mpText = demo ? "240/500" : barPair(en.curr, en.max);
       const shownName = escHtml(demo ? "Name" : pName);
 
       if (uiSettings.saoBarStyle === "blk") {
@@ -6217,7 +8239,7 @@ function renderSaoSkin() {
     // --- panel ---
     let panelHtml = "";
     if (!saoMin && saoPanel === "gear" && saoHelpOpen) {
-      const help = saoHelpPanel();
+      const help = saoHelpOpen === "log" ? changelogPanel() : saoHelpOpen === "layout" ? layoutReportPanel() : saoHelpPanel();
       panelHtml = `<div class="rpg-sao-panelwrap helpshift"><div class="rpg-sao-panel">
         <h2>${escHtml(help.title)}</h2>
         <div class="rpg-sao-body" data-scroll-key="help">${help.body}</div><div class="rpg-sao-jumps"><button class="rpg-sao-jumpto up" title="Back to the top"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 7.5L6 4l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="rpg-sao-jumpto down" title="To the bottom"><svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2.5 4.5L6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div><div class="rpg-sao-notch"></div></div>`;
@@ -6245,7 +8267,7 @@ function renderSaoSkin() {
         <span class="rpg-sao-glyph">${getWeatherEmoji(t.weather)}</span>
         <span class="rpg-sao-cstack">
           <span class="hhmm">${escHtml(t.clock || "??:??")}</span>
-          <span class="date">${escHtml(t.month || "?")} ${escHtml(t.day ?? "?")} ${escHtml(t.year || "")}</span>
+          <span class="date">${worldWeekday(t) ? escHtml(worldWeekday(t)) + " " : ""}${escHtml(t.month || "?")} ${escHtml(t.day ?? "?")} ${escHtml(t.year || "")}</span>
         </span></button></div>`;
 
     if (vitals) vitals += foesHtml + `</div>`;
@@ -6294,7 +8316,7 @@ function saoBind() {
     flushInlineEdits();
     const tab = el.dataset.tab;
     const was = saoPanel;
-    saoMeterEdit = null; saoMasteryEdit = null;
+    saoMeterEdit = null; saoMasteryEdit = null; saoListEdit = null;
     saoPanel = saoPanel === tab ? null : tab;
     if (saoPanel !== "gear") saoHelpOpen = false;
     if (saoPanel && saoPanel !== was) saoAnim("panel", 220);
@@ -6310,7 +8332,17 @@ function saoBind() {
     renderRPG();
   };
 
-  on(".rpg-sao-caret", (el) => {
+  on(".rpg-mathnum", (el) => showMathPop(el));
+  on(".rpg-sao-mv", (el) => {
+    const rows = reorderRows(el.dataset.kind);
+    const i = +el.dataset.i, j = i + (+el.dataset.d);
+    if (!rows || j < 0 || j >= rows.length) return;
+    [rows[i], rows[j]] = [rows[j], rows[i]];
+    renderRPG();
+  });
+  on(".rpg-sao-moveto", (el) => moveActiveCharacter(el.dataset.to));
+
+  on(".rpg-sao-caret, .rpg-sao-divlabel", (el) => {
     const k = el.dataset.k;
     saoCollapsed[k] = !saoCollapsed[k];
     renderRPG();
@@ -6319,7 +8351,7 @@ function saoBind() {
   on(".rpg-sao-jump, .rpg-sao-chip", (el) => {
     const idx = parseInt(el.dataset.idx, 10);
     if (!Number.isFinite(idx)) return;
-    saoMeterEdit = null; saoMasteryEdit = null;
+    saoMeterEdit = null; saoMasteryEdit = null; saoListEdit = null;
     charIndex = idx;
     saoSub = "stats";
     saoPanel = "status";
@@ -6327,7 +8359,7 @@ function saoBind() {
   });
 
   on(".rpg-sao-cat", (el) => {
-    saoMeterEdit = null; saoMasteryEdit = null;
+    saoMeterEdit = null; saoMasteryEdit = null; saoListEdit = null;
     const g = saoRosterGroups().filter((x) => x.key === el.dataset.cat)[0];
     if (!g) return;
     charIndex = charIndexFor(g.type, 0);
@@ -6335,8 +8367,8 @@ function saoBind() {
     renderRPG();
   });
 
-  on(".rpg-sao-subtab", (el) => { saoSub = el.dataset.sub; saoMasteryEdit = null; renderRPG(); });
-  on(".rpg-sao-qtab", (el) => { saoQuestTab = el.dataset.qtab; saoLogShown = 20; renderRPG(); });
+  on(".rpg-sao-subtab", (el) => { saoSub = el.dataset.sub; saoMasteryEdit = null; saoListEdit = null; renderRPG(); });
+  on(".rpg-sao-qtab", (el) => { saoQuestTab = el.dataset.qtab; saoLogShown = 20; saoListEdit = null; renderRPG(); });
   on(".rpg-sao-turnhead", (el) => {
     const mes = document.querySelector(`#chat .mes[mesid="${el.dataset.mes}"]`);
     if (mes) mes.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -6370,6 +8402,7 @@ function saoBind() {
 
   saoBindMeterEditor();
   saoBindMasteryEditor();
+  saoBindListEditor();
   if (bondsEditMode) bindBondsTab();
   if (timersEditMode) bindTimersTab();
 
@@ -6381,7 +8414,21 @@ function saoBind() {
     renderRPG();
   });
   bind("rpg-sao-diagnose", () => { saoMin = false; saoPanel = "error"; renderRPG(); });
-  bind("rpg-sao-help", () => { saoHelpOpen = !saoHelpOpen; renderRPG(); });
+  bind("rpg-sao-help", () => { saoHelpOpen = saoHelpOpen === true ? false : true; renderRPG(); });
+  // (the layout report box needs its own click handling: taps inside it shouldn't close the menu)
+  bind("rpg-sao-layoutrep", () => {
+    if (saoHelpOpen === "layout") { saoHelpOpen = false; renderRPG(); return; }
+    measureLayoutReport();                 // before the panel opens, as the rows are now
+    saoHelpOpen = "layout";
+    renderRPG();
+  });
+  bind("rpg-sao-layout-copy", () => {
+    const ta = document.getElementById("rpg-sao-layout-text");
+    const done = () => { if (window.toastr) window.toastr.info("Layout report copied."); };
+    try { navigator.clipboard.writeText(layoutReportText).then(done, () => { ta?.select(); document.execCommand("copy"); done(); }); }
+    catch { ta?.select(); try { document.execCommand("copy"); done(); } catch {} }
+  });
+  bind("rpg-sao-whatsnew", () => { saoHelpOpen = saoHelpOpen === "log" ? false : "log"; markChangelogSeen(); renderRPG(); });
   bind("rpg-sao-log-more", () => { saoLogShown += 20; renderRPG(); });
 
   // a character's own |Bond:|, edited from their Stats tab
@@ -6434,6 +8481,7 @@ function saoBind() {
   });
   bind("rpg-sao-undo", saoUndoLastTurn);
   on(".rpg-sao-revert", (el) => saoUndoChange(parseInt(el.dataset.ci, 10), el.dataset.text));
+  on(".rpg-sao-lock", (el) => toggleLock(el.dataset.lid));
   bind("rpg-sao-redo", saoRedoLastTurn);
   bind("rpg-sao-move", () => {
     saoLayoutMode = true;
@@ -6463,6 +8511,32 @@ function saoBind() {
   bind("rpg-sao-insert", insertLastStateIntoNarrative);
   bind("rpg-sao-remind", remindStateInLastMessage);
   bind("rpg-sao-sw-alerts", () => { uiSettings.changeAlerts = !uiSettings.changeAlerts; saveUiSettings(); renderRPG(); });
+  const eh = document.getElementById("rpg-sao-edithist");
+  if (eh) {
+    eh.onclick = (e) => e.stopPropagation();
+    eh.onkeydown = (e) => e.stopPropagation();
+    eh.onchange = () => { uiSettings.listEditHistory = Math.max(0, Math.min(20, parseInt(eh.value, 10) || 0)); saveUiSettings(); };
+  }
+  bind("rpg-sao-sw-addwd", () => {
+    uiSettings.addWeekdays = uiSettings.addWeekdays === false;
+    saveUiSettings();
+    renderRPG();
+  });
+  bind("rpg-sao-sw-weekday", () => {
+    uiSettings.fixWeekdays = uiSettings.fixWeekdays === false;
+    saveUiSettings();
+    renderRPG();
+  });
+  bind("rpg-sao-sw-restore", () => {
+    uiSettings.restoreLostDesc = !uiSettings.restoreLostDesc;
+    saveUiSettings();
+    renderRPG();
+  });
+  bind("rpg-sao-sw-ooc", () => {
+    uiSettings.oocEditNotes = uiSettings.oocEditNotes === false;
+    saveUiSettings();
+    renderRPG();
+  });
   bind("rpg-sao-sw-inject", () => {
     autoInjectState = !autoInjectState;
     const box = document.getElementById("rpg-settings-autoinject");
@@ -6548,6 +8622,20 @@ function saoBind() {
     fontSel.onclick = (e) => e.stopPropagation();
   }
 
+  // custom font: applied on Enter or when the box loses focus
+  const customFont = document.getElementById("rpg-sao-customfont");
+  if (customFont) {
+    const apply = () => {
+      if (customFont.value === saoCustomFontName()) return;
+      uiSettings.saoCustomFont = customFont.value;
+      saveUiSettings();
+      renderRPG();
+    };
+    customFont.onclick = (e) => e.stopPropagation();
+    customFont.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); apply(); } };
+    customFont.onblur = apply;
+  }
+
   const skinSel = document.getElementById("rpg-sao-skin");
   if (skinSel) {
     skinSel.onchange = () => setSkin(skinSel.value);
@@ -6577,11 +8665,17 @@ const SAO_CSS = `<style id="rpg-sao-style">
 
 /* The whole left stack scrolls rather than running off the bottom of the
    screen. The reserved strip matches the clock's, so it clears the chat box. */
+/* The collapse arrows' enlarged tap areas reach a little below their row.
+   On the bottom row (all groups collapsed) that overhang made the whole stack
+   scrollable, and a scrollable stack catches touches, so tap-through stopped
+   working too. This room holds the overhang; it's empty and lets taps through. */
+.rpg-sao-vitals{padding-bottom:16px; box-sizing:content-box}
 .rpg-sao-vitals{position:absolute; left:calc(8px + var(--sao-vitals-x, 0px));
   width:min(calc(322px * var(--rpg-sao-ui, 1)), calc(100vw - 130px));
   top:calc(env(safe-area-inset-top, 0px) + 12px + var(--sao-vitals-y, 0px));
+  /* the last 16px is the bottom padding above, so the box ends where it always did */
   max-height:calc(100svh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)
-                  - var(--rpg-sao-clock-lift, 84px) - 24px);
+                  - var(--rpg-sao-clock-lift, 84px) - 24px - 16px);
   overflow-y:auto; overflow-x:hidden; padding-right:4px;
   scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.28) transparent}
 .rpg-sao-vitals::-webkit-scrollbar{width:5px}
@@ -6643,26 +8737,30 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-alo-barline{display:flex; align-items:center; gap:calc(6px * var(--rpg-sao-ui, 1))}
 .rpg-alo-unitnums{display:flex; flex-direction:column; justify-content:center;
   height:calc(18px * var(--rpg-sao-ui, 1)); font-size:calc(9px * var(--rpg-sao-ui, 1)); line-height:1.15; color:#c8c4ba; white-space:nowrap}
-.rpg-alo-unitnums span:first-child{color:#dcd8cf; font-weight:600}
+.rpg-alo-unitnums > span:first-child{color:#dcd8cf; font-weight:600}
 
 
 /* ---- ALfheim (New) ---- */
+/* Two stacked blocks: the name (on its plate) above, then the tile, bars and
+   numbers in ONE flex line. The tile and bars used to be in separate grid
+   columns, attached only if the browser sized the first column to exactly the
+   tile; iPhone Safari sized it wider and left a gap. Flex siblings can't drift.
+   --bl shrinks on narrow screens so the numbers stay inside the stack (it
+   leaves room for the orb column, the tile and the numbers). */
 .rpg-blk-row{
-  --bt:calc(30px * var(--rpg-sao-ui, 1)); --bl:calc(150px * var(--rpg-sao-ui, 1)); --bb:calc(8px * var(--rpg-sao-ui, 1));
-  position:relative; display:grid; grid-template-columns:var(--bt) auto auto; grid-template-rows:auto auto;
-  /* pack the columns at the left: otherwise the auto columns stretch to the
-     width of the widest row (the player's), so a party member's plate ran on
-     past their shorter bars and their numbers drifted off to the right */
-  justify-content:start;
-  column-gap:0; align-items:center;
+  --bt:calc(30px * var(--rpg-sao-ui, 1)); --bb:calc(8px * var(--rpg-sao-ui, 1));
+  --bl:max(calc(60px * var(--rpg-sao-ui, 1)), min(calc(150px * var(--rpg-sao-ui, 1)), calc(100vw - 134px - var(--bt) - 66px * var(--rpg-sao-ui, 1))));
+  position:relative; display:flex; flex-direction:column; align-items:flex-start;
   margin-bottom:calc((var(--bt) - var(--bb) * 2) / 2 + 6px * var(--rpg-sao-ui, 1))}
-.rpg-blk-row.big{--bt:calc(38px * var(--rpg-sao-ui, 1)); --bl:calc(220px * var(--rpg-sao-ui, 1)); --bb:calc(10px * var(--rpg-sao-ui, 1));
+.rpg-blk-row.big{--bt:calc(38px * var(--rpg-sao-ui, 1)); --bb:calc(10px * var(--rpg-sao-ui, 1));
+  --bl:max(calc(80px * var(--rpg-sao-ui, 1)), min(calc(220px * var(--rpg-sao-ui, 1)), calc(100vw - 134px - var(--bt) - 66px * var(--rpg-sao-ui, 1))));
   margin-bottom:calc((var(--bt) - var(--bb) * 2) / 2 + 9px * var(--rpg-sao-ui, 1))}
 
 /* translucent plate behind the name: starts a little in from the tile's left
    edge and fades out by the time it reaches the end of the bars */
-.rpg-blk-plate{grid-column:1 / 3; grid-row:1; align-self:stretch; z-index:0;
-  margin-left:calc(var(--bt) * .22);
+/* the top block is exactly as wide as tile + bars, so the plate ends with the bars */
+.rpg-blk-top{position:relative; width:calc(var(--bt) + var(--bl) - 3px * var(--rpg-sao-ui, 1))}
+.rpg-blk-plate{position:absolute; top:0; bottom:0; right:0; left:calc(var(--bt) * .22); z-index:0;
   border-radius:calc(5px * var(--rpg-sao-ui, 1)) 0 0 calc(5px * var(--rpg-sao-ui, 1));
   background:linear-gradient(90deg, rgba(214,222,230,.26) 0, rgba(214,222,230,.18) 45%, rgba(214,222,230,0) 100%)}
 
@@ -6671,7 +8769,8 @@ const SAO_CSS = `<style id="rpg-sao-style">
    so the name plate sits right on the HP bar and the tile overlaps it. */
 .rpg-blk-tile svg{width:60%; height:60%; display:block; fill:#fff;
   filter:drop-shadow(0 1px 1px rgba(0,0,0,.35))}
-.rpg-blk-tile{grid-column:1; grid-row:2; align-self:center; position:relative; z-index:2; box-sizing:border-box;
+.rpg-blk-line{display:flex; align-items:center}
+.rpg-blk-tile{flex:none; position:relative; z-index:2; box-sizing:border-box;
   margin:calc((var(--bb) * 2 - var(--bt)) / 2) 0;
   width:var(--bt); height:var(--bt); border-radius:calc(6px * var(--rpg-sao-ui, 1));
   border:calc(2px * var(--rpg-sao-ui, 1)) solid rgba(236,240,245,.88); box-shadow:0 1px 3px rgba(0,0,0,.45);
@@ -6679,10 +8778,11 @@ const SAO_CSS = `<style id="rpg-sao-style">
   font-size:calc(var(--bt) * .46); text-shadow:0 1px 2px rgba(0,0,0,.35);
   background-image:linear-gradient(180deg, rgba(255,255,255,.24) 0, rgba(255,255,255,.06) 48%,
                                            rgba(0,0,0,0) 52%, rgba(0,0,0,.14) 100%)}
-/* width:0 + min-width:100% keeps a long name from widening the row */
-.rpg-blk-head{grid-column:2 / 4; grid-row:1; position:relative; z-index:1;
+/* starts where the bars start and may run a little past them, over the
+   numbers, as before; a fixed width so a long name can't widen the row */
+.rpg-blk-head{position:relative; z-index:1; box-sizing:border-box;
   display:flex; align-items:center; gap:calc(6px * var(--rpg-sao-ui, 1));
-  width:0; min-width:100%; overflow:hidden; padding:calc(2px * var(--rpg-sao-ui, 1)) 0 calc(3px * var(--rpg-sao-ui, 1)) calc(7px * var(--rpg-sao-ui, 1))}
+  margin-left:var(--bt); width:calc(var(--bl) - 3px * var(--rpg-sao-ui, 1) + 56px * var(--rpg-sao-ui, 1)); overflow:hidden; padding:calc(2px * var(--rpg-sao-ui, 1)) 0 calc(3px * var(--rpg-sao-ui, 1)) calc(7px * var(--rpg-sao-ui, 1))}
 .rpg-blk-name{flex:0 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   font-size:calc(11.5px * var(--rpg-sao-ui, 1)); font-weight:700; letter-spacing:.4px; color:#f2f0ea;
   text-shadow:0 1px 2px rgba(0,0,0,.75); cursor:pointer}
@@ -6700,15 +8800,15 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-blk-more{font-size:calc(9px * var(--rpg-sao-ui, 1)); color:#cfcbc1; margin-left:2px}
 
 /* HP and MP the same height, touching, and running out of the tile's edge */
-.rpg-blk-bars{grid-column:2; grid-row:2; align-self:center; display:flex; flex-direction:column; gap:0;
+.rpg-blk-bars{flex:none; display:flex; flex-direction:column; gap:0;
   position:relative; z-index:1; margin-left:calc(-3px * var(--rpg-sao-ui, 1))}
 .rpg-sao-bar.blkhp, .rpg-sao-bar.blkmp{flex:none; width:var(--bl); height:var(--bb)}
 .rpg-blk-row .rpg-sao-bar svg{filter:none}
-.rpg-blk-nums{grid-column:3; grid-row:2; display:flex; flex-direction:column; justify-content:space-between;
-  align-self:center; height:calc(var(--bb) * 2); padding-left:calc(6px * var(--rpg-sao-ui, 1));
+.rpg-blk-nums{flex:none; display:flex; flex-direction:column; justify-content:space-between;
+  height:calc(var(--bb) * 2); padding-left:calc(6px * var(--rpg-sao-ui, 1));
   font-size:calc(9px * var(--rpg-sao-ui, 1)); line-height:1; color:#c8c4ba; white-space:nowrap;
   text-shadow:0 1px 2px rgba(0,0,0,.7)}
-.rpg-blk-nums span:first-child{color:#e2ded5; font-weight:600}
+.rpg-blk-nums > span:first-child{color:#e2ded5; font-weight:600}
 .rpg-blk-row.big .rpg-blk-nums{font-size:calc(10px * var(--rpg-sao-ui, 1))}
 
 /* ---- tap through the bars ----
@@ -6720,6 +8820,8 @@ const SAO_CSS = `<style id="rpg-sao-style">
 #rpg-hud-container .rpg-sao-vitals.scrolls{pointer-events:auto}
 #rpg-hud-container .rpg-sao-vitals button.rpg-sao-tag,
 #rpg-hud-container .rpg-sao-vitals .rpg-sao-caret,
+#rpg-hud-container .rpg-sao-vitals .rpg-sao-divlabel,
+#rpg-hud-container .rpg-sao-vitals .rpg-mathnum,
 #rpg-hud-container .rpg-sao-vitals .rpg-alo-label,
 #rpg-hud-container .rpg-sao-vitals .rpg-alo-uname,
 #rpg-hud-container .rpg-sao-vitals .rpg-blk-name{pointer-events:auto}
@@ -6784,8 +8886,20 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
   color:#cdc8bb; display:flex; align-items:center; gap:7px}
 .rpg-sao-div::after{content:""; flex:1; height:1px;
   background:linear-gradient(90deg,rgba(220,215,200,.4),transparent)}
-.rpg-sao-caret{background:none; border:0; color:inherit; cursor:pointer; padding:0 2px;
-  font-size:10px; order:3}
+.rpg-sao-caret{background:none; border:0; color:inherit; cursor:pointer; order:3;
+  font-size:10px; position:relative; z-index:3;
+  /* 10x12 was far too small to hit with a finger. The padding makes a much
+     bigger tap area; matching negative margins keep the arrow where it was.
+     It grows mostly leftwards, since the stack clips anything past its right edge. */
+  padding:11px 4px 11px 20px; margin:-11px -2px -11px -18px;
+  -webkit-tap-highlight-color:transparent}
+.rpg-sao-divlabel{cursor:pointer; -webkit-tap-highlight-color:transparent;
+  padding:6px 8px 6px 0; margin:-6px -8px -6px 0}
+/* touch screens get bigger still */
+@media (pointer:coarse){
+  .rpg-sao-caret{padding:14px 6px 14px 30px; margin:-14px -4px -14px -28px; font-size:12px}
+  .rpg-sao-divlabel{padding:10px 12px 10px 0; margin:-10px -12px -10px 0}
+}
 
 .rpg-sao-foes{margin-top:2px}
 .rpg-sao-foes .rpg-sao-div{color:#f0b6ab}
@@ -6908,6 +9022,13 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-wd{font-size:11.5px; color:var(--rpg-sao-ink-dim)}
 .rpg-wd-del{color:#b23a2a; text-decoration:line-through; background:rgba(178,58,42,.08); padding:0 1px}
 .rpg-wd-ins{color:#2f7a26; text-decoration:none; font-weight:700; background:rgba(47,122,38,.08); padding:0 1px}
+.rpg-sao-chgbtns{flex:0 0 auto; display:flex; gap:3px}
+.rpg-sao-lock{flex:0 0 auto; width:20px; height:18px; padding:0; margin-top:-1px; cursor:pointer;
+  display:grid; place-items:center; border-radius:2px; color:var(--rpg-sao-ink-dim);
+  background:transparent; border:1px solid var(--rpg-sao-rule); opacity:.55}
+.rpg-sao-lock:hover{opacity:1; color:var(--rpg-sao-ink)}
+.rpg-sao-lock.on{opacity:1; color:#8a6a12; border-color:#b3903f; background:rgba(179,144,63,.14)}
+.rpg-sao-changes li.locked{background:rgba(179,144,63,.10); box-shadow:inset 2px 0 0 #b3903f}
 .rpg-sao-revert{flex:0 0 auto; width:20px; height:18px; padding:0; margin-top:-1px; cursor:pointer;
   font-size:11px; line-height:1; border-radius:2px; color:var(--rpg-sao-ink-dim);
   background:transparent; border:1px solid var(--rpg-sao-rule); opacity:.55}
@@ -6968,11 +9089,45 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 
 .rpg-sao-meditor{padding-top:6px}
 .rpg-sao-mrow-edit{display:grid; align-items:center; gap:4px; margin-bottom:5px;
-  grid-template-columns:26px minmax(0,1fr) 44px 8px 44px 22px 22px}
+  grid-template-columns:auto 26px minmax(0,1fr) 44px 8px 44px 22px 22px}
 .rpg-sao-mrow-edit input[type=text]{min-width:0; width:100%; box-sizing:border-box;
   font:inherit; font-size:12px; padding:3px 5px; color:var(--rpg-sao-ink);
   background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
 .rpg-sao-tilecolor b{display:flex; align-items:center; gap:6px}
+.rpg-mathnum{cursor:pointer; -webkit-tap-highlight-color:transparent}
+.rpg-mathnum i{font-style:normal; font-size:.72em; opacity:.7; margin-left:1px}
+.rpg-sao-move b{display:flex; gap:5px; flex-wrap:wrap; justify-content:flex-end}
+.rpg-sao-entries.with-icons li.has-ico{display:flex; gap:8px; align-items:center}
+.rpg-sao-li-body{flex:1; min-width:0}
+.rpg-sao-ico{flex:0 0 auto; display:grid; place-items:center; width:24px; height:24px; padding:0;
+  border-radius:50%; border:1px solid var(--rpg-sao-rule); background:var(--rpg-sao-chip); color:var(--rpg-sao-ink)}
+button.rpg-sao-ico{cursor:pointer; -webkit-tap-highlight-color:transparent}
+button.rpg-sao-ico:hover{border-color:#b3903f; color:#8a6a12}
+.rpg-sao-ico svg{width:16px; height:16px; display:block; fill:none; stroke:currentColor; stroke-width:1.7;
+  stroke-linecap:round; stroke-linejoin:round}
+.rpg-sao-empty .rpg-sao-ico{display:inline-grid; width:auto; padding:0 6px; height:auto; margin:0 0 0 4px; border-radius:4px}
+.rpg-sao-ledit{display:flex; gap:6px; align-items:flex-start; margin-bottom:6px}
+.rpg-sao-ledit > .rpg-sao-ico{align-self:center}
+.rpg-sao-reorder{flex:0 0 auto; display:flex; flex-direction:column; gap:2px}
+.rpg-sao-mv{width:18px; height:13px; padding:0; cursor:pointer; font-size:8px; line-height:1; border-radius:2px;
+  color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule);
+  -webkit-tap-highlight-color:transparent}
+.rpg-sao-mv:hover:not(:disabled){border-color:#b3903f; color:#8a6a12}
+.rpg-sao-mv:disabled{opacity:.3; cursor:default}
+@media (pointer:coarse){ .rpg-sao-mv{width:22px; height:18px; font-size:9px} }
+.rpg-sao-ledit-text{flex:1; min-width:0; box-sizing:border-box; resize:vertical; font:inherit; font-size:12px; line-height:1.35;
+  padding:4px 6px; color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
+.rpg-sao-ledit-del{flex:0 0 auto; width:22px; height:22px; padding:0; cursor:pointer; font-size:12px; border-radius:2px;
+  background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink)}
+.rpg-sao-ledit-del:hover{color:#c0392b; border-color:#c0392b}
+.rpg-sao-ledit-side{flex:0 0 auto; display:flex; flex-direction:column; gap:4px}
+.rpg-sao-ledit-lock{width:22px; height:22px; padding:0; cursor:pointer; display:grid; place-items:center; border-radius:2px;
+  background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink-dim)}
+.rpg-sao-ledit-lock.on{color:#8a6a12; border-color:#b3903f; background:rgba(179,144,63,.16)}
+.rpg-sao-poslock{flex:0 0 auto; display:grid; place-items:center; color:#8a6a12; opacity:.85}
+#rpg-sao-edithist{width:52px; font:inherit; font-size:12px; padding:2px 4px; text-align:center}
+.rpg-sao-customfont input{width:100%; box-sizing:border-box; font:inherit; font-size:12px; padding:4px 6px;
+  color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
 .rpg-sao-livebond b{display:flex; align-items:center; gap:4px}
 .rpg-sao-livebond i{font-style:normal; font-weight:400; font-size:10px; color:var(--rpg-sao-ink-dim)}
 .rpg-sao-livebond input{width:44px; text-align:right; font:inherit; font-size:12px; padding:2px 5px;
@@ -6990,7 +9145,7 @@ button.rpg-sao-tag.foe:hover{color:#ffd0c7}
 .rpg-sao-mini.primary{background:#4e9c3f; border-color:#4e9c3f; color:#fff}
 
 .rpg-sao-mast-edit{display:grid; align-items:center; gap:4px; margin-bottom:5px;
-  grid-template-columns:minmax(0,1fr) 44px 8px 44px 22px}
+  grid-template-columns:auto minmax(0,1fr) 44px 8px 44px 22px}
 .rpg-sao-mast-edit input[type=text]{min-width:0; width:100%; box-sizing:border-box;
   font:inherit; font-size:12px; padding:3px 5px; color:var(--rpg-sao-ink);
   background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
@@ -7304,6 +9459,20 @@ const { curr: energyCurr, max: energyMax, label: energyLabel } = getEnergy(displ
           style="width:100%; background:#222; border:1px solid #555; color:white;">
       </div>
       <div>
+        <div style="${labelStyle()}">Weekday</div>
+        <select id="edit-weekday" style="width:100%; background:#222; border:1px solid #555; color:white;">
+          ${(() => {
+            const wt = rpgState.world_time || {};
+            const written = wt.weekday ? String(wt.weekday).slice(0, 3).toLowerCase() : "";
+            const auto = worldWeekday({ month: wt.month, day: wt.day, year: wt.year }, false);
+            const cur = !written ? "none" : auto && auto.toLowerCase() === written ? "auto" : written;
+            const opt = (v, label) => `<option value="${v}"${cur === v ? " selected" : ""}>${label}</option>`;
+            return opt("none", "None") + opt("auto", `Auto${auto ? " (" + auto + ")" : ""}`) +
+              WEEKDAYS.map((d) => opt(d.slice(0, 3).toLowerCase(), d)).join("");
+          })()}
+        </select>
+      </div>
+      <div>
         <div style="${labelStyle()}">Clock</div>
         <input id="edit-clock" type="text" value="${escAttr(rpgState.world_time?.clock ?? "12:00")}"
           style="width:100%; background:#222; border:1px solid #555; color:white;">
@@ -7611,7 +9780,12 @@ function parseBlockCore(text) {
     if (data.loc !== undefined) newState.location = data.loc;
     if (data.time !== undefined) {
       const tParts = String(data.time).split(',');
+      // an optional weekday in front: "Mon Jan 6 1023,14:00" or "Mon, Jan 6 1023,14:00"
+      let weekday = "";
+      if (tParts.length > 2 && WEEKDAY_RE.test(tParts[0].trim())) weekday = tParts.shift().trim();
       const datePart = (tParts[0] || "").trim().split(/\s+/);
+      if (datePart.length > 2 && WEEKDAY_RE.test(datePart[0])) weekday = datePart.shift();
+      if (weekday) newState.world_time.weekday = weekday.replace(/[.,]/g, "");
       newState.world_time.month = datePart[0] || "Jan";
       newState.world_time.day = parseInt(datePart[1]) || 1;
       if (datePart[2] !== undefined && /^\d{1,4}$/.test(datePart[2])) {
@@ -7849,6 +10023,7 @@ $(document).on('change', '#rpg-settings-autoinject', function() {
   const evt = event_types?.[name];
   if (!evt) return;
   eventSource.on(evt, () => {
+    if (name === "MESSAGE_RECEIVED") { replyReceivedAt = Date.now(); lastReplyAt = Date.now(); }
     // an edit or deletion can change history underneath the cached ledger
     if (name === "MESSAGE_UPDATED" || name === "MESSAGE_EDITED" || name === "MESSAGE_DELETED") {
       invalidateHistoryMemory();
@@ -7857,6 +10032,11 @@ $(document).on('change', '#rpg-settings-autoinject', function() {
     setTimeout(() => checkMessage(), 150);
   });
 });
+
+// Opening another chat (or refreshing into one) is never a new reply.
+if (event_types?.CHAT_CHANGED) {
+  eventSource.on(event_types.CHAT_CHANGED, () => { replyReceivedAt = 0; notagWatch = null; });
+}
 
 // --- 8. BOOT ---
 jQuery(() => {
