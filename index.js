@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-21.7";
+const HUD_BUILD = "2026-10-21.8";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -7325,7 +7325,7 @@ const SYS_ICON_PATHS = {
   mp: '<path d="M8 2.5c2.6 3.2 4 5.3 4 7.1a4 4 0 0 1-8 0c0-1.8 1.4-3.9 4-7.1z"/>',
   bond: '<path d="M8 13.2S2.5 9.8 2.5 6.2A2.9 2.9 0 0 1 8 4.9a2.9 2.9 0 0 1 5.5 1.3c0 3.6-5.5 7-5.5 7z"/>',
   meter: '<path d="M2.8 11.5a5.5 5.5 0 1 1 10.4 0"/><path d="M8 10l2.8-2.8"/>',
-  atk: '<path d="M13.2 2.8L6.6 9.4M4.6 7.9l3.5 3.5M5.8 10.2L2.8 13.2M13.2 2.8l-2.6.4M13.2 2.8l-.4 2.6"/>',
+  atk: '<g transform="rotate(45 8 8)"><path d="M8 .6l1.25 2V10h-2.5V2.6z"/><path d="M8 3.4v5.4" stroke-width="1"/><path d="M4.4 10.3h7.2" stroke-width="1.8"/><path d="M8 10.6v3"/><circle cx="8" cy="14.5" r=".9"/></g>',
   matk: '<path d="M2.8 13.2L9.6 6.4"/><path d="M12 1.8v4.4M9.8 4h4.4"/>',
   def: '<path d="M8 2l5 2v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V4z"/>',
   satk: '<path d="M8 14c-2.6 0-4.3-1.8-4.3-4.1 0-2.6 2.3-3.7 2.6-6.4 1.6 1 2.6 2.4 2.6 4 .7-.4 1.2-1.2 1.3-2 1.4 1.2 2.1 2.7 2.1 4.4C12.3 12.2 10.6 14 8 14z"/>',
@@ -7656,6 +7656,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-21.8", items: [
+    "System skin: the ATK icon is now a proper sword (blade, crossguard, grip and pommel) instead of something that read as an arrow.",
+  ] },
   { build: "2026-10-21.7", items: [
     "System skin: Bonds and Timers use the capsule bars too. Bonds show a glowing dot for who's in the scene; timers get a line icon per kind (threat, event, debuff, buff, cooldown).",
     "System skin: emoji replaced with matching line icons: the settings gear, update log, help, the Bonds heart, the Timers stopwatch, the advance-turn button and the settings action buttons. The character picker drops its emoji too. Classic keeps its emoji.",
