@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-21.5";
+const HUD_BUILD = "2026-10-21.4";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -446,9 +446,6 @@ const defaultUiSettings = {
   saoTextShadow: false,   // shadow behind the text that sits straight on the chat
   saoTextBacking: false,  // translucent card behind that text instead        // "classic" | "sao"
   barsOnMin: true,        // sao skin: keep the bars visible when minimised
-  sysBigSlot: "name",     // system skin: the big slot shows "name" or an analog "clock"
-  sysNotices: true,       // system skin: "You have acquired..." popups when a reply adds things
-  sysFont: "exo",         // system skin font: a SAO_FONTS key, or "preset" for the classic preset
   fontPreset: "retro_mono",
   fontFamily: "'Courier New', Courier, monospace",
   fontScale: 1.0,
@@ -525,7 +522,7 @@ function applyHudTypography(container) {
     uiSettings.fontFamily = fontPresetToFamily(uiSettings.fontPreset);
   }
 
-  container.style.fontFamily = uiSettings.skin === "system" ? sysFontStack() : uiSettings.fontFamily;
+  container.style.fontFamily = uiSettings.fontFamily;
   container.style.fontSize = `${0.9 * scale}em`;
 }
 
@@ -961,13 +958,6 @@ function maybeReportListChanges() {
   const positions = b ? positionFixesFor(b) : [];
   if (weekday || restoring.length || positions.length) schedulePostReplyFixes(idx, inner, { weekday, restores: restoring, positions });
   if (!a || !b) return;
-  // only for a reply that's just arrived: opening a chat, or the HUD tidying
-  // an old block's format, is not something being acquired
-  if (uiSettings.skin === "system" && uiSettings.sysNotices !== false
-      && Date.now() - lastReplyAt < 120000 && idx === chat.length - 1) {
-    try { sysShowNotices(sysNoticesFor(a, b), `${key}|${idx}|${chat[idx]?.swipe_id ?? 0}`); }
-    catch (e) { console.warn("RPG HUD: system notice failed", e); }
-  }
   if (!uiSettings.changeAlerts) return;
 
   // every character, not just the player; each change carries whose it is
@@ -3547,8 +3537,6 @@ function renderClassicSkin() {
   saoSaveScroll(container);
   queueMicrotask(() => saoRestoreScroll(container));
 
-  const SYS = uiSettings.skin === "system";   // the System skin is this panel, restyled
-  if (SYS) { sysEnsureCss(); sysEnsureWebFont(); }
   const BOX_RADIUS = "0px";
   const BAR_RADIUS = "4px";
   const FONT_FAMILY = uiSettings.fontFamily || "'Courier New', Courier, monospace";
@@ -3565,19 +3553,7 @@ function renderClassicSkin() {
       const dot = indicatorColor(latest?.status);
       const latestTitle = latest?.detail ? `${latest.label}\n${latest.detail}` : (latest?.label || "");
 
-      container.className = "";
-      container.style.cssText = SYS ? `
-        position: fixed; right: 0;
-        top: clamp(calc(env(safe-area-inset-top, 0px) + 50px), 20vh, calc(100vh - env(safe-area-inset-bottom, 0px) - 50px));
-        transform: translateY(-50%);
-        width: 26px; height: 58px;
-        background: rgba(5,12,24,0.92);
-        border: 1px solid #8fd0ff; border-right: 0;
-        z-index: 99999; cursor: pointer; box-sizing: border-box;
-        box-shadow: 0 0 10px rgba(90,180,255,0.55), inset 0 0 8px rgba(90,180,255,0.25);
-        display: flex; align-items: center; justify-content: center;
-        touch-action: manipulation; user-select: none;
-      ` : `
+      container.style.cssText = `
         position: fixed;
         right: 0;
 
@@ -3632,28 +3608,24 @@ const hudH = Math.max(0, Number(uiSettings.hudHeight) || 0);
 container.style.cssText = `position: fixed; top: 50px; right: 20px;
   width: ${hudW}px;
   ${hudH ? `height:${hudH}px;` : ""}
-  ${SYS ? `background: var(--sys-bg); border: 1px solid var(--sc); color: #e4f3ff;` : `
   background: rgba(10, 10, 15, 0.95);
-  border: 2px solid #C0A040; color: #E0E0E0;`}
+  border: 2px solid #C0A040; color: #E0E0E0;
   padding: 10px 10px 46px 10px;
   z-index: 9999;
   font-family: ${FONT_FAMILY};
   font-size: ${FONT_SIZE};
   display: block !important;
   border-radius: ${BOX_RADIUS};
-  box-shadow: ${SYS ? "var(--sys-shadow)" : "0 0 10px #000"};
+  box-shadow: 0 0 10px #000;
   box-sizing:border-box;
   contain: layout paint;
   overflow: hidden;`;
 
   applyHudTypography(container);
-  if (SYS) container.style.fontFamily = sysFontStack();
-  container.className = SYS ? "rpg-sys" : "";
   container.onclick = null;
 
   try {
     const { root, display, type, isVehicle } = getActiveData();
-    if (SYS) container.className = `rpg-sys rpg-sys-${isVehicle ? "veh" : type}`;
     const context = SillyTavern.getContext();
     const chat = context?.chat;
     latest = updateLatestStatusAndToast(chat);
@@ -3750,12 +3722,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
     const time = rpgState.world_time || { month: "???", day: 0, clock: "??:??", weather: "Unknown" };
     const selectStyle = `background: transparent; border: none; color: ${headerColor}; font-weight: bold; font-size: 1em; cursor: pointer; outline: none; max-width: 170px; font-family:${FONT_FAMILY};`;
-    const tabStyle = (name) => SYS
-      ? `flex:0 0 auto; min-width:52px; text-align:center; cursor:pointer; padding:4px 8px; font-size:0.74em; letter-spacing:0.1em; text-transform:uppercase; user-select:none; ` +
-        (activeTab === name
-          ? "border:1px solid var(--sc); color:#fff; background:rgba(90,170,255,0.16); text-shadow:0 0 6px var(--sg); box-shadow:inset 0 0 6px var(--sg);"
-          : "border:1px solid transparent; color:#8fb6d8;")
-      :
+    const tabStyle = (name) =>
       `flex:0 0 auto; min-width:56px; text-align:center; cursor:pointer; padding:5px 8px; font-size:0.8em; border-radius:3px; user-select:none; ` +
       `${activeTab === name ? "background:#C0A040; color:#000; font-weight:bold;" : "background:transparent; color:#ddd;"}`;
 
@@ -3852,13 +3819,10 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
         <select id="rpg-skin-select" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px;">
             <option value="classic">Classic panel</option>
-            <option value="system">System window</option>
             <option value="sao">SAO overlay</option>
         </select>
 
-        ${SYS ? sysSettingsHtml() : ""}
-
-        <div style="font-size:0.75em; color:#bbb; margin-bottom:6px;">${SYS ? "Font preset (with Font: Follow preset)" : "Font preset"}</div>
+        <div style="font-size:0.75em; color:#bbb; margin-bottom:6px;">Font preset</div>
 
         <select id="rpg-font-preset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px;">
             <option value="retro_mono">Retro Mono (Courier)</option>
@@ -3902,7 +3866,6 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
 
     container.innerHTML = `
-    ${SYS ? sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLabel, coin, time }) : `
 	<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; padding-bottom:5px; border-bottom:1px solid ${borderColor}; min-height:24px;">
 	  <div style="display:flex; align-items:center; gap:6px; min-width:0;">
 	    <span style="font-size:1.2em;">${icon}</span>
@@ -3961,9 +3924,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           ${renderStatBox("SDEF", display.stats?.sdef)}
         </div>
       </div>
-    `}
 
-      <div id="rpg-tab-strip" data-scroll-key="c:strip" style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid ${SYS ? "rgba(143,208,255,0.35)" : "#555"}; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
+      <div id="rpg-tab-strip" data-scroll-key="c:strip" style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid #555; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
         <div id="tab-party" style="${tabStyle("party")}">Party</div>
 		<div id="tab-bonds" style="${tabStyle("bonds")}">Bonds</div>
 	    <div id="tab-timers" style="${tabStyle("timers")}">Timers</div>
@@ -3977,7 +3939,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       </div>
 
       ${CLASSIC_ED_CSS}
-      <div data-scroll-key="c:body:${activeTab}" style="height: ${classicEditorOpen() ? 240 : 110}px; overflow-y: auto; font-size: 0.8em; padding:5px; background:${SYS ? "rgba(4,12,24,0.55); border:1px solid rgba(143,208,255,0.22)" : "rgba(0,0,0,0.3)"}; scrollbar-gutter:${activeTab === "log" ? "auto" : "stable"};">
+      <div data-scroll-key="c:body:${activeTab}" style="height: ${classicEditorOpen() ? 240 : 110}px; overflow-y: auto; font-size: 0.8em; padding:5px; background:rgba(0,0,0,0.3); scrollbar-gutter:${activeTab === "log" ? "auto" : "stable"};">
         ${activeTab === "party" ? renderPartyTab() : ""}
         ${activeTab === "log" ? classicLogHtml() : ""}
 		${activeTab === "bonds" ? renderBondsTab() : ""}
@@ -3992,7 +3954,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
       ${renderEnemySummary()}
 
-    <div class="rpg-c-btns" style="
+    <div style="
 	  position:absolute; left:10px; bottom:8px;
 	  display:flex; gap:6px;
 	">
@@ -4024,7 +3986,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	</div>
 
 
-      ${SYS ? "" : `<div style="position:absolute; right:10px; bottom:10px; font-size:0.8em; color:#FFD700;">💰 ${escHtml(coin)}</div>`}
+      <div style="position:absolute; right:10px; bottom:10px; font-size:0.8em; color:#FFD700;">💰 ${escHtml(coin)}</div>
 
       <div id="rpg-resize-left" title="Resize"
         style="position:absolute; left:-8px; top:0; bottom:0; width:16px;
@@ -4242,8 +4204,6 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    skinEl.onchange = () => { setSkin(skinEl.value); };
 	    skinEl.onclick = (e) => e.stopPropagation();
 	  }
-
-	  if (SYS) sysBindSettings(container);
 
 	  const caEl = document.getElementById("rpg-settings-changealerts");
 	  if (caEl) caEl.onchange = () => {
@@ -4643,7 +4603,7 @@ function buildTurnLog(chat) {
 
 function setSkin(name) {
   flushInlineEdits();
-  uiSettings.skin = name === "sao" || name === "system" ? name : "classic";
+  uiSettings.skin = name === "sao" ? "sao" : "classic";
   saveUiSettings();
   isSettingsOpen = false;
   saoPanel = null;
@@ -7103,437 +7063,11 @@ function classicBindEditors() {
 
 
 // =====================================================================
-// SYSTEM SKIN
-// The classic panel, restyled as a glowing status window. It shares every
-// tab, editor and overlay with classic; only the top of the panel (title,
-// big slot, info lines, bars and stats) is its own. It also has the optional
-// "You have acquired..." notifications, raised from the same once-per-reply
-// pass that drives Change Alerts.
-// =====================================================================
-
-const SYS_CSS = `
-.rpg-sys{--sc:#8fd0ff; --sg:rgba(90,180,255,.55); --st:rgba(50,120,210,.22);
-  --sys-bg:repeating-linear-gradient(115deg, rgba(140,200,255,.045) 0 1px, transparent 1px 13px),
-    radial-gradient(120% 60% at 20% 0%, var(--st), transparent 60%),
-    radial-gradient(100% 50% at 90% 100%, rgba(40,90,180,.16), transparent 60%), rgba(4,9,18,.94);
-  --sys-shadow:0 0 0 1px rgba(0,0,0,.55), 0 0 16px var(--sg), inset 0 0 0 3px rgba(4,9,18,.85),
-    inset 0 0 0 4px rgba(143,208,255,.28), inset 0 0 26px rgba(60,140,230,.14)}
-.rpg-sys-enemy{--sc:#ff8080; --sg:rgba(255,80,80,.5); --st:rgba(200,50,60,.24)}
-.rpg-sys-veh{--sc:#d6a2ff; --sg:rgba(190,120,255,.5); --st:rgba(140,70,210,.22)}
-.rpg-sys::before,.rpg-sys::after{content:""; position:absolute; width:14px; height:14px; pointer-events:none;
-  border:0 solid var(--sc); filter:drop-shadow(0 0 3px var(--sg)); z-index:1}
-.rpg-sys::before{top:5px; left:5px; border-top-width:2px; border-left-width:2px}
-.rpg-sys::after{bottom:5px; right:5px; border-bottom-width:2px; border-right-width:2px}
-.rpg-sys .sys-svg{fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round}
-
-.rpg-sys .sys-head{position:relative; display:flex; justify-content:center; align-items:center; min-height:30px; margin:2px 0 8px}
-.rpg-sys .sys-kind{position:absolute; left:4px; top:50%; transform:translateY(-50%); font-size:.62em; letter-spacing:.16em;
-  color:var(--sc); opacity:.9; text-shadow:0 0 6px var(--sg)}
-.rpg-sys .sys-ctl{position:absolute; right:0; top:50%; transform:translateY(-50%); display:flex; align-items:center; gap:6px}
-.rpg-sys .sys-plate{border:1px solid var(--sc); padding:3px 18px 2px calc(18px + .22em); font-size:1.2em; font-weight:600;
-  letter-spacing:.22em; color:#f2faff; text-shadow:0 0 8px var(--sg),0 0 2px #fff; background:rgba(12,30,56,.55);
-  box-shadow:0 0 10px var(--sg), inset 0 0 10px rgba(90,170,255,.18)}
-.rpg-sys #rpg-min-btn{width:28px !important; height:20px !important; background:rgba(10,26,48,.9) !important;
-  border:1px solid rgba(143,208,255,.6) !important; color:#dff1ff !important}
-
-.rpg-sys .sys-hero{margin:2px 0 8px}
-.rpg-sys .sys-hero.name{text-align:center}
-.rpg-sys .sys-big{font-size:1.9em; font-weight:700; line-height:1.1; color:#f4fbff; letter-spacing:.02em;
-  text-shadow:0 0 10px var(--sg), 0 0 2px rgba(255,255,255,.8); overflow-wrap:anywhere}
-.rpg-sys .sys-big.m{font-size:1.6em} .rpg-sys .sys-big.s{font-size:1.3em}
-.rpg-sys .sys-rule{height:1px; margin:6px 8%; background:linear-gradient(90deg,transparent,var(--sc),transparent); opacity:.6}
-.rpg-sys .sys-info{display:grid; grid-template-columns:auto minmax(0,1fr); gap:1px 8px; font-size:.8em; text-align:left; align-items:baseline}
-.rpg-sys .sys-info .k{color:#8fb6d8; letter-spacing:.08em; font-size:.82em; white-space:nowrap}
-.rpg-sys .sys-info .v{color:#eaf6ff; font-weight:600; overflow-wrap:anywhere; min-width:0}
-.rpg-sys .sys-info .v.bad{color:#ff9a9a; text-shadow:0 0 6px rgba(255,80,80,.5)}
-.rpg-sys .sys-info .v.ok{color:#a6ecd0}
-.rpg-sys .sys-hero.clock{display:flex; align-items:center; gap:12px}
-.rpg-sys .sys-clock{flex:0 0 auto; width:64px; height:64px; color:var(--sc); filter:drop-shadow(0 0 4px var(--sg))}
-.rpg-sys .sys-clock svg{display:block; width:100%; height:100%}
-.rpg-sys .sys-hero.clock .sys-info{flex:1; min-width:0}
-.rpg-sys .sys-pick{position:relative; display:inline-block; max-width:100%; cursor:pointer}
-.rpg-sys .sys-pick select{position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; font-size:16px;
-  -webkit-appearance:none; appearance:none; border:0; margin:0}
-.rpg-sys .sys-caret{font-size:.5em; opacity:.7; margin-left:.35em; vertical-align:middle; text-shadow:none}
-
-.rpg-sys .sys-panels{display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:8px; margin-bottom:8px}
-.rpg-sys .sys-box{border:1px solid rgba(143,208,255,.42); padding:7px 10px; background:rgba(8,20,38,.45);
-  box-shadow:inset 0 0 12px rgba(60,140,230,.10); min-width:0}
-.rpg-sys .sys-bar + .sys-bar{margin-top:6px}
-.rpg-sys .sys-bar-lab{display:flex; align-items:center; gap:5px; font-size:.72em; letter-spacing:.08em; color:#a9cbe8}
-.rpg-sys .sys-bar-lab .sys-svg{width:12px; height:12px; color:#e6f5ff; flex:0 0 auto}
-.rpg-sys .sys-bar-num{margin-left:auto; color:#dff1ff; letter-spacing:0; font-size:1.05em; white-space:nowrap}
-.rpg-sys .sys-cap{height:8px; margin-top:3px; border:1px solid rgba(190,230,255,.75); border-radius:6px; padding:1px;
-  box-sizing:border-box; box-shadow:0 0 6px var(--sg), inset 0 0 4px rgba(90,170,255,.3)}
-.rpg-sys .sys-cap i{display:block; height:100%; border-radius:4px; background:linear-gradient(90deg,#a9dcff,#f4fbff);
-  box-shadow:0 0 6px rgba(190,230,255,.9)}
-.rpg-sys .sys-cap.low i{background:linear-gradient(90deg,#ff6b6b,#ffb3b3); box-shadow:0 0 6px rgba(255,90,90,.9)}
-.rpg-sys .sys-cap.tint i{background:var(--mc); box-shadow:0 0 6px var(--mc)}
-.rpg-sys .sys-stats{display:grid; grid-template-columns:1fr 1fr; gap:6px 12px; align-content:center}
-.rpg-sys .sys-stat{display:flex; align-items:center; gap:5px; font-size:.78em; color:#a9cbe8; letter-spacing:.06em; min-width:0}
-.rpg-sys .sys-stat .sys-svg{width:14px; height:14px; color:#e6f5ff; filter:drop-shadow(0 0 3px var(--sg)); flex:0 0 auto}
-.rpg-sys .sys-stat b{margin-left:auto; font-size:1.3em; color:#f4fbff; text-shadow:0 0 8px var(--sg); letter-spacing:0; font-weight:600;
-  white-space:nowrap}
-
-.rpg-sys .rpg-c-btns button{background:rgba(10,26,48,.9) !important; border:1px solid rgba(143,208,255,.55) !important;
-  color:#dff1ff !important; box-shadow:0 0 6px rgba(90,170,255,.2)}
-.rpg-sys #rpg-settings-overlay,.rpg-sys #rpg-info-overlay{background:#04090f !important; border-color:var(--sc) !important}
-.rpg-sys .rpg-c-li{border-bottom-color:rgba(143,208,255,.15)}
-.rpg-sys .rpg-c-ed .rpg-sao-ico{border-color:rgba(143,208,255,.45); background:rgba(10,26,48,.85); color:#dff1ff;
-  box-shadow:0 0 5px rgba(90,170,255,.18)}
-.rpg-sys .rpg-c-ed button.rpg-sao-ico:hover{border-color:var(--sc); color:#fff}
-.rpg-sys .rpg-c-ed .rpg-sao-mini{background:rgba(10,26,48,.9); border-color:rgba(143,208,255,.5); color:#dff1ff}
-.rpg-sys .rpg-c-ed .rpg-sao-ledit-text,.rpg-sys .rpg-c-ed .rpg-sao-mast-edit input[type=text]{background:rgba(6,16,30,.9);
-  border-color:rgba(143,208,255,.35); color:#eaf6ff}
-.rpg-sys .rpg-c-ed .rpg-sao-ledit-del,.rpg-sys .rpg-c-ed .rpg-sao-ms-del,.rpg-sys .rpg-c-ed .rpg-sao-ledit-lock,
-.rpg-sys .rpg-c-ed .rpg-sao-mv{background:rgba(10,26,48,.9); border-color:rgba(143,208,255,.4); color:#cfe6f8}
-
-#rpg-sys-notices{position:fixed; top:calc(env(safe-area-inset-top, 0px) + 14px); left:50%; transform:translateX(-50%);
-  z-index:100003; display:flex; flex-direction:column; gap:8px; width:min(330px, calc(100vw - 24px)); pointer-events:none;
-  font-size:15px}
-.rpg-sys-note{--sc:#8fd0ff; --sg:rgba(90,180,255,.55); pointer-events:auto; position:relative; cursor:pointer;
-  padding:10px 14px 12px; text-align:center; color:#e4f3ff; border:1px solid var(--sc);
-  background:repeating-linear-gradient(115deg, rgba(140,200,255,.05) 0 1px, transparent 1px 13px),
-    radial-gradient(120% 70% at 50% 0%, rgba(50,120,210,.28), transparent 65%), rgba(4,9,18,.95);
-  box-shadow:0 0 0 1px rgba(0,0,0,.5), 0 0 18px var(--sg), inset 0 0 0 3px rgba(4,9,18,.85), inset 0 0 0 4px rgba(143,208,255,.28);
-  transform-origin:50% 50%; animation:rpgSysIn .38s ease-out}
-.rpg-sys-note.warn{--sc:#ff8080; --sg:rgba(255,80,80,.5)}
-.rpg-sys-note .plate{display:inline-block; border:1px solid var(--sc); padding:2px 14px 1px calc(14px + .2em); margin-bottom:7px;
-  font-size:.78em; font-weight:600; letter-spacing:.2em; color:#f2faff; text-shadow:0 0 6px var(--sg); box-shadow:0 0 8px var(--sg)}
-.rpg-sys-note .msg{font-size:.92em; line-height:1.4; overflow-wrap:anywhere}
-.rpg-sys-note .msg b{color:#cfeaff; text-shadow:0 0 6px var(--sg); font-weight:600}
-.rpg-sys-note.out{animation:rpgSysOut .3s ease-in forwards}
-@keyframes rpgSysIn{0%{opacity:0; transform:scale(.6,.05)} 55%{opacity:1; transform:scale(1.02,1.04)} 100%{transform:none}}
-@keyframes rpgSysOut{to{opacity:0; transform:scale(.9,.05)}}
-@media (prefers-reduced-motion: reduce){ .rpg-sys-note,.rpg-sys-note.out{animation-duration:.01s} }
-`;
-
-function sysEnsureCss() {
-  let el = document.getElementById("rpg-sys-css");
-  if (el && el.textContent === SYS_CSS) return;
-  if (!el) {
-    el = document.createElement("style");
-    el.id = "rpg-sys-css";
-    document.head.appendChild(el);
-  }
-  el.textContent = SYS_CSS;
-}
-
-function sysFontStack() {
-  const k = uiSettings.sysFont || "exo";
-  if (k === "preset") return uiSettings.fontFamily || SAO_FONTS.sans;
-  return SAO_FONTS[k] || SAO_FONTS.exo;
-}
-
-function sysEnsureWebFont() {
-  const family = SAO_WEBFONTS[uiSettings.sysFont || "exo"];
-  if (!family) return;
-  const href = `https://fonts.googleapis.com/css2?family=${family}&display=swap`;
-  let link = document.getElementById("rpg-sys-webfont");
-  if (link && link.getAttribute("href") === href) return;
-  if (!link) {
-    link = document.createElement("link");
-    link.id = "rpg-sys-webfont";
-    link.rel = "stylesheet";
-    document.head.appendChild(link);
-  }
-  link.href = href;
-}
-
-const SYS_ICON_PATHS = {
-  hp: '<path d="M8 3v10M3 8h10" stroke-width="2.4"/>',
-  mp: '<path d="M8 2.5c2.6 3.2 4 5.3 4 7.1a4 4 0 0 1-8 0c0-1.8 1.4-3.9 4-7.1z"/>',
-  bond: '<path d="M8 13.2S2.5 9.8 2.5 6.2A2.9 2.9 0 0 1 8 4.9a2.9 2.9 0 0 1 5.5 1.3c0 3.6-5.5 7-5.5 7z"/>',
-  meter: '<path d="M2.8 11.5a5.5 5.5 0 1 1 10.4 0"/><path d="M8 10l2.8-2.8"/>',
-  atk: '<path d="M13.2 2.8L6.6 9.4M4.6 7.9l3.5 3.5M5.8 10.2L2.8 13.2M13.2 2.8l-2.6.4M13.2 2.8l-.4 2.6"/>',
-  matk: '<path d="M2.8 13.2L9.6 6.4"/><path d="M12 1.8v4.4M9.8 4h4.4"/>',
-  def: '<path d="M8 2l5 2v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V4z"/>',
-  satk: '<path d="M8 14c-2.6 0-4.3-1.8-4.3-4.1 0-2.6 2.3-3.7 2.6-6.4 1.6 1 2.6 2.4 2.6 4 .7-.4 1.2-1.2 1.3-2 1.4 1.2 2.1 2.7 2.1 4.4C12.3 12.2 10.6 14 8 14z"/>',
-  sdef: '<path d="M8 2l5 2v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V4z"/><path d="M8 5.6v4.8M5.6 8h4.8"/>',
-  coin: '<circle cx="8" cy="8" r="5.6"/><circle cx="8" cy="8" r="2.8"/>',
-};
-const sysIcon = (k) => `<svg class="sys-svg" viewBox="0 0 16 16" aria-hidden="true">${SYS_ICON_PATHS[k] || ""}</svg>`;
-
-// An analog face for the in-world time. "14:30", "2:30 PM", "02.30pm" all read.
-function sysClockSvg(clock) {
-  const m = String(clock || "").match(/(\d{1,2})\s*[:.h]\s*(\d{2})(?:\s*([ap])\.?\s*m\.?)?/i);
-  let h = 0, mi = 0;
-  const ok = !!m;
-  if (m) {
-    h = +m[1]; mi = Math.min(59, +m[2]);
-    if (m[3]) { const pm = /p/i.test(m[3]); if (h === 12) h = 0; if (pm) h += 12; }
-  }
-  const ha = ((h % 12) + mi / 60) * 30, ma = mi * 6;
-  let ticks = "";
-  for (let i = 0; i < 12; i++) {
-    const major = i % 3 === 0;
-    ticks += `<line x1="50" y1="${major ? 9 : 11}" x2="50" y2="${major ? 17 : 15}" stroke="currentColor" stroke-width="${major ? 3 : 1.6}"
-      stroke-linecap="round" transform="rotate(${i * 30} 50 50)"/>`;
-  }
-  const hand = "#f4fbff";
-  return `<svg viewBox="0 0 100 100" aria-label="${escAttr(ok ? `Time ${clock}` : "Time unknown")}" role="img">
-    <circle cx="50" cy="50" r="47" fill="rgba(8,20,38,.6)" stroke="currentColor" stroke-width="2"/>
-    <circle cx="50" cy="50" r="41" fill="none" stroke="currentColor" stroke-opacity=".35" stroke-width="1"/>
-    ${ticks}
-    <text x="50" y="74" text-anchor="middle" font-size="11" letter-spacing="1" fill="#a9cbe8" style="font-family:inherit">${ok ? (h >= 12 ? "PM" : "AM") : "?"}</text>
-    ${ok ? `<line x1="50" y1="53" x2="50" y2="28" stroke="${hand}" stroke-width="4.5" stroke-linecap="round" transform="rotate(${ha.toFixed(1)} 50 50)"/>
-    <line x1="50" y1="56" x2="50" y2="16" stroke="${hand}" stroke-width="2.6" stroke-linecap="round" transform="rotate(${ma} 50 50)"/>` : ""}
-    <circle cx="50" cy="50" r="3.6" fill="${hand}"/>
-  </svg>`;
-}
-
-function sysBar(icon, label, curr, max, extra = {}) {
-  const maxNum = safeParseFloatOrInf(max, 0);
-  if (extra.skipEmpty && Number.isFinite(maxNum) && maxNum <= 0) return "";
-  const pct = extra.pct ?? percentFrom(curr, max);
-  const cls = extra.tint ? "tint" : (extra.lowWarn && pct <= 25 ? "low" : "");
-  return `<div class="sys-bar">
-      <div class="sys-bar-lab">${sysIcon(icon)}<span>${escHtml(label)}</span>
-        <span class="sys-bar-num">${extra.numHtml ?? `${renderInlineValue(curr)} / ${renderInlineValue(max)}`}</span></div>
-      <div class="sys-cap ${cls}"${extra.tint ? ` style="--mc:${escAttr(extra.tint)}"` : ""}><i style="width:${pct}%"></i></div>
-    </div>`;
-}
-
-function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLabel, coin, time }) {
-  const kind = isVehicle ? "VEHICLE" : ({ player: "PLAYER", party: "PARTY", npc: "NPC", enemy: "ENEMY" }[type] || "");
-  const name = isVehicle ? displayName(display.name, "Vehicle")
-    : type === "player" ? playerDisplayName() : displayName(display.name, "Unit");
-  const pick = (inner) => `<span class="sys-pick">${inner}<span class="sys-caret">▾</span>` +
-    `<select id="rpg-char-select" title="Switch character">${getCharOptions()}</select></span>`;
-  const clockMode = uiSettings.sysBigSlot === "clock";
-
-  const wd = worldWeekday(time);
-  const dateText = `${wd ? wd + ", " : ""}${time.month ?? "???"} ${time.day ?? ""}${time.year ? ", " + time.year : ""}`;
-  const effects = (Array.isArray(display.status_effects) ? display.status_effects : [])
-    .map((x) => String(x).trim()).filter((x) => x && !BLK_NO_STATUS.test(x));
-  const rows = [];
-  if (clockMode) rows.push(["NAME", pick(escHtml(name)), ""]);
-  rows.push(["LOCATION", escHtml(rpgState.location || "Unknown"), ""]);
-  rows.push(["TIME", `${escHtml(dateText)} · ${escHtml(time.clock ?? "??:??")}`, ""]);
-  if (time.weather && !/^unknown$/i.test(String(time.weather))) rows.push(["WEATHER", escHtml(time.weather), ""]);
-  if (rpgState?.combat?.active) rows.push(["COMBAT", `Round ${escHtml(rpgState.combat.round ?? 1)}`, "bad"]);
-  rows.push(["CONDITION", effects.length ? effects.map(escHtml).join(", ") : "Healthy", effects.length ? "bad" : "ok"]);
-  const info = `<div class="sys-info">${rows.map(([k, v, c]) => `<span class="k">${k}:</span><span class="v ${c}">${v}</span>`).join("")}</div>`;
-
-  const size = name.length > 18 ? " s" : name.length > 11 ? " m" : "";
-  const hero = clockMode
-    ? `<div class="sys-hero clock"><div class="sys-clock">${sysClockSvg(time.clock)}</div>${info}</div>`
-    : `<div class="sys-hero name"><div class="sys-big${size}">${pick(escHtml(name))}</div><div class="sys-rule"></div>${info}</div>`;
-
-  // bars: HP, MP/EN, bond for party and NPCs, then any meters
-  const { curr: eCurr, max: eMax, label: eLabel } = getEnergy(display, isVehicle);
-  let bars = sysBar("hp", hpLabel, display.hp_curr, display.hp_max, { lowWarn: true })
-    + sysBar("mp", eLabel, eCurr, eMax, { skipEmpty: true });
-  if ((type === "party" || type === "npc") && !isVehicle) {
-    const bond = clamp(parseBondValue(root.bond), Number.NEGATIVE_INFINITY, 101);
-    bars += sysBar("bond", "BOND", 0, 0, {
-      pct: bond >= 101 ? 100 : clamp(Math.abs(bond), 0, 100),
-      numHtml: `${bond >= 101 ? "∞" : escHtml(bond)} / 100`,
-      tint: bond < 0 ? "#ff6b6b" : "#f48fb1",
-    });
-  }
-  (Array.isArray(display.meters) ? display.meters : []).forEach((mt) => {
-    if (!mt || typeof mt !== "object") return;
-    const nm = mt.name ?? mt.label ?? "Meter";
-    bars += sysBar("meter", String(nm).toUpperCase(), mt.curr ?? mt.value ?? 0, mt.max ?? 100,
-      { skipEmpty: true, tint: meterColorByName(nm) });
-  });
-
-  const stat = (icon, label, raw) => {
-    const has = raw !== undefined && raw !== null && String(raw).trim() !== "";
-    return `<div class="sys-stat">${sysIcon(icon)}<span>${label}</span><b>${has ? renderInlineValue(raw) : "—"}</b></div>`;
-  };
-  const st = display.stats || {};
-  const hasStats = ["atk", "def", "matk", "sdef", "satk"].some((k) => st[k] !== undefined && st[k] !== null && String(st[k]).trim() !== "");
-  const stats = !hasStats && !toNumberOr(coin, 0) ? "" : stat("atk", "ATK", st.atk) + stat("def", "DEF", st.def)
-    + stat("matk", "MATK", st.matk) + stat("sdef", "SDEF", st.sdef)
-    + stat("satk", "SATK", st.satk) + stat("coin", "COIN", coin);
-
-  return `
-    <div class="sys-head">
-      <span class="sys-kind">${kind}</span>
-      <div class="sys-plate">STATUS</div>
-      <div class="sys-ctl">
-        <span id="rpg-latest-indicator" style="cursor:pointer; user-select:none;">${renderIndicatorDotHtml(latest.status, latestTitle)}</span>
-        <button id="rpg-min-btn" title="Minimize" style="cursor:pointer; font-size:12px; padding:0; font-weight:bold; line-height:18px; box-sizing:border-box;">_</button>
-      </div>
-    </div>
-    ${hero}
-    <div class="sys-panels">
-      <div class="sys-box">${bars}</div>
-      ${stats ? `<div class="sys-box sys-stats">${stats}</div>` : ""}
-    </div>`;
-}
-
-// ---- settings (inside the classic settings overlay, when this skin is on) ----
-function sysSettingsHtml() {
-  const sel = "width:100%; background:#0d1a2c; border:1px solid #3d6a94; color:#dff1ff; padding:6px; margin-bottom:8px;";
-  const lab = "font-size:0.75em; color:#9fc6e6; margin-bottom:4px;";
-  const opt = (v, t, cur) => `<option value="${v}"${cur === v ? " selected" : ""}>${t}</option>`;
-  const big = uiSettings.sysBigSlot === "clock" ? "clock" : "name";
-  const font = uiSettings.sysFont || "exo";
-  return `
-    <div style="margin:0 0 10px; padding:8px; border:1px solid rgba(143,208,255,0.35); background:rgba(90,170,255,0.06);">
-      <div style="${lab}">Big slot</div>
-      <select id="rpg-sys-bigslot" style="${sel}">${opt("name", "Name", big)}${opt("clock", "Clock (in-world time)", big)}</select>
-      <div style="${lab}">Font</div>
-      <select id="rpg-sys-font" style="${sel}">${opt("exo", "Exo 2", font)}${opt("squarish", "Squarish (Rajdhani)", font)}${opt("saira", "Saira Condensed", font)}${opt("teko", "Teko", font)}${opt("sans", "Sans", font)}${opt("preset", "Follow preset", font)}</select>
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
-        <span title="A System popup when a reply gives you items, skills or passives, adds quests, timers or party members, or starts a fight">Notifications</span>
-        <input type="checkbox" id="rpg-sys-notices-cb" ${uiSettings.sysNotices !== false ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
-      </div>
-      <button id="rpg-sys-testnote" style="width:100%; background:#0d1a2c; border:1px solid #3d6a94; color:#dff1ff; padding:6px; cursor:pointer;">Show a test notification</button>
-    </div>`;
-}
-
-function sysBindSettings() {
-  const stop = (el) => { if (el) el.onclick = (e) => e.stopPropagation(); };
-  const big = document.getElementById("rpg-sys-bigslot");
-  if (big) { stop(big); big.onchange = () => { uiSettings.sysBigSlot = big.value; saveUiSettings(); renderRPG(); }; }
-  const font = document.getElementById("rpg-sys-font");
-  if (font) { stop(font); font.onchange = () => { uiSettings.sysFont = font.value; saveUiSettings(); renderRPG(); }; }
-  const nt = document.getElementById("rpg-sys-notices-cb");
-  if (nt) { stop(nt); nt.onchange = () => { uiSettings.sysNotices = nt.checked; saveUiSettings(); }; }
-  const test = document.getElementById("rpg-sys-testnote");
-  if (test) test.onclick = (e) => {
-    e.stopPropagation();
-    sysShowNotices([
-      { plate: "NOTIFICATION", html: "You have acquired <b>[Health Potion]</b>." },
-      { plate: "NOTIFICATION", html: "You have learned the skill <b>[Shadow Step]</b>." },
-      { plate: "QUEST INFO", html: "A new quest has been registered:<br><b>Find the missing scout</b>" },
-    ]);
-  };
-}
-
-// ---- notifications ----
-// What a reply changed, phrased the way a System window would put it. Player
-// lists only (a party member's new item isn't yours), plus the party, foes,
-// quests, timers, coin and combat.
-function sysNoticesFor(a, b) {
-  const out = [];
-  const nm = (t) => `<b>[${escHtml(tItemName(t))}]</b>`;
-  const join = (arr) => arr.length === 1 ? arr[0]
-    : arr.length === 2 ? `${arr[0]} and ${arr[1]}`
-    : `${arr.slice(0, 2).join(", ")} and ${arr.length - 2} more`;
-  const trunc = (t, n = 90) => { t = String(t).trim(); return t.length > n ? t.slice(0, n - 1).trimEnd() + "…" : t; };
-  const keyOf = (u) => normBondName(u?.name);
-
-  {
-    const had = new Set((a.enemies || []).map(keyOf));
-    const fresh = (b.enemies || []).filter((u) => !had.has(keyOf(u))).map((u) => `<b>${escHtml(displayName(u.name, "?"))}</b>`);
-    const parts = [];
-    if (!a.combat?.active && b.combat?.active) parts.push("Combat has begun.");
-    if (fresh.length) parts.push(fresh.length === 1 ? `Hostile detected: ${fresh[0]}.` : `${fresh.length} hostiles detected: ${join(fresh)}.`);
-    if (parts.length) out.push({ plate: "WARNING", warn: true, html: parts.join("<br>") });
-  }
-
-  const added = (key) => {
-    const A = tListMap(a[key]), B = tListMap(b[key]);
-    const list = [];
-    B.forEach((text, k) => { if (!A.has(k)) list.push(nm(text)); });
-    return list;
-  };
-  const items = added("inventory");
-  if (items.length) out.push({ plate: "NOTIFICATION", html: `You have acquired ${join(items)}.` });
-  const skills = added("skills");
-  if (skills.length) out.push({ plate: "NOTIFICATION",
-    html: skills.length === 1 ? `You have learned the skill ${skills[0]}.` : `You have learned new skills: ${join(skills)}.` });
-  const passives = added("passives");
-  if (passives.length) out.push({ plate: "NOTIFICATION",
-    html: passives.length === 1 ? `You have gained the passive ${passives[0]}.` : `You have gained new passives: ${join(passives)}.` });
-  const masteries = added("masteries");
-  if (masteries.length) out.push({ plate: "NOTIFICATION", html: `New mastery: ${join(masteries)}.` });
-
-  const c0 = tNum(a.dankcoin), c1 = tNum(b.dankcoin);
-  if (c0 !== null && c1 !== null && c1 > c0) out.push({ plate: "NOTIFICATION", html: `You have obtained <b>${escHtml(c1 - c0)}</b> coin.` });
-
-  {
-    const real = (list) => (list || []).map((x) => String(x).trim()).filter((x) => x && !BLK_NO_STATUS.test(x));
-    const had = new Set(real(a.status_effects));
-    const fresh = real(b.status_effects).filter((x) => !had.has(x)).map((x) => `<b>[${escHtml(x)}]</b>`);
-    if (fresh.length) out.push({ plate: "NOTIFICATION", html: `You are now affected by ${join(fresh)}.` });
-  }
-
-  {
-    const had = new Set((a.party || []).map(keyOf));
-    (b.party || []).filter((u) => !had.has(keyOf(u))).forEach((u) =>
-      out.push({ plate: "NOTIFICATION", html: `<b>${escHtml(displayName(u.name, "?"))}</b> has joined your party.` }));
-  }
-
-  {
-    const qa = new Set((a.quests || []).map((q) => String(q).trim()));
-    const qb = new Set((b.quests || []).map((q) => String(q).trim()));
-    qb.forEach((q) => { if (q && !qa.has(q)) out.push({ plate: "QUEST INFO", html: `A new quest has been registered:<br><b>${escHtml(trunc(q))}</b>` }); });
-    qa.forEach((q) => { if (q && !qb.has(q)) out.push({ plate: "QUEST INFO", html: `Quest closed:<br><b>${escHtml(trunc(q))}</b>` }); });
-  }
-  {
-    const had = new Set((a.timers || []).map(tTimerKey));
-    (b.timers || []).filter((t) => !had.has(tTimerKey(t))).forEach((t) =>
-      out.push({ plate: "QUEST INFO", html: `Timer started: <b>${escHtml(t.name || "Timer")}</b>${t.value ? ` (${escHtml(t.value)})` : ""}` }));
-  }
-  // the bigger news first, so it survives the cap
-  const rank = (n) => n.warn ? 0 : n.plate === "QUEST INFO" ? 2 : /coin\.$|affected by/.test(n.html) ? 3 : 1;
-  return out.map((n, i) => [n, i]).sort((x, y) => rank(x[0]) - rank(y[0]) || x[1] - y[1]).map((x) => x[0]);
-}
-
-// Each reply (each swipe of it) announces a thing once, however many times the
-// block is re-read or tidied afterwards.
-const sysNoticeSeen = new Map();   // reply key -> Set of messages shown
-function sysShowNotices(list, replyKey = "") {
-  if (replyKey) {
-    let seen = sysNoticeSeen.get(replyKey);
-    if (!seen) {
-      seen = new Set();
-      sysNoticeSeen.set(replyKey, seen);
-      if (sysNoticeSeen.size > 50) sysNoticeSeen.delete(sysNoticeSeen.keys().next().value);
-    }
-    list = list.filter((n) => !seen.has(n.html));
-    list.forEach((n) => seen.add(n.html));
-  }
-  if (!list.length) return;
-  sysEnsureCss();
-  sysEnsureWebFont();
-  let root = document.getElementById("rpg-sys-notices");
-  if (!root) {
-    root = document.createElement("div");
-    root.id = "rpg-sys-notices";
-    document.body.appendChild(root);
-  }
-  root.style.fontFamily = sysFontStack();
-  const shown = list.slice(0, 5);
-  if (list.length > 5) {
-    const n = list.length - 5;
-    shown.push({ plate: "NOTIFICATION", html: `And ${n} more change${n === 1 ? "" : "s"}. See the Log tab.` });
-  }
-  shown.forEach((n, i) => {
-    setTimeout(() => {
-      const el = document.createElement("div");
-      el.className = "rpg-sys-note" + (n.warn ? " warn" : "");
-      el.innerHTML = `<div class="plate">${n.plate}</div><div class="msg">${n.html}</div>`;
-      const close = () => {
-        if (el.dataset.out) return;
-        el.dataset.out = "1";
-        el.classList.add("out");
-        setTimeout(() => el.remove(), 320);
-      };
-      el.onclick = (e) => { e.stopPropagation(); close(); };
-      root.appendChild(el);
-      while (root.children.length > 6) root.firstElementChild.remove();
-      setTimeout(close, 5200 + i * 400);
-    }, i * 260);
-  });
-}
-
-// =====================================================================
 // UPDATE LOG + CLASSIC HELP
 // The update log is shared by both skins. When the build changes, the log
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
-  { build: "2026-10-21.5", items: [
-    "New skin: System window. A glowing status panel with the same tabs and editors as classic. Pick it under Skin in settings (either skin).",
-    "System settings: Big slot shows your name or an analog clock of the in-world time; Font; and Notifications, which pop up a System window when a reply gives you items, skills, passives, coin or a status, adds quests, timers or party members, or brings in enemies.",
-  ] },
   { build: "2026-10-21.4", items: [
     "Fix: at Bar sizes that make a bar a fraction of a pixel tall (like 70%), bars were drawn slightly shrunk and centred, leaving a gap after the tile. They now fill their box exactly, in every bar style.",
     "Party, NPC and enemy sections are dimmed again (build .3 had briefly undimmed them while chasing this).",
@@ -7645,12 +7179,6 @@ const CLASSIC_HELP = [
   ["Scan (↻)", "Re-reads the latest reply and writes the state back into it."],
 ];
 
-const SYS_HELP = [
-  ["System window", "The panel shows the selected character. Tap the big name (or NAME, with the clock) to switch character. The frame turns red for enemies and purple for vehicles."],
-  ["Big slot", "Settings → Big slot: the character's name, or an analog clock of the in-world time."],
-  ["Notifications", "Settings → Notifications: a System popup when a reply gives you items, skills, passives, coin or a status, adds quests, timers or party members, or brings in enemies. Tap one to dismiss it. Your own edits never trigger them."],
-];
-
 function classicInfoHtml() {
   if (!classicInfo) return "";
   const isLog = classicInfo === "log";
@@ -7658,7 +7186,7 @@ function classicInfoHtml() {
     ? CHANGELOG.map((c) => `<div style="margin-bottom:10px;"><div style="color:#FFD700; font-weight:bold; margin-bottom:3px;">Build ${escHtml(c.build)}</div>` +
         c.items.map((t) => `<div style="color:#ccc; padding-left:10px; text-indent:-10px; margin-bottom:2px;">• ${escHtml(t)}</div>`).join("") + `</div>`).join("")
       + `<div style="opacity:.6; font-style:italic;">You're on build ${escHtml(HUD_BUILD)}.</div>`
-    : (uiSettings.skin === "system" ? [...SYS_HELP, ...CLASSIC_HELP] : CLASSIC_HELP).map(([k, v]) => `<div style="margin-bottom:9px;"><div style="color:#4FC3F7; font-weight:bold;">${escHtml(k)}</div><div style="color:#ccc;">${escHtml(v)}</div></div>`).join("");
+    : CLASSIC_HELP.map(([k, v]) => `<div style="margin-bottom:9px;"><div style="color:#4FC3F7; font-weight:bold;">${escHtml(k)}</div><div style="color:#ccc;">${escHtml(v)}</div></div>`).join("");
   return `
     <div id="rpg-info-overlay" style="position:absolute; inset:0; background:#0b0b0d; border:1px solid #333; z-index:100001;
       display:flex; flex-direction:column; box-sizing:border-box; padding:10px;">
@@ -8036,7 +7564,6 @@ function saoSettingsHtml() {
     + `<div class="rpg-sao-mrow toggle"><span>Skin</span>
         <select id="rpg-sao-skin">
           <option value="classic">Classic</option>
-          <option value="system">System</option>
           <option value="sao" selected>SAO</option>
         </select></div>`
     + `<div class="rpg-sao-build">build ${HUD_BUILD}</div>`;
