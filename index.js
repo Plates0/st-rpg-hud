@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-21.5";
+const HUD_BUILD = "2026-10-21.6";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -2369,6 +2369,9 @@ function makeList(items, emptyText) {
 
 function renderEnemySummary() {
   if (!Array.isArray(rpgState.enemies) || rpgState.enemies.length === 0) return "";
+  if (uiSettings.skin === "system") {
+    return `<div class="sys-foes">${sysUnitList(rpgState.enemies, { title: "HOSTILES", jumpType: "enemy", foe: true, hpOnly: true })}</div>`;
+  }
 
   let html =
     '<div style="border-top:1px solid #b71c1c; margin-top:5px; padding-top:5px; font-size:0.75em;">' +
@@ -2476,6 +2479,10 @@ function renderMiniUnitBars(list, options = {}) {
 function renderPartyTab() {
   const party = Array.isArray(rpgState.party) ? rpgState.party : [];
   const npcs = Array.isArray(rpgState.npcs) ? rpgState.npcs : [];
+  if (uiSettings.skin === "system") {
+    return sysUnitList(party, { title: "PARTY", jumpType: "party", emptyText: "No party members" })
+      + sysUnitList(npcs, { title: "NPCS", jumpType: "npc", emptyText: "No NPCs" });
+  }
 
   const partyHtml = renderMiniUnitBars(party, {
     title: "🛡️ Party",
@@ -7175,6 +7182,25 @@ const SYS_CSS = `
 .rpg-sys .sys-stat b{margin-left:auto; font-size:1.3em; color:#f4fbff; text-shadow:0 0 8px var(--sg); letter-spacing:0; font-weight:600;
   white-space:nowrap}
 
+.rpg-sys .sys-units + .sys-units{margin-top:8px}
+.rpg-sys .sys-sec{font-size:.82em; letter-spacing:.18em; color:var(--sc); text-shadow:0 0 6px var(--sg); margin:1px 0 5px;
+  padding-bottom:3px; border-bottom:1px solid rgba(143,208,255,.25)}
+.rpg-sys .sys-sec.foe{color:#ff9a9a; text-shadow:0 0 6px rgba(255,80,80,.5); border-bottom-color:rgba(255,128,128,.3)}
+.rpg-sys .sys-unit{padding:3px 0 6px}
+.rpg-sys .sys-unit + .sys-unit{border-top:1px solid rgba(143,208,255,.12); padding-top:5px}
+.rpg-sys .sys-unit-head{display:flex; align-items:center; gap:8px; margin-bottom:3px}
+.rpg-sys .sys-unit-head .rpg-jump{cursor:pointer; color:#eaf6ff; font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; text-shadow:0 0 6px var(--sg)}
+.rpg-sys .sys-unit-tag{margin-left:auto; display:flex; align-items:center; gap:3px; color:#f7b3cc; font-size:.9em; white-space:nowrap}
+.rpg-sys .sys-unit-tag .sys-svg{width:11px; height:11px}
+.rpg-sys .sys-mini{display:grid; grid-template-columns:30px minmax(0,1fr) auto; align-items:center; gap:6px; margin-top:2px}
+.rpg-sys .sys-mini .l{font-size:.78em; letter-spacing:.08em; color:#a9cbe8}
+.rpg-sys .sys-mini .n{font-size:.85em; color:#dff1ff; white-space:nowrap; min-width:58px; text-align:right}
+.rpg-sys .sys-cap.sm{height:7px; margin-top:0}
+.rpg-sys .sys-cap.foe{border-color:rgba(255,170,170,.75); box-shadow:0 0 6px rgba(255,80,80,.45)}
+.rpg-sys .sys-cap.foe i{background:linear-gradient(90deg,#ff6b6b,#ffc2c2); box-shadow:0 0 6px rgba(255,90,90,.85)}
+.rpg-sys .sys-foes{margin-top:6px; padding:6px 8px 2px; font-size:.8em; border:1px solid rgba(255,128,128,.35);
+  background:rgba(40,8,14,.35); max-height:96px; overflow-y:auto}
 .rpg-sys .rpg-c-btns button{background:rgba(10,26,48,.9) !important; border:1px solid rgba(143,208,255,.55) !important;
   color:#dff1ff !important; box-shadow:0 0 6px rgba(90,170,255,.2)}
 .rpg-sys #rpg-settings-overlay,.rpg-sys #rpg-info-overlay{background:#04090f !important; border-color:var(--sc) !important}
@@ -7365,6 +7391,37 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
     </div>`;
 }
 
+// Party, NPC and enemy rows in the same capsule bars as the status window.
+function sysUnitList(list, { title, jumpType, emptyText = "", foe = false, hpOnly = false }) {
+  const head = `<div class="sys-sec${foe ? " foe" : ""}">${escHtml(title)}</div>`;
+  if (!Array.isArray(list) || !list.length) {
+    return emptyText ? `<div class="sys-units">${head}<div style="opacity:.5; font-style:italic;">${escHtml(emptyText)}</div></div>` : "";
+  }
+  const mini = (label, curr, max, cls) => {
+    const maxNum = safeParseFloatOrInf(max, 0);
+    if (Number.isFinite(maxNum) && maxNum <= 0) return "";
+    const pct = percentFrom(curr, max);
+    const low = cls !== "foe" && cls !== "mp" && pct <= 25 ? " low" : "";
+    return `<div class="sys-mini"><span class="l">${escHtml(label)}</span>
+      <div class="sys-cap sm ${cls}${low}"><i style="width:${pct}%"></i></div>
+      <span class="n">${escHtml(splitMathValue(String(curr ?? 0)).val)}/${escHtml(splitMathValue(String(max ?? 0)).val)}</span></div>`;
+  };
+  const rows = list.map((unit, idx) => {
+    const isVeh = !!(unit?.vehicle && unit.vehicle.active);
+    const t = isVeh ? unit.vehicle : unit;
+    const name = escHtml(displayName(t?.name || unit?.name, "Unit"));
+    const { curr: eC, max: eM, label: eL } = getEnergy(t, isVeh);
+    const bond = !foe && unit?.bond !== undefined && unit.bond !== "" ? parseBondValue(unit.bond) : null;
+    return `<div class="sys-unit">
+      <div class="sys-unit-head"><span class="rpg-jump" data-idx="${charIndexFor(jumpType, idx)}">${isVeh ? "\u25C6 " : ""}${name}</span>
+        ${bond !== null ? `<span class="sys-unit-tag">${sysIcon("bond")}${bond >= 101 ? "\u221E" : escHtml(bond)}</span>` : ""}</div>
+      ${mini(isVeh ? "HULL" : "HP", t?.hp_curr, t?.hp_max, foe ? "foe" : "")}
+      ${hpOnly ? "" : mini(eL, eC, eM, "mp")}
+    </div>`;
+  }).join("");
+  return `<div class="sys-units">${head}${rows}</div>`;
+}
+
 // ---- settings (inside the classic settings overlay, when this skin is on) ----
 function sysSettingsHtml() {
   const sel = "width:100%; background:#0d1a2c; border:1px solid #3d6a94; color:#dff1ff; padding:6px; margin-bottom:8px;";
@@ -7530,6 +7587,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-21.6", items: [
+    "System skin: the Party tab and the Hostiles list now use the same glowing capsule bars as the status window (red for hostiles), with bonds shown as a heart next to the name.",
+  ] },
   { build: "2026-10-21.5", items: [
     "New skin: System window. A glowing status panel with the same tabs and editors as classic. Pick it under Skin in settings (either skin).",
     "System settings: Big slot shows your name or an analog clock of the in-world time; Font; and Notifications, which pop up a System window when a reply gives you items, skills, passives, coin or a status, adds quests, timers or party members, or brings in enemies.",
