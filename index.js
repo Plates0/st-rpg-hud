@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-21.2";
+const HUD_BUILD = "2026-10-21.3";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -7065,6 +7065,9 @@ function classicBindEditors() {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-21.3", items: [
+    "Fix: on iPhone, ALfheim (New) party/NPC/enemy bars were drawn a few px right of the tile. Their sections are no longer dimmed, which is what Safari mis-drew.",
+  ] },
   { build: "2026-10-21.2", items: [
     "Settings: Layout report, which measures how this device draws the bar rows, for tracking down device-only layout bugs.",
   ] },
@@ -8366,6 +8369,10 @@ const SAO_CSS = `<style id="rpg-sao-style">
 .rpg-sao-slim .rpg-sao-bar svg{filter:none}
 
 .rpg-sao-slim{opacity:.78; margin-right:calc(56px * var(--rpg-sao-ui, 1))}
+/* Not in ALfheim (New): a semi-transparent group is drawn as its own layer,
+   and iPhone Safari drew the party/NPC bars ~5px right of where they were laid
+   out, leaving a gap after the tile (measured: layout correct, paint offset). */
+.rpg-sao-vitals.blk .rpg-sao-slim{opacity:1}
 .rpg-sao-slim.hide{display:none}
 .rpg-sao-row{
   --tagw:calc(50px * var(--rpg-sao-ui, 1)); --numw:calc(58px * var(--rpg-sao-ui, 1));
