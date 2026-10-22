@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-22.1";
+const HUD_BUILD = "2026-10-22.2";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -3177,7 +3177,7 @@ function meterAutoColor(name) {
   return "#26a69a";
 }
 
-function renderMeters(meters) {
+function renderMeters(meters, editable = false) {
   if (!Array.isArray(meters) || meters.length === 0) return "";
 
   const rows = meters
@@ -3197,7 +3197,7 @@ function renderMeters(meters) {
       return `
         <div style="margin-top:4px;">
           <div style="display:flex; justify-content:space-between; font-size:0.72em; color:${c};">
-            <span>${escHtml(name)}</span>
+            <span${editable ? ` data-meter-edit title="Tap to edit meters" style="cursor:pointer;"` : ""}>${escHtml(name)}</span>
             <span>${renderInlineValue(curr)} / ${renderInlineValue(max)}</span>
           </div>
           <div style="width:100%; background:#222; height:3px; border-radius:2px; overflow:hidden;">
@@ -3839,7 +3839,9 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       </div>`;
     }
 
-    const metersHtml = renderMeters(display.meters);
+    if (saoMeterEdit && meterEditIdx !== charIndex) saoMeterEdit = null;   // switched character: drop the draft
+    const meterEditorHtml = saoMeterEdit ? `${CLASSIC_ED_CSS}<div class="rpg-c-ed rpg-c-medit">${saoMetersSection(display)}</div>` : "";
+    const metersHtml = saoMeterEdit ? meterEditorHtml : renderMeters(display.meters, true);
 
     const coin = toNumberOr(display.dankcoin ?? root.dankcoin ?? 0, 0);
 
@@ -4001,7 +4003,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
 
     container.innerHTML = `
-    ${SYS ? sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLabel, coin, time }) : `
+    ${SYS ? sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLabel, coin, time, meterEditorHtml }) : `
 	<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; padding-bottom:5px; border-bottom:1px solid ${borderColor}; min-height:24px;">
 	  <div style="display:flex; align-items:center; gap:6px; min-width:0;">
 	    <span style="font-size:1.2em;">${icon}</span>
@@ -4271,6 +4273,10 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     classicBindLog();
     classicBindEditors();
     classicBindInfo();
+    container.querySelectorAll("[data-meter-edit]").forEach((el) => {
+      el.onclick = (e) => { e.stopPropagation(); meterEditIdx = charIndex; saoStartMeterEdit(); renderRPG(); };
+    });
+    if (saoMeterEdit) saoBindMeterEditor();
 	  
 	if (isSettingsOpen) {
 	  bind("rpg-settings-close", toggleSettings);
@@ -4770,6 +4776,7 @@ let saoQuestTab = "quests";   // "quests" | "log"
 const saoScroll = new Map();  // scroll key -> {top, left}
 let saoLogShown = 20;         // turns rendered before "show older"
 let saoMeterEdit = null;
+let meterEditIdx = -1;       // classic/System: whose meters the open editor belongs to
 let saoMasteryEdit = null;   // null, or a draft: [{name, curr, max, tail, orig}]     // null, or a draft: [{name, curr, max, color, custom}]
 let saoLayoutMode = false;   // drag clusters around instead of using them
 let saoAnimKind = "";        // "" | "restore" | "collapse" | "panel"
@@ -7244,6 +7251,18 @@ const CLASSIC_ED_CSS = `<style>
 .rpg-c-ed .rpg-sao-mast-edit input[type=text]{min-width:0; width:100%; box-sizing:border-box; font:inherit;
   padding:2px 4px; color:#eee; background:#1b1b1b; border:1px solid #555; border-radius:2px}
 .rpg-c-ed .rpg-sao-m-slash{text-align:center; color:#888}
+.rpg-c-ed .rpg-sao-mrow-edit{display:flex; flex-wrap:wrap; align-items:center; gap:4px; margin-bottom:6px; padding-bottom:6px;
+  border-bottom:1px solid #333}
+.rpg-c-ed .rpg-sao-mrow-edit input[type=text]{min-width:0; box-sizing:border-box; font:inherit; padding:2px 4px; color:#eee;
+  background:#1b1b1b; border:1px solid #555; border-radius:2px}
+.rpg-c-ed .rpg-sao-m-name{flex:1 1 90px}
+.rpg-c-ed .rpg-sao-m-curr, .rpg-c-ed .rpg-sao-m-max{flex:0 0 46px; width:46px; text-align:center}
+.rpg-c-ed .rpg-sao-m-color{flex:0 0 26px; width:26px; height:22px; padding:0; border:1px solid #555; background:none; cursor:pointer}
+.rpg-c-ed .rpg-sao-m-auto, .rpg-c-ed .rpg-sao-m-del{width:22px; height:22px; padding:0; cursor:pointer; display:grid; place-items:center;
+  font-size:12px; border-radius:2px; background:#262626; border:1px solid #555; color:#bbb}
+.rpg-c-ed .rpg-sao-m-auto.off{opacity:.35}
+.rpg-c-ed .rpg-sao-m-del:hover{color:#ef5350; border-color:#ef5350}
+.rpg-c-medit{margin:6px 0; padding:6px; border:1px dashed #555; font-size:.85em}
 </style>`;
 
 const LIST_TAB_KEYS = { inventory: "inventory", skills: "skills", passives: "passives" };
@@ -7426,6 +7445,16 @@ const SYS_CSS = `
   box-shadow:inset 0 0 0 1px var(--sc), 0 0 6px var(--sg)}
 .rpg-sys .rpg-c-ed .rpg-sao-ledit-ico.custom::after{background:var(--sc); box-shadow:0 0 0 1.5px #04090f, 0 0 5px var(--sg)}
 .rpg-sys .rpg-c-ed .rpg-sao-mini{background:rgba(10,26,48,.9); border-color:rgba(143,208,255,.5); color:#dff1ff}
+.rpg-sys .sys-ibtn{display:inline-grid; place-items:center; padding:0; margin:0; border:0; background:none; color:inherit;
+  cursor:pointer; -webkit-tap-highlight-color:transparent; font:inherit; line-height:0}
+.rpg-sys .sys-ibtn:hover .sys-svg{color:#fff; filter:drop-shadow(0 0 4px var(--sg))}
+.rpg-sys .sys-medit{margin:-2px 0 8px}
+.rpg-sys .rpg-c-ed .rpg-sao-mini.primary{background:rgba(40,110,190,.55); border-color:var(--sc); color:#fff; box-shadow:0 0 6px var(--sg)}
+.rpg-sys .sys-medit .rpg-c-medit{margin:0; padding:0; border:0; font-size:.8em}
+.rpg-sys .rpg-c-ed .rpg-sao-mrow-edit{border-bottom-color:rgba(143,208,255,.15)}
+.rpg-sys .rpg-c-ed .rpg-sao-mrow-edit input[type=text]{background:rgba(6,16,30,.9); border-color:rgba(143,208,255,.35); color:#eaf6ff}
+.rpg-sys .rpg-c-ed .rpg-sao-m-auto,.rpg-sys .rpg-c-ed .rpg-sao-m-del,.rpg-sys .rpg-c-ed .rpg-sao-m-color{background:rgba(10,26,48,.9);
+  border-color:rgba(143,208,255,.4); color:#cfe6f8}
 .rpg-sys .rpg-c-ed .rpg-sao-ledit-text,.rpg-sys .rpg-c-ed .rpg-sao-mast-edit input[type=text]{background:rgba(6,16,30,.9);
   border-color:rgba(143,208,255,.35); color:#eaf6ff}
 .rpg-sys .rpg-c-ed .rpg-sao-ledit-del,.rpg-sys .rpg-c-ed .rpg-sao-ms-del,.rpg-sys .rpg-c-ed .rpg-sao-ledit-lock,
@@ -7541,18 +7570,21 @@ function sysClockSvg(clock) {
 }
 
 function sysBar(icon, label, curr, max, extra = {}) {
+  const iconHtml = extra.editMeters
+    ? `<button class="sys-ibtn" data-meter-edit title="Edit meters" aria-label="Edit meters">${sysIcon(icon)}</button>`
+    : sysIcon(icon);
   const maxNum = safeParseFloatOrInf(max, 0);
   if (extra.skipEmpty && Number.isFinite(maxNum) && maxNum <= 0) return "";
   const pct = extra.pct ?? percentFrom(curr, max);
   const cls = extra.tint ? "tint" : (extra.lowWarn && pct <= 25 ? "low" : "");
   return `<div class="sys-bar">
-      <div class="sys-bar-lab">${sysIcon(icon)}<span>${escHtml(label)}</span>
+      <div class="sys-bar-lab">${iconHtml}<span>${escHtml(label)}</span>
         <span class="sys-bar-num">${extra.numHtml ?? `${renderInlineValue(curr)} / ${renderInlineValue(max)}`}</span></div>
       <div class="sys-cap ${cls}"${extra.tint ? ` style="--mc:${escAttr(extra.tint)}"` : ""}><i style="width:${pct}%"></i></div>
     </div>`;
 }
 
-function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLabel, coin, time }) {
+function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLabel, coin, time, meterEditorHtml = "" }) {
   const kind = isVehicle ? "VEHICLE" : ({ player: "PLAYER", party: "PARTY", npc: "NPC", enemy: "ENEMY" }[type] || "");
   const name = isVehicle ? displayName(display.name, "Vehicle")
     : type === "player" ? playerDisplayName() : displayName(display.name, "Unit");
@@ -7594,7 +7626,7 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
     if (!mt || typeof mt !== "object") return;
     const nm = mt.name ?? mt.label ?? "Meter";
     bars += sysBar("meter", String(nm).toUpperCase(), mt.curr ?? mt.value ?? 0, mt.max ?? 100,
-      { skipEmpty: true, tint: meterColorByName(nm) });
+      { skipEmpty: true, tint: meterColorByName(nm), editMeters: true });
   });
 
   const stat = (icon, label, raw) => {
@@ -7620,7 +7652,8 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
     <div class="sys-panels">
       <div class="sys-box">${bars}</div>
       ${stats ? `<div class="sys-box sys-stats">${stats}</div>` : ""}
-    </div>`;
+    </div>
+    ${meterEditorHtml ? `<div class="sys-box sys-medit"><div class="sys-sec">METERS</div>${meterEditorHtml}</div>` : ""}`;
 }
 
 // Party, NPC and enemy rows in the same capsule bars as the status window.
@@ -7819,6 +7852,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-22.2", items: [
+    "Edit meters straight from the panel: in the System skin tap a meter's icon, in classic tap its name. The editor opens for that character: rename, change values, colour, reorder, add or remove, then Save.",
+  ] },
   { build: "2026-10-22.1", items: [
     "Pick your own icon for any item, skill or passive: open the list editor (tap an icon), then tap a row's icon and choose one, or Auto to go back to guessing from the name. Save keeps it.",
     "Your icon sticks to the entry's name, so it survives the AI rewording the description or changing its stats, follows a rename you make in the editor, and applies in every chat. It's stored in SillyTavern's settings, so it carries over to your other devices.",
@@ -7939,6 +7975,7 @@ const CLASSIC_HELP = [
   ["The dot", "Top right. Green: the latest reply has a valid state. Yellow: the block is broken (tap for details). Grey: no block."],
   ["Tabs", "Party, Bonds, Timers, Items, Skills, Passive, Mastery, Quest, Environment and Log. Pick a character from the name dropdown to see their tabs."],
   ["Editing lists", "In Items, Skills and Passive, tap any icon to edit that list: change text, ✕ to delete, ▲▼ to reorder, + Add. Mastery and Quest have a ✎ button instead."],
+  ["Meters", "Tap a meter's name (in the System skin, its icon) to edit that character's meters: rename, change values, pick a colour (↺ goes back to automatic), reorder, add or remove. Save writes them to the latest reply."],
   ["Your own icons", "In the list editor, tap a row's icon to pick a different one (Auto goes back to guessing from the name), then Save. It sticks to that name in every chat and on your other devices; a blue dot marks it in the editor."],
   ["Position locks", "In the item, skill and passive editor, the padlock under ✕ pins an entry to its place. If the AI reorders the list, locked entries are put back; the rest keep their order."],
   ["Edits Rewrite Past Replies", "Settings. List edits also fix this many earlier replies, so the AI can't copy the old version back from history. 0 means the latest reply only."],
