@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-21.9";
+const HUD_BUILD = "2026-10-22.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -6185,8 +6185,12 @@ const SKILL_KINDS = [
 //   2. then the name's last word, quantities and stat bonuses aside
 //   3. then any word, in category order ("Ring of Fire" ends on "Fire")
 // [...] notes are ignored entirely: "Keychain [Attached to Katana]" is a keychain.
-function listIconKind(listKey, text) {
+function listIconKind(listKey, text, opts = {}) {
   if (listKey === "quests") return "quest";
+  if (!opts.auto) {
+    const ov = iconOverrideFor(listKey, text);
+    if (ov && LIST_ICONS[ov]) return ov;
+  }
   if (listKey === "inventory") {
     const head = String(descSplit(text).head || text).toLowerCase();
     const paren = (head.match(/\(([^)]*)\)/g) || []).join(" ");
@@ -6205,6 +6209,60 @@ function listIconKind(listKey, text) {
   const all = stripStatusTags(String(text)).toLowerCase();
   for (const [kind, re] of SKILL_KINDS) if (re.test(all)) return kind;
   return listKey === "passives" ? "badge" : "burst";
+}
+
+// ---- icons you've picked yourself ----
+// Keyed by list and the entry's name (the part before any description), so
+// they survive the AI rewording a description or changing a "+10 ATK", and
+// apply in every chat. Kept in SillyTavern's own settings when available, so
+// they follow you to your other devices, with a local copy as a fallback.
+const ICON_OVR_KEY = "rpgHud:iconOverrides";
+let iconOvrLocal = null;
+function iconOverridesAll() {
+  try {
+    const synced = SillyTavern.getContext()?.extensionSettings?.rpgHud?.iconOverrides;
+    if (synced && typeof synced === "object") return synced;
+  } catch {}
+  if (!iconOvrLocal) {
+    try { iconOvrLocal = JSON.parse(localStorage.getItem(ICON_OVR_KEY) || "{}") || {}; } catch { iconOvrLocal = {}; }
+  }
+  return iconOvrLocal;
+}
+function saveIconOverrides(map) {
+  iconOvrLocal = map;
+  try { localStorage.setItem(ICON_OVR_KEY, JSON.stringify(map)); } catch {}
+  try {
+    const ctx = SillyTavern.getContext();
+    if (ctx?.extensionSettings) {
+      ctx.extensionSettings.rpgHud = ctx.extensionSettings.rpgHud || {};
+      ctx.extensionSettings.rpgHud.iconOverrides = map;
+      ctx.saveSettingsDebounced?.();
+    }
+  } catch {}
+}
+const iconOvrKey = (listKey, text) => `${listKey}|${tItemKey(text)}`;
+function iconOverrideFor(listKey, text) {
+  const k = tItemKey(text);
+  return k ? iconOverridesAll()[`${listKey}|${k}`] || null : null;
+}
+function setIconOverride(listKey, text, kind) {
+  if (!tItemKey(text)) return;
+  const map = { ...iconOverridesAll() };
+  if (kind && LIST_ICONS[kind]) map[iconOvrKey(listKey, text)] = kind;
+  else delete map[iconOvrKey(listKey, text)];
+  saveIconOverrides(map);
+}
+
+// every icon, the list's own kind first
+const ITEM_ICON_ORDER = ["sword", "dagger", "spear", "axe", "hammer", "bow", "gun", "staff", "shield", "armor", "ring", "potion",
+  "food", "key", "book", "gem", "coin", "bag", "phone", "laptop", "camera", "misc"];
+const SKILL_ICON_ORDER = ["fire", "ice", "bolt", "heal", "dark", "wind", "burst", "badge"];
+function iconPickerHtml(listKey, i, current, isCustom) {
+  const order = listKey === "inventory" ? [...ITEM_ICON_ORDER, ...SKILL_ICON_ORDER] : [...SKILL_ICON_ORDER, ...ITEM_ICON_ORDER];
+  return `<div class="rpg-sao-icopick">
+      <button class="rpg-sao-ico rpg-sao-pickopt auto${isCustom ? "" : " on"}" data-i="${i}" data-kind="" title="Pick from the name">Auto</button>
+      ${order.map((k) => `<button class="rpg-sao-ico rpg-sao-pickopt${isCustom && current === k ? " on" : ""}" data-i="${i}" data-kind="${k}" title="${k}">${LIST_ICONS[k]}</button>`).join("")}
+    </div>`;
 }
 
 function listIconHtml(listKey, text, editable) {
@@ -6364,22 +6422,34 @@ function saoListEditorHtml(key) {
   const label = { inventory: "Items", skills: "Skills", passives: "Passives", quests: "Quests" }[key] || key;
   const isQuests = key === "quests";
   const n = saoListEdit.rows.length;
-  const rows = saoListEdit.rows.map((r, i) => `
+  // a row's icon: the one picked in this editor, else any saved one, else from the name
+  const rowIcon = (r) => {
+    if (r.icon === "") return { kind: listIconKind(key, r.text, { auto: true }), custom: false };
+    if (r.icon) return { kind: r.icon, custom: true };
+    const ov = iconOverrideFor(key, r.orig || r.text);
+    return ov && LIST_ICONS[ov] ? { kind: ov, custom: true } : { kind: listIconKind(key, r.text, { auto: true }), custom: false };
+  };
+  const rows = saoListEdit.rows.map((r, i) => {
+    const ic = isQuests ? { kind: "quest", custom: false } : rowIcon(r);
+    return `
     <div class="rpg-sao-ledit">
       ${reorderBtns("list", i, n)}
-      <span class="rpg-sao-ico">${LIST_ICONS[listIconKind(key, r.text)]}</span>
+      ${isQuests ? `<span class="rpg-sao-ico">${LIST_ICONS.quest}</span>`
+        : `<button class="rpg-sao-ico rpg-sao-ledit-ico${ic.custom ? " custom" : ""}${saoListEdit.pick === i ? " picking" : ""}" data-i="${i}"
+            title="${ic.custom ? "Your icon" : "Icon from the name"} \u00B7 tap to choose">${LIST_ICONS[ic.kind]}</button>`}
       <textarea class="rpg-sao-ledit-text" data-i="${i}" rows="2" spellcheck="false">${escHtml(r.text)}</textarea>
       <span class="rpg-sao-ledit-side">
         <button class="rpg-sao-ledit-del" data-i="${i}" title="Remove">&#10005;</button>
         ${isQuests ? "" : `<button class="rpg-sao-ledit-lock${r.locked ? " on" : ""}" data-i="${i}"
           title="${r.locked ? "Locked to this position: the AI can't move it. Tap to unlock." : "Lock to this position"}">${r.locked ? LOCK_ICON.on : LOCK_ICON.off}</button>`}
       </span>
-    </div>`).join("");
+    </div>${!isQuests && saoListEdit.pick === i ? iconPickerHtml(key, i, ic.kind, ic.custom) : ""}`;
+  }).join("");
   const depth = Math.max(0, parseInt(uiSettings.listEditHistory, 10) || 0);
   return `<div class="rpg-sao-meditor rpg-sao-leditor">
       ${rows || `<p class="rpg-sao-empty">Empty. Add one below.</p>`}
       <button class="rpg-sao-mini" id="rpg-sao-ledit-add">+ Add</button>
-      <p class="rpg-sao-hint">${isQuests
+      <p class="rpg-sao-hint">${isQuests ? "" : "Tap an icon to choose a different one; it sticks to that name in every chat. "}${isQuests
         ? "Quests are shared by everyone. Saving updates the latest reply."
         : depth
         ? `Saving also updates ${depth} earlier repl${depth === 1 ? "y" : "ies"} (setting: Edits rewrite past replies).`
@@ -6471,8 +6541,18 @@ function saoSaveListEdit() {
   const isVehicle = isQuests ? true : active.isVehicle;   // quests: no locks, no history
   const before = (Array.isArray(display[key]) ? display[key] : []).map(String);
   // ";" and "|" would split the entry apart in the block
-  let rows = saoListEdit.rows.map((r) => ({ orig: r.orig, locked: !!r.locked, text: String(r.text || "").replace(/;/g, ",").replace(/\|/g, "/").replace(/\s*\n\s*/g, " ").trim() }))
+  let rows = saoListEdit.rows.map((r) => ({ orig: r.orig, locked: !!r.locked, icon: r.icon, text: String(r.text || "").replace(/;/g, ",").replace(/\|/g, "/").replace(/\s*\n\s*/g, " ").trim() }))
     .filter((r) => r.text);
+  if (!isQuests) {
+    rows.forEach((r) => {
+      if (r.icon !== undefined) { setIconOverride(key, r.text, r.icon); return; }
+      // renamed: a saved icon follows the entry to its new name
+      if (r.orig && tItemKey(r.orig) !== tItemKey(r.text)) {
+        const ov = iconOverrideFor(key, r.orig);
+        if (ov && !iconOverrideFor(key, r.text)) setIconOverride(key, r.text, ov);
+      }
+    });
+  }
   const kept = new Set(rows.map((r) => r.orig).filter(Boolean));
   let removed = before.filter((t) => !kept.has(t));
   if (removed.length) {
@@ -6532,11 +6612,23 @@ function saoBindListEditor() {
     el.onclick = (e) => e.stopPropagation();
     el.onkeydown = (e) => e.stopPropagation();
   });
+  box.querySelectorAll(".rpg-sao-ledit-ico").forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); const i = +el.dataset.i; saoListEdit.pick = saoListEdit.pick === i ? null : i; renderRPG(); };
+  });
+  box.querySelectorAll(".rpg-sao-pickopt").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const r = saoListEdit.rows[+el.dataset.i];
+      if (r) r.icon = el.dataset.kind;        // "" = back to automatic
+      saoListEdit.pick = null;
+      renderRPG();
+    };
+  });
   box.querySelectorAll(".rpg-sao-ledit-lock").forEach((el) => {
     el.onclick = (e) => { e.stopPropagation(); const r = saoListEdit.rows[+el.dataset.i]; if (r) { r.locked = !r.locked; renderRPG(); } };
   });
   box.querySelectorAll(".rpg-sao-ledit-del").forEach((el) => {
-    el.onclick = (e) => { e.stopPropagation(); saoListEdit.rows.splice(+el.dataset.i, 1); renderRPG(); };
+    el.onclick = (e) => { e.stopPropagation(); saoListEdit.rows.splice(+el.dataset.i, 1); saoListEdit.pick = null; renderRPG(); };
   });
   const one = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
   one("rpg-sao-ledit-add", () => {
@@ -7126,6 +7218,12 @@ const CLASSIC_ED_CSS = `<style>
 .rpg-c-ed .rpg-sao-empty{opacity:.6; font-style:italic; margin:2px 0}
 .rpg-c-ed .rpg-sao-ledit{display:flex; gap:6px; align-items:flex-start; margin-bottom:6px}
 .rpg-c-ed .rpg-sao-ledit > .rpg-sao-ico{align-self:center}
+.rpg-c-ed .rpg-sao-icopick{display:flex; flex-wrap:wrap; gap:4px; margin:-2px 0 8px; padding:6px; border:1px dashed #555; border-radius:3px}
+.rpg-c-ed .rpg-sao-icopick .on, .rpg-c-ed .rpg-sao-ledit-ico.picking{border-color:#C0A040; color:#ffd54f; box-shadow:inset 0 0 0 1px #C0A040}
+.rpg-c-ed .rpg-sao-icopick .auto{width:auto; padding:0 7px; font:inherit; font-size:.85em}
+.rpg-c-ed .rpg-sao-ledit-ico.custom{position:relative}
+.rpg-c-ed .rpg-sao-ledit-ico.custom::after{content:""; position:absolute; top:-3px; right:-3px; width:7px; height:7px; border-radius:50%;
+  background:#4FC3F7; box-shadow:0 0 0 1.5px #111}
 .rpg-sao-ledit > .rpg-sao-ico{align-self:center}
 .rpg-c-ed .rpg-sao-ledit-text{flex:1; min-width:0; box-sizing:border-box; resize:vertical; font:inherit; line-height:1.35;
   padding:3px 5px; color:#eee; background:#1b1b1b; border:1px solid #555; border-radius:2px}
@@ -7199,7 +7297,7 @@ function classicBindEditors() {
       const rows = reorderRows(el.dataset.kind);
       const i = +el.dataset.i, j = i + (+el.dataset.d);
       if (!rows || j < 0 || j >= rows.length) return;
-      [rows[i], rows[j]] = [rows[j], rows[i]];
+      [rows[i], rows[j]] = [rows[j], rows[i]]; if (saoListEdit) saoListEdit.pick = null;
       renderRPG();
     };
   });
@@ -7323,6 +7421,10 @@ const SYS_CSS = `
 .rpg-sys .rpg-c-ed .rpg-sao-ico{border-color:rgba(143,208,255,.45); background:rgba(10,26,48,.85); color:#dff1ff;
   box-shadow:0 0 5px rgba(90,170,255,.18)}
 .rpg-sys .rpg-c-ed button.rpg-sao-ico:hover{border-color:var(--sc); color:#fff}
+.rpg-sys .rpg-c-ed .rpg-sao-icopick{border-color:rgba(143,208,255,.35)}
+.rpg-sys .rpg-c-ed .rpg-sao-icopick .on,.rpg-sys .rpg-c-ed .rpg-sao-ledit-ico.picking{border-color:var(--sc); color:#fff;
+  box-shadow:inset 0 0 0 1px var(--sc), 0 0 6px var(--sg)}
+.rpg-sys .rpg-c-ed .rpg-sao-ledit-ico.custom::after{background:var(--sc); box-shadow:0 0 0 1.5px #04090f, 0 0 5px var(--sg)}
 .rpg-sys .rpg-c-ed .rpg-sao-mini{background:rgba(10,26,48,.9); border-color:rgba(143,208,255,.5); color:#dff1ff}
 .rpg-sys .rpg-c-ed .rpg-sao-ledit-text,.rpg-sys .rpg-c-ed .rpg-sao-mast-edit input[type=text]{background:rgba(6,16,30,.9);
   border-color:rgba(143,208,255,.35); color:#eaf6ff}
@@ -7717,6 +7819,10 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-22.1", items: [
+    "Pick your own icon for any item, skill or passive: open the list editor (tap an icon), then tap a row's icon and choose one, or Auto to go back to guessing from the name. Save keeps it.",
+    "Your icon sticks to the entry's name, so it survives the AI rewording the description or changing its stats, follows a rename you make in the editor, and applies in every chat. It's stored in SillyTavern's settings, so it carries over to your other devices.",
+  ] },
   { build: "2026-10-21.9", items: [
     "12-hour times now work everywhere: \u201c2:30 PM\u201d, \u201c2:30pm\u201d, \u201c2 p.m.\u201d, \u201cnoon\u201d and \u201cmidnight\u201d are understood in Time: and in timer deadlines, so countdowns, time-passed in the log and the analog clock are right. Before, PM was ignored.",
     "New setting, Clock: As written (default), 12-hour or 24-hour. It changes how times are shown in every skin, not what's in the story.",
@@ -7833,6 +7939,7 @@ const CLASSIC_HELP = [
   ["The dot", "Top right. Green: the latest reply has a valid state. Yellow: the block is broken (tap for details). Grey: no block."],
   ["Tabs", "Party, Bonds, Timers, Items, Skills, Passive, Mastery, Quest, Environment and Log. Pick a character from the name dropdown to see their tabs."],
   ["Editing lists", "In Items, Skills and Passive, tap any icon to edit that list: change text, ✕ to delete, ▲▼ to reorder, + Add. Mastery and Quest have a ✎ button instead."],
+  ["Your own icons", "In the list editor, tap a row's icon to pick a different one (Auto goes back to guessing from the name), then Save. It sticks to that name in every chat and on your other devices; a blue dot marks it in the editor."],
   ["Position locks", "In the item, skill and passive editor, the padlock under ✕ pins an entry to its place. If the AI reorders the list, locked entries are put back; the rest keep their order."],
   ["Edits Rewrite Past Replies", "Settings. List edits also fix this many earlier replies, so the AI can't copy the old version back from history. 0 means the latest reply only."],
   ["Bonds", "✎ to edit, + to add. Deleting asks whether to also remove the name from earlier Bonds lists; characters' own Bond values are left alone."],
@@ -8132,6 +8239,8 @@ function saoHelpPanel() {
           "A timer written as 2/2x, 2x or \u201c2 uses\u201d counts uses instead of turns, for effects like \u201cblock the next 2 attacks\u201d. It never ticks down on its own; the AI lowers it when it's used, or tap \u22121 in the timer list.")
       + item("Meters",
           "Open a character in Status and use Edit under Meters to add, rename, change or remove them. The swatch sets a colour; \u21BA puts it back to automatic. Colours follow the meter's name, so every character's Shield matches.")
+      + item("Your own icons",
+          "Tap an item, skill or passive's icon to open the list editor, then tap a row's icon to pick a different one. Auto goes back to guessing from the name. After Save it sticks to that name in every chat and on your other devices; a blue dot marks it in the editor.")
       + item("Animations",
           "Bars slide to their new value, orbs unfold when you reopen the HUD, and panels fade in. Off means everything snaps.")
       + item("Bar style",
@@ -8541,7 +8650,7 @@ function saoBind() {
     const rows = reorderRows(el.dataset.kind);
     const i = +el.dataset.i, j = i + (+el.dataset.d);
     if (!rows || j < 0 || j >= rows.length) return;
-    [rows[i], rows[j]] = [rows[j], rows[i]];
+    [rows[i], rows[j]] = [rows[j], rows[i]]; if (saoListEdit) saoListEdit.pick = null;
     renderRPG();
   });
   on(".rpg-sao-moveto", (el) => moveActiveCharacter(el.dataset.to));
@@ -9318,6 +9427,12 @@ button.rpg-sao-ico:hover{border-color:#b3903f; color:#8a6a12}
 .rpg-sao-empty .rpg-sao-ico{display:inline-grid; width:auto; padding:0 6px; height:auto; margin:0 0 0 4px; border-radius:4px}
 .rpg-sao-ledit{display:flex; gap:6px; align-items:flex-start; margin-bottom:6px}
 .rpg-sao-ledit > .rpg-sao-ico{align-self:center}
+.rpg-sao-icopick{display:flex; flex-wrap:wrap; gap:4px; margin:-2px 0 8px; padding:6px; border:1px dashed var(--rpg-sao-rule, #b9b9b9); border-radius:4px}
+.rpg-sao-icopick .on, .rpg-sao-ledit-ico.picking{border-color:#b3903f; color:#8a6a12; box-shadow:inset 0 0 0 1px #b3903f}
+.rpg-sao-icopick .auto{width:auto; padding:0 8px; font:inherit; font-size:.85em}
+.rpg-sao-ledit-ico.custom{position:relative}
+.rpg-sao-ledit-ico.custom::after{content:""; position:absolute; top:-3px; right:-3px; width:7px; height:7px; border-radius:50%;
+  background:#3d9be0; box-shadow:0 0 0 1.5px #fff}
 .rpg-sao-reorder{flex:0 0 auto; display:flex; flex-direction:column; gap:2px}
 .rpg-sao-mv{width:18px; height:13px; padding:0; cursor:pointer; font-size:8px; line-height:1; border-radius:2px;
   color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule);
