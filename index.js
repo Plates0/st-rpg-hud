@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-22.2";
+const HUD_BUILD = "2026-10-22.3";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -456,6 +456,8 @@ const defaultUiSettings = {
   hudWidth: 280,
   hudHeight: 0,
   changeAlerts: true,
+  toastSeconds: 8,        // how long the HUD's toasts stay up; 0 = until tapped
+  ignoreCountChanges: true, // Change Alerts skip a description where only amounts changed ("4 hours" -> "3.5 hours")
 };
 
 let uiSettings = (() => {
@@ -491,7 +493,7 @@ function resetUiSettings(e) {
   if (c) { c.style.cssText = ""; c.className = ""; }
 
   renderRPG();
-  if (window.toastr) window.toastr.info("HUD settings reset to defaults.");
+  if (window.toastr) hudToast.info("HUD settings reset to defaults.");
 }
 
 function saveUiSettings() {
@@ -903,14 +905,14 @@ function schedulePostReplyFixes(idx, inner, fixes, waited = 0) {
       : weekdayDone ? (weekdayDone.insert ? "\u{1F4C5} Weekday added" : "\u{1F4C5} Weekday corrected")
       : moved.length ? "\u{1F512} Locked positions kept"
       : `\u{1F4DD} Restored ${done.length === 1 ? "a lost description" : done.length + " lost descriptions"}`;
-    window.toastr.info(`${lines.join("<br>")}<br><span style="opacity:.75">Tap to undo.</span>`, title, {
+    hudToast.info(`${lines.join("<br>")}<br><span style="opacity:.75">Tap to undo.</span>`, title, {
       escapeHtml: false,
       onclick: () => {
         const m = SillyTavern.getContext()?.chat?.[idx];
         if (!m || m.mes !== mes) return;                       // changed since: leave it
         setMessageText(m, before);
         afterTurnEdit(SillyTavern.getContext(), idx);
-        if (window.toastr) window.toastr.info("Undone: the AI's version is back.");
+        if (window.toastr) hudToast.info("Undone: the AI's version is back.");
       },
     });
   }, 1500);
@@ -993,10 +995,18 @@ function maybeReportListChanges() {
   // for any "Name: 12/30" counter elsewhere. Both stay in the turn log but
   // never raise an alert.
   const progressless = (t) => String(t ?? "").replace(/:\s*-?\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?/g, "").trim();
+  // "Oxygen Tank (4 hours left)" -> "(3.5 hours left)", "x3" -> "x2", "60%" -> "55%":
+  // amounts going up and down are the item being used, not the AI losing detail
+  const countless = (t) => progressless(t).toLowerCase()
+    .replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|half|quarter|few|several|no)\b/g, "#")
+    .replace(/\d+(?:[.,]\d+)?/g, "#")
+    .replace(/(?:#\s*(?:hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s|days?|d|weeks?|wks?|turns?|rounds?|uses?|charges?|shots?|doses?|%|l|liters?|litres?|ml|kg|g|lbs?|oz|x)?\b\s*(?:and\s+)?)+/g, "# ")
+    .replace(/\s+/g, " ").trim();
   const hits = diffs
     .filter((d) => (d.type === "lost" || d.type === "changed") && d.before)
     .filter((d) => d.kind !== "Mastery")
     .filter((d) => progressless(d.before) !== progressless(d.name))
+    .filter((d) => uiSettings.ignoreCountChanges === false || countless(d.before) !== countless(d.name))
     .filter((d) => (wordDiff(d.before, d.name) || [{ op: "-" }]).some((o) => o.op === "-"))
     .map((d) => ({ ...d, serious: isMeaningfulLoss(d.before, d.name) }))
     .sort((x, y) => (y.serious ? 1 : 0) - (x.serious ? 1 : 0));
@@ -1012,8 +1022,8 @@ function maybeReportListChanges() {
 
   const serious = hits.some((d) => d.serious);
   if (window.toastr) {
-    const fn = serious ? (window.toastr.warning || window.toastr.info) : window.toastr.info;
-    fn.call(window.toastr, body,
+    const fn = serious ? hudToast.warning : hudToast.info;
+    fn(body,
       serious ? "\u26A0\uFE0F Description lost detail" : "\u{1F4DD} Description changed",
       { escapeHtml: false });
   }
@@ -1314,13 +1324,28 @@ let lastIndicatorLen = 0;
 let notagWatch = null;          // { key, idx, len, since, done }
 const NOTAG_SETTLE_MS = 2500;
 
+// Every HUD toast goes through here, so the Toast duration setting covers them
+// all. Options are passed per toast and never set globally: the global ones
+// are SillyTavern's too, and setting them made its own toasts permanent.
+function hudToastOpts(extra = {}) {
+  const secs = Math.max(0, Math.min(120, Number(uiSettings.toastSeconds ?? 8)));
+  return {
+    timeOut: secs * 1000,
+    extendedTimeOut: secs ? 1500 : 0,     // after the pointer leaves (or a tap on a phone)
+    tapToDismiss: true, closeButton: true, preventDuplicates: true, newestOnTop: true,
+    progressBar: secs > 0,
+    ...extra,
+  };
+}
+const hudToast = Object.fromEntries(["info", "warning", "success", "error"].map((k) => [k, (msg, title, opts) => {
+  const t = window.toastr;
+  if (!t) return;
+  (t[k] || t.info).call(t, msg, title, hudToastOpts(opts));
+}]));
+
 function rpgToast(kind, msg) {
   if (!window.toastr) return;
-  window.toastr.options = {
-    ...window.toastr.options,
-    timeOut: 0, extendedTimeOut: 0, tapToDismiss: true, closeButton: true, preventDuplicates: true,
-  };
-  (window.toastr[kind] || window.toastr.info)(msg);
+  (hudToast[kind] || hudToast.info)(msg);
 }
 
 setInterval(() => {
@@ -2203,7 +2228,7 @@ function moveActiveCharacter(toType) {
   renderRPG();
   const wrote = writeStateBackToChatMessage(rpgState);
   if (!wrote) console.warn("RPG HUD: couldn't write back <rpg_state> after moving a character");
-  if (window.toastr) window.toastr.info(`${displayName(unit?.name, "Character")} moved to ${MOVE_LABELS[toType]}.`);
+  if (window.toastr) hudToast.info(`${displayName(unit?.name, "Character")} moved to ${MOVE_LABELS[toType]}.`);
   return true;
 }
 
@@ -2760,9 +2785,9 @@ function commitBondsEdit() {
   );
   if (scrub) {
     const n = purgeBondsFromHistory(names);
-    if (window.toastr) window.toastr.info(`Scrubbed ${names.length} name(s) from ${n} message(s).`);
+    if (window.toastr) hudToast.info(`Scrubbed ${names.length} name(s) from ${n} message(s).`);
   } else if (window.toastr) {
-    window.toastr.info(`${names.length} bond(s) removed and blocked from returning.`);
+    hudToast.info(`${names.length} bond(s) removed and blocked from returning.`);
   }
 }
 
@@ -2988,7 +3013,7 @@ function commitTimersEdit() {
   );
   if (scrub) {
     const n = purgeTimersFromHistory(removed);
-    if (window.toastr) window.toastr.info(`Scrubbed ${removed.length} timer(s) from ${n} message(s).`);
+    if (window.toastr) hudToast.info(`Scrubbed ${removed.length} timer(s) from ${n} message(s).`);
   }
 }
 
@@ -3935,6 +3960,14 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     			<span title="Warn when an item/skill/passive loses its description">Change Alerts</span>
    			 <input type="checkbox" id="rpg-settings-changealerts" ${uiSettings.changeAlerts ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
 		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="Change Alerts stay quiet when only an amount changed: 4 hours to 3.5 hours, x3 to x2, 60% to 55%. Those still show in the Log.">Ignore Amount Changes</span>
+   			 <input type="checkbox" id="rpg-settings-ignorecounts" ${uiSettings.ignoreCountChanges !== false ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
+		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="How long the HUD's pop-up messages stay, in seconds. 0 keeps them until you tap them.">Toast Seconds</span>
+   			 <input type="number" id="rpg-settings-toastsecs" min="0" max="120" step="1" value="${Math.max(0, Math.min(120, Number(uiSettings.toastSeconds ?? 8)))}" style="width:52px; background:#222; color:#ddd; border:1px solid #555; text-align:center;">
+		  </div>
              <button id="rpg-settings-reset" style="background:#b71c1c; border:1px solid #ff5252; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold; grid-column:1 / span 2;">X Reset</button>
           </div>
 
@@ -4336,7 +4369,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	  if (ubEl) ubEl.onclick = (e) => {
 	    e.stopPropagation();
 	    clearBondBlocklist();
-	    if (window.toastr) window.toastr.info("Bond blocklist cleared for this chat.");
+	    if (window.toastr) hudToast.info("Bond blocklist cleared for this chat.");
 	    renderRPG();
 	  };
 
@@ -4354,6 +4387,18 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	  }
 
 	  if (SYS) sysBindSettings(container);
+
+	  const icEl = document.getElementById("rpg-settings-ignorecounts");
+	  if (icEl) {
+	    icEl.onclick = (e) => e.stopPropagation();
+	    icEl.onchange = () => { uiSettings.ignoreCountChanges = icEl.checked; saveUiSettings(); };
+	  }
+	  const tsEl = document.getElementById("rpg-settings-toastsecs");
+	  if (tsEl) {
+	    tsEl.onclick = (e) => e.stopPropagation();
+	    tsEl.onkeydown = (e) => e.stopPropagation();
+	    tsEl.onchange = () => { uiSettings.toastSeconds = Math.max(0, Math.min(120, parseInt(tsEl.value, 10) || 0)); saveUiSettings(); };
+	  }
 
 	  const caEl = document.getElementById("rpg-settings-changealerts");
 	  if (caEl) caEl.onchange = () => {
@@ -4906,7 +4951,7 @@ function saoResetLayout() {
   uiSettings.saoPos = null;
   saveUiSettings();
   renderRPG();
-  if (window.toastr) window.toastr.info("HUD layout reset.");
+  if (window.toastr) hudToast.info("HUD layout reset.");
 }
 
 // Drag by pointer. Interactive bits are switched off while this is on, so a
@@ -6586,7 +6631,7 @@ function saoSaveListEdit() {
   const who = activeListOwner();
   if (depth && edits.length && !isVehicle && who !== undefined) {
     const n = rewriteListHistory(who, key, edits, depth);
-    if (window.toastr) window.toastr.info(n ? `Also updated ${n} earlier repl${n === 1 ? "y" : "ies"}.` : "No earlier replies needed changing.");
+    if (window.toastr) hudToast.info(n ? `Also updated ${n} earlier repl${n === 1 ? "y" : "ies"}.` : "No earlier replies needed changing.");
   }
   try { checkMessage(); } catch {}
 }
@@ -7141,7 +7186,7 @@ function saoUndoLastTurn() {
   setMessageText(msg, after);
   turnUndo = { key: currentChatKey(ctx), idx: last.idx, before, after };
   afterTurnEdit(ctx, last.idx);
-  if (window.toastr) window.toastr.info(keep.length ? `Latest turn undone, keeping ${keep.length} locked change${keep.length === 1 ? "" : "s"}.` : "Latest turn undone.");
+  if (window.toastr) hudToast.info(keep.length ? `Latest turn undone, keeping ${keep.length} locked change${keep.length === 1 ? "" : "s"}.` : "Latest turn undone.");
 }
 
 // Revert one change from the newest turn: reparse that turn's block, put the
@@ -7158,7 +7203,7 @@ function saoUndoChange(ci, expectText) {
   // the chat may have moved on since the log was drawn
   const change = diffTurn(prev.state, last.state)[ci];
   if (!change || !change.u || change.text !== expectText) {
-    if (window.toastr) window.toastr.info("That change has already moved on. The log has been refreshed.");
+    if (window.toastr) hudToast.info("That change has already moved on. The log has been refreshed.");
     renderRPG();
     return;
   }
@@ -7174,7 +7219,7 @@ function saoUndoChange(ci, expectText) {
   setMessageText(msg, after);
   turnUndo = { key: currentChatKey(ctx), idx: last.idx, before, after };
   afterTurnEdit(ctx, last.idx);
-  if (window.toastr) window.toastr.info(`Reverted: ${change.text}`);
+  if (window.toastr) hudToast.info(`Reverted: ${change.text}`);
 }
 
 function saoCanRedo(ctx) {
@@ -7190,7 +7235,7 @@ function saoRedoLastTurn() {
   const idx = turnUndo.idx;
   turnUndo = null;
   afterTurnEdit(ctx, idx);
-  if (window.toastr) window.toastr.info("Turn restored.");
+  if (window.toastr) hudToast.info("Turn restored.");
 }
 
 // Classic's Log tab: the same turn log, undo and per-change undo as the SAO
@@ -7852,6 +7897,11 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-22.3", items: [
+    "New setting, Toast seconds (default 8): how long the HUD's pop-up messages stay. 0 keeps them until tapped, the old behaviour.",
+    "Fix: the HUD was making every toast permanent, SillyTavern's own included. Its toasts now set their own duration and leave SillyTavern's alone.",
+    "New setting, Ignore amount changes (on by default): Change Alerts no longer fire when only an amount in a description changed, like an oxygen tank going from 4 hours to 3.5 hours, x3 to x2, or 60% to 55%. Those still show in the Log.",
+  ] },
   { build: "2026-10-22.2", items: [
     "Edit meters straight from the panel: in the System skin tap a meter's icon, in classic tap its name. The editor opens for that character: rename, change values, colour, reorder, add or remove, then Save.",
   ] },
@@ -7984,6 +8034,8 @@ const CLASSIC_HELP = [
   ["Log", "What changed each turn. Undo last turn reverts the newest turn; ↶ reverts a single change; the padlock keeps a change through Undo last turn. Redo puts it back."],
   ["Edit state", "Settings → ✏️ Edit: edit everything about the selected character. With Note Edits for AI on, saving leaves an (OOC: ...) line telling the AI what you changed."],
   ["Move", "Settings: move the selected character between Party, NPCs and Enemies."],
+  ["Toast Seconds", "Settings. How long the HUD's pop-up messages stay before fading, in seconds. 0 keeps them until you tap them."],
+  ["Ignore Amount Changes", "Settings (on by default). Change Alerts stay quiet when only an amount in a description changed, like an oxygen tank going from 4 hours to 3.5, x3 to x2, or 60% to 55%. Those still show in the Log."],
   ["Change Alerts", "A toast when an item, skill or passive's description changes or loses detail, for anyone."],
   ["Restore Lost Descriptions", "If the AI drops a description entirely, the old one is put back onto the new entry. Tap the toast to undo."],
   ["Add Weekdays", "If a new reply's Time: has no weekday, one is written in. Tap the toast to undo. Edit state also has a Weekday choice: Auto, a specific day, or None."],
@@ -8088,7 +8140,7 @@ function classicBindLog() {
       e.stopPropagation();
       const mes = document.querySelector(`#chat .mes[mesid="${el.dataset.mes}"]`);
       if (mes) mes.scrollIntoView({ behavior: "smooth", block: "center" });
-      else if (window.toastr) window.toastr.info("That message isn't loaded in the chat view.");
+      else if (window.toastr) hudToast.info("That message isn't loaded in the chat view.");
     };
   });
   document.querySelectorAll(".rpg-c-tuse").forEach((el) => {
@@ -8272,6 +8324,10 @@ function saoHelpPanel() {
           "Works for everyone: you, party members, NPCs and enemies. When a reply keeps an item, skill or passive but drops its description entirely, the old description is put back onto the new entry, so other changes (+10 to +15 ATK, a new cost) stay. A description that was only trimmed or reworded is left alone. A toast says what was restored; tap it to undo. Masteries are never touched.")
       + item("Note edits for AI",
           "When on, saving from Edit state adds one (OOC: ...) line to the block listing exactly what you changed, and asks the AI to treat it as canon without replying to it. Several edits before the AI answers are merged into one note. Other HUD edits keep the note in place. Edits made directly in the panels don't add one.")
+      + item("Toast seconds",
+          "How long the HUD's pop-up messages stay before fading, in seconds. 0 keeps them until you tap them.")
+      + item("Ignore amount changes",
+          "On by default. Change alerts stay quiet when only an amount in a description changed, like an oxygen tank going from 4 hours to 3.5, x3 to x2, or 60% to 55%. Those still show in the turn log.")
       + item("Charges",
           "A timer written as 2/2x, 2x or \u201c2 uses\u201d counts uses instead of turns, for effects like \u201cblock the next 2 attacks\u201d. It never ticks down on its own; the AI lowers it when it's used, or tap \u22121 in the timer list.")
       + item("Meters",
@@ -8331,6 +8387,9 @@ function saoSettingsHtml() {
     + row("rpg-sao-insert", "&#8595;", "Insert state")
     + row("rpg-sao-remind", "&#9993;", "Remind state")
     + toggle("rpg-sao-sw-alerts", "Change alerts", !!uiSettings.changeAlerts)
+    + toggle("rpg-sao-sw-ignorecounts", "Ignore amount changes", uiSettings.ignoreCountChanges !== false)
+    + `<div class="rpg-sao-mrow toggle"><span title="How long the HUD's pop-up messages stay, in seconds. 0 keeps them until you tap them.">Toast seconds</span>
+        <input id="rpg-sao-toastsecs" type="number" min="0" max="120" step="1" value="${Math.max(0, Math.min(120, Number(uiSettings.toastSeconds ?? 8)))}"></div>`
     + toggle("rpg-sao-sw-inject", "Auto-inject", !!autoInjectState)
     + toggle("rpg-sao-sw-ooc", "Note edits for AI", uiSettings.oocEditNotes !== false)
     + toggle("rpg-sao-sw-restore", "Restore lost descriptions", !!uiSettings.restoreLostDesc)
@@ -8722,7 +8781,7 @@ function saoBind() {
   on(".rpg-sao-turnhead", (el) => {
     const mes = document.querySelector(`#chat .mes[mesid="${el.dataset.mes}"]`);
     if (mes) mes.scrollIntoView({ behavior: "smooth", block: "center" });
-    else if (window.toastr) window.toastr.info("That message isn't loaded in the chat view.");
+    else if (window.toastr) hudToast.info("That message isn't loaded in the chat view.");
   });
 
   const clock = document.getElementById("rpg-sao-clock");
@@ -8774,7 +8833,7 @@ function saoBind() {
   });
   bind("rpg-sao-layout-copy", () => {
     const ta = document.getElementById("rpg-sao-layout-text");
-    const done = () => { if (window.toastr) window.toastr.info("Layout report copied."); };
+    const done = () => { if (window.toastr) hudToast.info("Layout report copied."); };
     try { navigator.clipboard.writeText(layoutReportText).then(done, () => { ta?.select(); document.execCommand("copy"); done(); }); }
     catch { ta?.select(); try { document.execCommand("copy"); done(); } catch {} }
   });
@@ -8861,6 +8920,13 @@ function saoBind() {
   bind("rpg-sao-insert", insertLastStateIntoNarrative);
   bind("rpg-sao-remind", remindStateInLastMessage);
   bind("rpg-sao-sw-alerts", () => { uiSettings.changeAlerts = !uiSettings.changeAlerts; saveUiSettings(); renderRPG(); });
+  bind("rpg-sao-sw-ignorecounts", () => { uiSettings.ignoreCountChanges = uiSettings.ignoreCountChanges === false; saveUiSettings(); renderRPG(); });
+  const tsI = document.getElementById("rpg-sao-toastsecs");
+  if (tsI) {
+    tsI.onclick = (e) => e.stopPropagation();
+    tsI.onkeydown = (e) => e.stopPropagation();
+    tsI.onchange = () => { uiSettings.toastSeconds = Math.max(0, Math.min(120, parseInt(tsI.value, 10) || 0)); saveUiSettings(); };
+  }
   const eh = document.getElementById("rpg-sao-edithist");
   if (eh) {
     eh.onclick = (e) => e.stopPropagation();
@@ -8891,7 +8957,7 @@ function saoBind() {
     autoInjectState = !autoInjectState;
     const box = document.getElementById("rpg-settings-autoinject");
     if (box) box.checked = autoInjectState;
-    if (window.toastr) window.toastr.info(`Auto-Inject ${autoInjectState ? "Enabled" : "Disabled"}`);
+    if (window.toastr) hudToast.info(`Auto-Inject ${autoInjectState ? "Enabled" : "Disabled"}`);
     renderRPG();
   });
   bind("rpg-sao-sw-bars", () => { uiSettings.barsOnMin = !uiSettings.barsOnMin; saveUiSettings(); renderRPG(); });
@@ -8904,7 +8970,7 @@ function saoBind() {
   bind("rpg-sao-sw-autobond", () => { uiSettings.autoAddBonds = !uiSettings.autoAddBonds; saveUiSettings(); renderRPG(); });
   bind("rpg-sao-unblock", () => {
     clearBondBlocklist();
-    if (window.toastr) window.toastr.info("Bond blocklist cleared for this chat.");
+    if (window.toastr) hudToast.info("Bond blocklist cleared for this chat.");
     renderRPG();
   });
 
@@ -9487,7 +9553,7 @@ button.rpg-sao-ico:hover{border-color:#b3903f; color:#8a6a12}
   background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink-dim)}
 .rpg-sao-ledit-lock.on{color:#8a6a12; border-color:#b3903f; background:rgba(179,144,63,.16)}
 .rpg-sao-poslock{flex:0 0 auto; display:grid; place-items:center; color:#8a6a12; opacity:.85}
-#rpg-sao-edithist{width:52px; font:inherit; font-size:12px; padding:2px 4px; text-align:center}
+#rpg-sao-edithist, #rpg-sao-toastsecs{width:52px; font:inherit; font-size:12px; padding:2px 4px; text-align:center}
 .rpg-sao-customfont input{width:100%; box-sizing:border-box; font:inherit; font-size:12px; padding:4px 6px;
   color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
 .rpg-sao-livebond b{display:flex; align-items:center; gap:4px}
@@ -10332,7 +10398,7 @@ const checkMessage = async (manual = false) => {
   };
 
   console.error("RPG HUD Parse Error:", err);
-  if (manual && window.toastr) window.toastr.error("Pipe Parser failed to read the block.");
+  if (manual && window.toastr) hudToast.error("Pipe Parser failed to read the block.");
 }
 };
 
@@ -10369,7 +10435,7 @@ eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, (payload) => {
 $(document).on('change', '#rpg-settings-autoinject', function() {
     autoInjectState = this.checked;
     if (window.toastr) {
-        window.toastr.info(`Auto-Inject ${autoInjectState ? 'Enabled' : 'Disabled'}`);
+        hudToast.info(`Auto-Inject ${autoInjectState ? 'Enabled' : 'Disabled'}`);
     }
     console.log("RPG HUD: Auto-inject toggle set to", autoInjectState);
 });
@@ -10404,18 +10470,7 @@ if (event_types?.CHAT_CHANGED) {
 jQuery(() => {
   console.log("RPG HUD: boot start ✅");
   try {
-    if (window.toastr) {
-      window.toastr.options = {
-        ...window.toastr.options,
-        timeOut: 0,              
-        extendedTimeOut: 0,
-        tapToDismiss: true,
-        closeButton: true,
-        progressBar: false,
-        newestOnTop: true,
-        preventDuplicates: true,
-      };
-    }
+    // (no global toastr options: HUD toasts set their own, see hudToastOpts)
   } catch {}
 
   try {
