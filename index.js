@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-23.5";
+const HUD_BUILD = "2026-10-23.6";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -7637,7 +7637,6 @@ function sysHatClockSvg(clock, look = "storybook") {
   const ROMAN = ["XII", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI"];
   let dots = "";
   for (let i = 0; i < 60; i++) {
-    if (i % 5 === 0) continue;
     const a = (i * 6 - 90) * Math.PI / 180;
     dots += `<circle cx="${(cx + 34.5 * Math.cos(a)).toFixed(2)}" cy="${(cy + 34.5 * Math.sin(a)).toFixed(2)}" r=".75"/>`;
   }
@@ -7966,11 +7965,8 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
-  { build: "2026-10-23.5", items: [
-    "Top-hat clock updated: little arms, straight stitched legs, a plain black top hat, and finer stitching. Plus a second version, \u201cClock: Roman, top hat (System colours)\u201d, drawn in the System window's glow.",
-  ] },
-  { build: "2026-10-23.1", items: [
-    "System skin: a second clock for the Big slot, \u201cClock: Roman, top hat\u201d. A pale blue storybook clock with round ears and feet, Roman numerals around the rim, a navy bow and a little top hat. It shows the in-world time like the other one.",
+  { build: "2026-10-23.6", items: [
+    "System skin: two new clocks for the Big slot. \u201cClock: Roman, top hat\u201d is a pale blue storybook clock with ears, little arms and legs, fine stitching, Roman numerals around the rim, a navy bow and a black top hat. \u201cClock: Roman, top hat (System colours)\u201d is the same clock drawn in the System window's glow. Both show the in-world time like the original clock.",
   ] },
   { build: "2026-10-22.3", items: [
     "New setting, Toast seconds (default 8): how long the HUD's pop-up messages stay. 0 keeps them until tapped, the old behaviour.",
