@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-22.3";
+const HUD_BUILD = "2026-10-23.4";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -7434,6 +7434,8 @@ const SYS_CSS = `
 .rpg-sys .sys-hero.clock{display:flex; align-items:center; gap:12px}
 .rpg-sys .sys-clock{flex:0 0 auto; width:64px; height:64px; color:var(--sc); filter:drop-shadow(0 0 4px var(--sg))}
 .rpg-sys .sys-clock svg{display:block; width:100%; height:100%}
+.rpg-sys .sys-clock.hat{width:76px; height:84px; filter:drop-shadow(0 0 5px rgba(150,190,255,.45))}
+.rpg-sys .sys-clock.hat.system{filter:drop-shadow(0 0 4px var(--sg))}
 .rpg-sys .sys-hero.clock .sys-info{flex:1; min-width:0}
 .rpg-sys .sys-pick{position:relative; display:inline-block; max-width:100%; cursor:pointer}
 .rpg-sys .sys-pick select{position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; font-size:16px;
@@ -7614,6 +7616,71 @@ function sysClockSvg(clock) {
   </svg>`;
 }
 
+// The storybook clock: a round case with ears, little arms and feet, a face
+// with Roman numerals set around the rim, a bow and a little top hat.
+// "storybook" is pale blue, white and navy; "system" is the same drawing in
+// the window's own glow, so it follows the frame (red for enemies and so on).
+const HAT_CLOCK_LOOKS = {
+  storybook: { case_: "#b7cdee", edge: "#7f9ccc", stitch: "#8eaad6", stitchOp: 1, face: "#fbfcff", faceEdge: "#8eaad6",
+    dots: "#444", nums: "#2f2f2f", hands: "#2b2b2b", hub: "#fff", ampm: "#8a96a8",
+    bow: "#1f3a9e", bowDk: "#152a78", bowEdge: "#152a78", hat: "#0b0b0e", brim: "#0b0b0e", hatEdge: "#000", shine: "#3a3a44" },
+  system: { case_: "#0a1a30", edge: "currentColor", stitch: "currentColor", stitchOp: .45, face: "#050c18", faceEdge: "currentColor",
+    dots: "#8fb6d8", nums: "#e6f5ff", hands: "#f4fbff", hub: "#04090f", ampm: "#8fb6d8",
+    bow: "rgba(90,170,255,.28)", bowDk: "rgba(90,170,255,.45)", bowEdge: "currentColor", hat: "#000", brim: "#000", hatEdge: "currentColor", shine: "rgba(143,208,255,.35)" },
+};
+function sysHatClockSvg(clock, look = "storybook") {
+  const L = HAT_CLOCK_LOOKS[look] || HAT_CLOCK_LOOKS.storybook;
+  const p = parseClock(clock);
+  const cx = 60, cy = 70;
+  const h = p ? Math.floor(p.mins / 60) : 0, mi = p ? p.mins % 60 : 0;
+  const ha = ((h % 12) + mi / 60) * 30, ma = mi * 6;
+  const ROMAN = ["XII", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI"];
+  let dots = "";
+  for (let i = 0; i < 60; i++) {
+    if (i % 5 === 0) continue;
+    const a = (i * 6 - 90) * Math.PI / 180;
+    dots += `<circle cx="${(cx + 34.5 * Math.cos(a)).toFixed(2)}" cy="${(cy + 34.5 * Math.sin(a)).toFixed(2)}" r=".75"/>`;
+  }
+  const nums = ROMAN.map((r, i) =>
+    `<text x="${cx}" y="${cy - 26}" transform="rotate(${i * 30} ${cx} ${cy})" text-anchor="middle"
+      font-size="${r.length > 3 ? 6.4 : 7.6}" letter-spacing="-.3">${r}</text>`).join("");
+  return `<svg viewBox="0 0 120 132" role="img" aria-label="${escAttr(p ? `Time ${clock}` : "Time unknown")}">
+    <!-- ears, arms and legs first, each with its stitching, so the body covers the joins -->
+    <g fill="${L.case_}" stroke="${L.edge}" stroke-width="1.6">
+      <circle cx="22" cy="34" r="15"/><circle cx="98" cy="34" r="15"/>
+      <ellipse cx="11" cy="84" rx="10" ry="11"/><ellipse cx="109" cy="84" rx="10" ry="11"/>
+      <rect x="31" y="98" width="17" height="30" rx="8.5"/><rect x="72" y="98" width="17" height="30" rx="8.5"/>
+    </g>
+    <g fill="none" stroke="${L.stitch}" stroke-opacity="${L.stitchOp}" stroke-width=".8" stroke-dasharray="1.3 1.3">
+      <circle cx="22" cy="34" r="12.6"/><circle cx="98" cy="34" r="12.6"/>
+      <ellipse cx="11" cy="84" rx="7.6" ry="8.6"/><ellipse cx="109" cy="84" rx="7.6" ry="8.6"/>
+      <rect x="33.4" y="100.4" width="12.2" height="25.2" rx="6.1"/><rect x="74.4" y="100.4" width="12.2" height="25.2" rx="6.1"/>
+    </g>
+    <circle cx="${cx}" cy="${cy}" r="47" fill="${L.case_}" stroke="${L.edge}" stroke-width="1.6"/>
+    <circle cx="${cx}" cy="${cy}" r="44.6" fill="none" stroke="${L.stitch}" stroke-opacity="${L.stitchOp}" stroke-width=".8" stroke-dasharray="1.3 1.3"/>
+    <circle cx="${cx}" cy="${cy}" r="39" fill="${L.face}" stroke="${L.faceEdge}" stroke-width="1.2"/>
+    <g fill="${L.dots}">${dots}</g>
+    <g fill="${L.nums}" font-family="'Times New Roman',Georgia,serif" font-weight="700">${nums}</g>
+    ${p ? `<g fill="${L.hands}">
+      <path d="M${cx - 2.6} ${cy} L${cx} ${cy - 20} L${cx + 2.6} ${cy} L${cx} ${cy + 4} Z" transform="rotate(${ha.toFixed(1)} ${cx} ${cy})"/>
+      <path d="M${cx - 2} ${cy} L${cx} ${cy - 32} L${cx + 2} ${cy} L${cx} ${cy + 5} Z" transform="rotate(${ma} ${cx} ${cy})"/>
+    </g>` : `<text x="${cx}" y="${cy + 14}" text-anchor="middle" font-size="9" fill="${L.ampm}">?</text>`}
+    <circle cx="${cx}" cy="${cy}" r="3.6" fill="${L.hub}" stroke="${L.hands}" stroke-width="1.6"/>
+    ${p ? `<text x="${cx}" y="${cy + 17}" text-anchor="middle" font-size="6.5" letter-spacing=".6" fill="${L.ampm}" font-family="inherit">${h >= 12 ? "PM" : "AM"}</text>` : ""}
+    <g transform="translate(${cx} 112)">
+      <path d="M-2 -1 L-6 12 L-2.5 10 L0 13 Z M2 -1 L6 12 L2.5 10 L0 13 Z" fill="${L.bowDk}" stroke="${L.bowEdge}" stroke-width=".6"/>
+      <path d="M-1.5 0 C-7 -8 -16 -7 -15 0 C-16 7 -7 8 -1.5 0 Z" fill="${L.bow}" stroke="${L.bowEdge}" stroke-width=".8"/>
+      <path d="M1.5 0 C7 -8 16 -7 15 0 C16 7 7 8 1.5 0 Z" fill="${L.bow}" stroke="${L.bowEdge}" stroke-width=".8"/>
+      <rect x="-3.2" y="-3.6" width="6.4" height="7.2" rx="1.8" fill="${L.bowDk}" stroke="${L.bowEdge}" stroke-width=".6"/>
+    </g>
+    <g>
+      <ellipse cx="${cx}" cy="25.5" rx="17" ry="4" fill="${L.brim}" stroke="${L.hatEdge}" stroke-width=".8"/>
+      <path d="M${cx - 10} 25 L${cx - 10.5} 5.5 Q${cx} 3 ${cx + 10.5} 5.5 L${cx + 10} 25 Z" fill="${L.hat}" stroke="${L.hatEdge}" stroke-width=".8"/>
+      <path d="M${cx - 7} 8 Q${cx - 6.5} 13 ${cx - 7} 16.5" stroke="${L.shine}" stroke-width="1.2" fill="none" stroke-linecap="round"/>
+    </g>
+  </svg>`;
+}
+
 function sysBar(icon, label, curr, max, extra = {}) {
   const iconHtml = extra.editMeters
     ? `<button class="sys-ibtn" data-meter-edit title="Edit meters" aria-label="Edit meters">${sysIcon(icon)}</button>`
@@ -7635,7 +7702,9 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
     : type === "player" ? playerDisplayName() : displayName(display.name, "Unit");
   const pick = (inner) => `<span class="sys-pick">${inner}<span class="sys-caret">▾</span>` +
     `<select id="rpg-char-select" title="Switch character">${getCharOptions().replace(/>\s*\p{Extended_Pictographic}\uFE0F?\s*/gu, ">")}</select></span>`;
-  const clockMode = uiSettings.sysBigSlot === "clock";
+  const clockMode = ["clock", "hatclock", "hatclock2"].includes(uiSettings.sysBigSlot);
+  const hatClock = uiSettings.sysBigSlot === "hatclock" || uiSettings.sysBigSlot === "hatclock2";
+  const hatLook = uiSettings.sysBigSlot === "hatclock2" ? "system" : "storybook";
 
   const wd = worldWeekday(time);
   const dateText = `${wd ? wd + ", " : ""}${time.month ?? "???"} ${time.day ?? ""}${time.year ? ", " + time.year : ""}`;
@@ -7652,7 +7721,7 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
 
   const size = name.length > 18 ? " s" : name.length > 11 ? " m" : "";
   const hero = clockMode
-    ? `<div class="sys-hero clock"><div class="sys-clock">${sysClockSvg(time.clock)}</div>${info}</div>`
+    ? `<div class="sys-hero clock"><div class="sys-clock${hatClock ? ` hat ${hatLook}` : ""}">${hatClock ? sysHatClockSvg(time.clock, hatLook) : sysClockSvg(time.clock)}</div>${info}</div>`
     : `<div class="sys-hero name"><div class="sys-big${size}">${pick(escHtml(name))}</div><div class="sys-rule"></div>${info}</div>`;
 
   // bars: HP, MP/EN, bond for party and NPCs, then any meters
@@ -7737,12 +7806,12 @@ function sysSettingsHtml() {
   const sel = "width:100%; background:#0d1a2c; border:1px solid #3d6a94; color:#dff1ff; padding:6px; margin-bottom:8px;";
   const lab = "font-size:0.75em; color:#9fc6e6; margin-bottom:4px;";
   const opt = (v, t, cur) => `<option value="${v}"${cur === v ? " selected" : ""}>${t}</option>`;
-  const big = uiSettings.sysBigSlot === "clock" ? "clock" : "name";
+  const big = ["clock", "hatclock", "hatclock2"].includes(uiSettings.sysBigSlot) ? uiSettings.sysBigSlot : "name";
   const font = uiSettings.sysFont || "exo";
   return `
     <div style="margin:0 0 10px; padding:8px; border:1px solid rgba(143,208,255,0.35); background:rgba(90,170,255,0.06);">
       <div style="${lab}">Big slot</div>
-      <select id="rpg-sys-bigslot" style="${sel}">${opt("name", "Name", big)}${opt("clock", "Clock (in-world time)", big)}</select>
+      <select id="rpg-sys-bigslot" style="${sel}">${opt("name", "Name", big)}${opt("clock", "Clock (in-world time)", big)}${opt("hatclock", "Clock: Roman, top hat", big)}${opt("hatclock2", "Clock: Roman, top hat (System colours)", big)}</select>
       <div style="${lab}">Font</div>
       <select id="rpg-sys-font" style="${sel}">${opt("exo", "Exo 2", font)}${opt("squarish", "Squarish (Rajdhani)", font)}${opt("saira", "Saira Condensed", font)}${opt("teko", "Teko", font)}${opt("sans", "Sans", font)}${opt("preset", "Follow preset", font)}</select>
       <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
@@ -7897,6 +7966,19 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-23.4", items: [
+    "Top-hat clock (System colours): the case is solid now, so the ears, arms and legs no longer show through the body.",
+  ] },
+  { build: "2026-10-23.3", items: [
+    "Top-hat clocks: the hat is plain black (no band), the stitching is finer and sits closer to the edges, the ear stitching no longer runs into the body's, and the legs are straight, stitched legs instead of feet.",
+  ] },
+  { build: "2026-10-23.2", items: [
+    "The top-hat clock now has its little arms, and the hat sits straight.",
+    "Another Big slot choice, \u201cClock: Roman, top hat (System colours)\u201d: the same clock drawn in the System window's glow. It follows the frame, so it turns red for enemies.",
+  ] },
+  { build: "2026-10-23.1", items: [
+    "System skin: a second clock for the Big slot, \u201cClock: Roman, top hat\u201d. A pale blue storybook clock with round ears and feet, Roman numerals around the rim, a navy bow and a little top hat. It shows the in-world time like the other one.",
+  ] },
   { build: "2026-10-22.3", items: [
     "New setting, Toast seconds (default 8): how long the HUD's pop-up messages stay. 0 keeps them until tapped, the old behaviour.",
     "Fix: the HUD was making every toast permanent, SillyTavern's own included. Its toasts now set their own duration and leave SillyTavern's alone.",
@@ -8045,7 +8127,7 @@ const CLASSIC_HELP = [
 
 const SYS_HELP = [
   ["System window", "The panel shows the selected character. Tap the big name (or NAME, with the clock) to switch character. The frame turns red for enemies and purple for vehicles."],
-  ["Big slot", "Settings → Big slot: the character's name, or an analog clock of the in-world time."],
+  ["Big slot", "Settings → Big slot: the character's name, or an analog clock of the in-world time: the glowing one, or a storybook clock with Roman numerals, a bow and a little top hat, in its own pale blue or in the System window's glow."],
   ["Notifications", "Settings → Notifications: a System popup when a reply gives you items, skills, passives, coin or a status, adds quests, timers or party members, or brings in enemies. Tap one to dismiss it. Your own edits never trigger them."],
 ];
 
