@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-23.4";
+const HUD_BUILD = "2026-10-23.5";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -7966,15 +7966,8 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
-  { build: "2026-10-23.4", items: [
-    "Top-hat clock (System colours): the case is solid now, so the ears, arms and legs no longer show through the body.",
-  ] },
-  { build: "2026-10-23.3", items: [
-    "Top-hat clocks: the hat is plain black (no band), the stitching is finer and sits closer to the edges, the ear stitching no longer runs into the body's, and the legs are straight, stitched legs instead of feet.",
-  ] },
-  { build: "2026-10-23.2", items: [
-    "The top-hat clock now has its little arms, and the hat sits straight.",
-    "Another Big slot choice, \u201cClock: Roman, top hat (System colours)\u201d: the same clock drawn in the System window's glow. It follows the frame, so it turns red for enemies.",
+  { build: "2026-10-23.5", items: [
+    "Top-hat clock updated: little arms, straight stitched legs, a plain black top hat, and finer stitching. Plus a second version, \u201cClock: Roman, top hat (System colours)\u201d, drawn in the System window's glow.",
   ] },
   { build: "2026-10-23.1", items: [
     "System skin: a second clock for the Big slot, \u201cClock: Roman, top hat\u201d. A pale blue storybook clock with round ears and feet, Roman numerals around the rim, a navy bow and a little top hat. It shows the in-world time like the other one.",
