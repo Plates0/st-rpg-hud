@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-23.6";
+const HUD_BUILD = "2026-10-24.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -1251,8 +1251,8 @@ function buildPipeErrorPanelHtml() {
         line-height:1.3;
         flex:1 1 auto;
         overflow:auto;
-      ">
-        ${escHtml(message)}
+        white-space:pre-wrap;
+      ">${escHtml(message)}
       </div>
     </div>
   `;
@@ -1437,6 +1437,8 @@ function getLatestRpgValidity(chat) {
   }
 
   const lines = rawText.split('\n');
+  // count lines the way you'd read the block: its first written line ([Global]) is line 1
+  const lead = lines.findIndex((l) => l.trim());
   let errors = [];
 
   lines.forEach((line, index) => {
@@ -1449,13 +1451,18 @@ function getLatestRpgValidity(chat) {
       const content = seg[1].trim();
       // If there is content inside the pipe, it MUST have a colon
       if (content && !content.includes(':')) {
-        errors.push(`Line ${index + 1}: Missing colon ':' inside |${content}|`);
+        errors.push({ line: index - Math.max(0, lead) + 1, char: (seg.index ?? 0) + 1, text: t, content });
       }
     });
   });
 
   if (errors.length > 0) {
-    return { status: "invalid", label: "Format Warning", detail: errors.join("\n") };
+    const say = (e) => `Line ${e.line}: |${e.content}| has no colon. Every field is written |Name:value|, ` +
+      `so this one should be |${e.content}:| (empty) or |${e.content}:something|.`;
+    // the details panel shows the first problem underlined, and lists them all
+    const first = errors[0];
+    lastPipeError = makePipeError(first.line, first.char, errors.map(say).join("\n\n"), first.text);
+    return { status: "invalid", label: "Format Warning", detail: errors.map(say).join("\n") };
   }
 
   return { status: "valid", label: "Latest OK", detail: "" };
@@ -7965,6 +7972,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-24.1", items: [
+    "Fix: a field missing its colon (like |Timers| instead of |Timers:|) raised the broken-format warning, but the details panel came up empty. It now names the field, shows the line with the spot marked, and says how to write it.",
+  ] },
   { build: "2026-10-23.6", items: [
     "System skin: two new clocks for the Big slot. \u201cClock: Roman, top hat\u201d is a pale blue storybook clock with ears, little arms and legs, fine stitching, Roman numerals around the rim, a navy bow and a black top hat. \u201cClock: Roman, top hat (System colours)\u201d is the same clock drawn in the System window's glow. Both show the in-world time like the original clock.",
   ] },
