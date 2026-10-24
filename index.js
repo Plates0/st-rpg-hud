@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-21.9";
+const HUD_BUILD = "2026-10-24.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -456,6 +456,8 @@ const defaultUiSettings = {
   hudWidth: 280,
   hudHeight: 0,
   changeAlerts: true,
+  toastSeconds: 8,        // how long the HUD's toasts stay up; 0 = until tapped
+  ignoreCountChanges: true, // Change Alerts skip a description where only amounts changed ("4 hours" -> "3.5 hours")
 };
 
 let uiSettings = (() => {
@@ -491,7 +493,7 @@ function resetUiSettings(e) {
   if (c) { c.style.cssText = ""; c.className = ""; }
 
   renderRPG();
-  if (window.toastr) window.toastr.info("HUD settings reset to defaults.");
+  if (window.toastr) hudToast.info("HUD settings reset to defaults.");
 }
 
 function saveUiSettings() {
@@ -903,14 +905,14 @@ function schedulePostReplyFixes(idx, inner, fixes, waited = 0) {
       : weekdayDone ? (weekdayDone.insert ? "\u{1F4C5} Weekday added" : "\u{1F4C5} Weekday corrected")
       : moved.length ? "\u{1F512} Locked positions kept"
       : `\u{1F4DD} Restored ${done.length === 1 ? "a lost description" : done.length + " lost descriptions"}`;
-    window.toastr.info(`${lines.join("<br>")}<br><span style="opacity:.75">Tap to undo.</span>`, title, {
+    hudToast.info(`${lines.join("<br>")}<br><span style="opacity:.75">Tap to undo.</span>`, title, {
       escapeHtml: false,
       onclick: () => {
         const m = SillyTavern.getContext()?.chat?.[idx];
         if (!m || m.mes !== mes) return;                       // changed since: leave it
         setMessageText(m, before);
         afterTurnEdit(SillyTavern.getContext(), idx);
-        if (window.toastr) window.toastr.info("Undone: the AI's version is back.");
+        if (window.toastr) hudToast.info("Undone: the AI's version is back.");
       },
     });
   }, 1500);
@@ -993,10 +995,18 @@ function maybeReportListChanges() {
   // for any "Name: 12/30" counter elsewhere. Both stay in the turn log but
   // never raise an alert.
   const progressless = (t) => String(t ?? "").replace(/:\s*-?\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?/g, "").trim();
+  // "Oxygen Tank (4 hours left)" -> "(3.5 hours left)", "x3" -> "x2", "60%" -> "55%":
+  // amounts going up and down are the item being used, not the AI losing detail
+  const countless = (t) => progressless(t).toLowerCase()
+    .replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|half|quarter|few|several|no)\b/g, "#")
+    .replace(/\d+(?:[.,]\d+)?/g, "#")
+    .replace(/(?:#\s*(?:hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s|days?|d|weeks?|wks?|turns?|rounds?|uses?|charges?|shots?|doses?|%|l|liters?|litres?|ml|kg|g|lbs?|oz|x)?\b\s*(?:and\s+)?)+/g, "# ")
+    .replace(/\s+/g, " ").trim();
   const hits = diffs
     .filter((d) => (d.type === "lost" || d.type === "changed") && d.before)
     .filter((d) => d.kind !== "Mastery")
     .filter((d) => progressless(d.before) !== progressless(d.name))
+    .filter((d) => uiSettings.ignoreCountChanges === false || countless(d.before) !== countless(d.name))
     .filter((d) => (wordDiff(d.before, d.name) || [{ op: "-" }]).some((o) => o.op === "-"))
     .map((d) => ({ ...d, serious: isMeaningfulLoss(d.before, d.name) }))
     .sort((x, y) => (y.serious ? 1 : 0) - (x.serious ? 1 : 0));
@@ -1012,8 +1022,8 @@ function maybeReportListChanges() {
 
   const serious = hits.some((d) => d.serious);
   if (window.toastr) {
-    const fn = serious ? (window.toastr.warning || window.toastr.info) : window.toastr.info;
-    fn.call(window.toastr, body,
+    const fn = serious ? hudToast.warning : hudToast.info;
+    fn(body,
       serious ? "\u26A0\uFE0F Description lost detail" : "\u{1F4DD} Description changed",
       { escapeHtml: false });
   }
@@ -1241,8 +1251,8 @@ function buildPipeErrorPanelHtml() {
         line-height:1.3;
         flex:1 1 auto;
         overflow:auto;
-      ">
-        ${escHtml(message)}
+        white-space:pre-wrap;
+      ">${escHtml(message)}
       </div>
     </div>
   `;
@@ -1314,13 +1324,28 @@ let lastIndicatorLen = 0;
 let notagWatch = null;          // { key, idx, len, since, done }
 const NOTAG_SETTLE_MS = 2500;
 
+// Every HUD toast goes through here, so the Toast duration setting covers them
+// all. Options are passed per toast and never set globally: the global ones
+// are SillyTavern's too, and setting them made its own toasts permanent.
+function hudToastOpts(extra = {}) {
+  const secs = Math.max(0, Math.min(120, Number(uiSettings.toastSeconds ?? 8)));
+  return {
+    timeOut: secs * 1000,
+    extendedTimeOut: secs ? 1500 : 0,     // after the pointer leaves (or a tap on a phone)
+    tapToDismiss: true, closeButton: true, preventDuplicates: true, newestOnTop: true,
+    progressBar: secs > 0,
+    ...extra,
+  };
+}
+const hudToast = Object.fromEntries(["info", "warning", "success", "error"].map((k) => [k, (msg, title, opts) => {
+  const t = window.toastr;
+  if (!t) return;
+  (t[k] || t.info).call(t, msg, title, hudToastOpts(opts));
+}]));
+
 function rpgToast(kind, msg) {
   if (!window.toastr) return;
-  window.toastr.options = {
-    ...window.toastr.options,
-    timeOut: 0, extendedTimeOut: 0, tapToDismiss: true, closeButton: true, preventDuplicates: true,
-  };
-  (window.toastr[kind] || window.toastr.info)(msg);
+  (hudToast[kind] || hudToast.info)(msg);
 }
 
 setInterval(() => {
@@ -1412,6 +1437,8 @@ function getLatestRpgValidity(chat) {
   }
 
   const lines = rawText.split('\n');
+  // count lines the way you'd read the block: its first written line ([Global]) is line 1
+  const lead = lines.findIndex((l) => l.trim());
   let errors = [];
 
   lines.forEach((line, index) => {
@@ -1424,13 +1451,18 @@ function getLatestRpgValidity(chat) {
       const content = seg[1].trim();
       // If there is content inside the pipe, it MUST have a colon
       if (content && !content.includes(':')) {
-        errors.push(`Line ${index + 1}: Missing colon ':' inside |${content}|`);
+        errors.push({ line: index - Math.max(0, lead) + 1, char: (seg.index ?? 0) + 1, text: t, content });
       }
     });
   });
 
   if (errors.length > 0) {
-    return { status: "invalid", label: "Format Warning", detail: errors.join("\n") };
+    const say = (e) => `Line ${e.line}: |${e.content}| has no colon. Every field is written |Name:value|, ` +
+      `so this one should be |${e.content}:| (empty) or |${e.content}:something|.`;
+    // the details panel shows the first problem underlined, and lists them all
+    const first = errors[0];
+    lastPipeError = makePipeError(first.line, first.char, errors.map(say).join("\n\n"), first.text);
+    return { status: "invalid", label: "Format Warning", detail: errors.map(say).join("\n") };
   }
 
   return { status: "valid", label: "Latest OK", detail: "" };
@@ -2203,7 +2235,7 @@ function moveActiveCharacter(toType) {
   renderRPG();
   const wrote = writeStateBackToChatMessage(rpgState);
   if (!wrote) console.warn("RPG HUD: couldn't write back <rpg_state> after moving a character");
-  if (window.toastr) window.toastr.info(`${displayName(unit?.name, "Character")} moved to ${MOVE_LABELS[toType]}.`);
+  if (window.toastr) hudToast.info(`${displayName(unit?.name, "Character")} moved to ${MOVE_LABELS[toType]}.`);
   return true;
 }
 
@@ -2760,9 +2792,9 @@ function commitBondsEdit() {
   );
   if (scrub) {
     const n = purgeBondsFromHistory(names);
-    if (window.toastr) window.toastr.info(`Scrubbed ${names.length} name(s) from ${n} message(s).`);
+    if (window.toastr) hudToast.info(`Scrubbed ${names.length} name(s) from ${n} message(s).`);
   } else if (window.toastr) {
-    window.toastr.info(`${names.length} bond(s) removed and blocked from returning.`);
+    hudToast.info(`${names.length} bond(s) removed and blocked from returning.`);
   }
 }
 
@@ -2988,7 +3020,7 @@ function commitTimersEdit() {
   );
   if (scrub) {
     const n = purgeTimersFromHistory(removed);
-    if (window.toastr) window.toastr.info(`Scrubbed ${removed.length} timer(s) from ${n} message(s).`);
+    if (window.toastr) hudToast.info(`Scrubbed ${removed.length} timer(s) from ${n} message(s).`);
   }
 }
 
@@ -3177,7 +3209,7 @@ function meterAutoColor(name) {
   return "#26a69a";
 }
 
-function renderMeters(meters) {
+function renderMeters(meters, editable = false) {
   if (!Array.isArray(meters) || meters.length === 0) return "";
 
   const rows = meters
@@ -3197,7 +3229,7 @@ function renderMeters(meters) {
       return `
         <div style="margin-top:4px;">
           <div style="display:flex; justify-content:space-between; font-size:0.72em; color:${c};">
-            <span>${escHtml(name)}</span>
+            <span${editable ? ` data-meter-edit title="Tap to edit meters" style="cursor:pointer;"` : ""}>${escHtml(name)}</span>
             <span>${renderInlineValue(curr)} / ${renderInlineValue(max)}</span>
           </div>
           <div style="width:100%; background:#222; height:3px; border-radius:2px; overflow:hidden;">
@@ -3839,7 +3871,9 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       </div>`;
     }
 
-    const metersHtml = renderMeters(display.meters);
+    if (saoMeterEdit && meterEditIdx !== charIndex) saoMeterEdit = null;   // switched character: drop the draft
+    const meterEditorHtml = saoMeterEdit ? `${CLASSIC_ED_CSS}<div class="rpg-c-ed rpg-c-medit">${saoMetersSection(display)}</div>` : "";
+    const metersHtml = saoMeterEdit ? meterEditorHtml : renderMeters(display.meters, true);
 
     const coin = toNumberOr(display.dankcoin ?? root.dankcoin ?? 0, 0);
 
@@ -3933,6 +3967,14 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     			<span title="Warn when an item/skill/passive loses its description">Change Alerts</span>
    			 <input type="checkbox" id="rpg-settings-changealerts" ${uiSettings.changeAlerts ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
 		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="Change Alerts stay quiet when only an amount changed: 4 hours to 3.5 hours, x3 to x2, 60% to 55%. Those still show in the Log.">Ignore Amount Changes</span>
+   			 <input type="checkbox" id="rpg-settings-ignorecounts" ${uiSettings.ignoreCountChanges !== false ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
+		  </div>
+		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
+    			<span title="How long the HUD's pop-up messages stay, in seconds. 0 keeps them until you tap them.">Toast Seconds</span>
+   			 <input type="number" id="rpg-settings-toastsecs" min="0" max="120" step="1" value="${Math.max(0, Math.min(120, Number(uiSettings.toastSeconds ?? 8)))}" style="width:52px; background:#222; color:#ddd; border:1px solid #555; text-align:center;">
+		  </div>
              <button id="rpg-settings-reset" style="background:#b71c1c; border:1px solid #ff5252; color:#fff; cursor:pointer; padding:8px 10px; font-weight:bold; grid-column:1 / span 2;">X Reset</button>
           </div>
 
@@ -4001,7 +4043,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
 
     container.innerHTML = `
-    ${SYS ? sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLabel, coin, time }) : `
+    ${SYS ? sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLabel, coin, time, meterEditorHtml }) : `
 	<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; padding-bottom:5px; border-bottom:1px solid ${borderColor}; min-height:24px;">
 	  <div style="display:flex; align-items:center; gap:6px; min-width:0;">
 	    <span style="font-size:1.2em;">${icon}</span>
@@ -4271,6 +4313,10 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     classicBindLog();
     classicBindEditors();
     classicBindInfo();
+    container.querySelectorAll("[data-meter-edit]").forEach((el) => {
+      el.onclick = (e) => { e.stopPropagation(); meterEditIdx = charIndex; saoStartMeterEdit(); renderRPG(); };
+    });
+    if (saoMeterEdit) saoBindMeterEditor();
 	  
 	if (isSettingsOpen) {
 	  bind("rpg-settings-close", toggleSettings);
@@ -4330,7 +4376,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	  if (ubEl) ubEl.onclick = (e) => {
 	    e.stopPropagation();
 	    clearBondBlocklist();
-	    if (window.toastr) window.toastr.info("Bond blocklist cleared for this chat.");
+	    if (window.toastr) hudToast.info("Bond blocklist cleared for this chat.");
 	    renderRPG();
 	  };
 
@@ -4348,6 +4394,18 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	  }
 
 	  if (SYS) sysBindSettings(container);
+
+	  const icEl = document.getElementById("rpg-settings-ignorecounts");
+	  if (icEl) {
+	    icEl.onclick = (e) => e.stopPropagation();
+	    icEl.onchange = () => { uiSettings.ignoreCountChanges = icEl.checked; saveUiSettings(); };
+	  }
+	  const tsEl = document.getElementById("rpg-settings-toastsecs");
+	  if (tsEl) {
+	    tsEl.onclick = (e) => e.stopPropagation();
+	    tsEl.onkeydown = (e) => e.stopPropagation();
+	    tsEl.onchange = () => { uiSettings.toastSeconds = Math.max(0, Math.min(120, parseInt(tsEl.value, 10) || 0)); saveUiSettings(); };
+	  }
 
 	  const caEl = document.getElementById("rpg-settings-changealerts");
 	  if (caEl) caEl.onchange = () => {
@@ -4770,6 +4828,7 @@ let saoQuestTab = "quests";   // "quests" | "log"
 const saoScroll = new Map();  // scroll key -> {top, left}
 let saoLogShown = 20;         // turns rendered before "show older"
 let saoMeterEdit = null;
+let meterEditIdx = -1;       // classic/System: whose meters the open editor belongs to
 let saoMasteryEdit = null;   // null, or a draft: [{name, curr, max, tail, orig}]     // null, or a draft: [{name, curr, max, color, custom}]
 let saoLayoutMode = false;   // drag clusters around instead of using them
 let saoAnimKind = "";        // "" | "restore" | "collapse" | "panel"
@@ -4899,7 +4958,7 @@ function saoResetLayout() {
   uiSettings.saoPos = null;
   saveUiSettings();
   renderRPG();
-  if (window.toastr) window.toastr.info("HUD layout reset.");
+  if (window.toastr) hudToast.info("HUD layout reset.");
 }
 
 // Drag by pointer. Interactive bits are switched off while this is on, so a
@@ -6185,8 +6244,12 @@ const SKILL_KINDS = [
 //   2. then the name's last word, quantities and stat bonuses aside
 //   3. then any word, in category order ("Ring of Fire" ends on "Fire")
 // [...] notes are ignored entirely: "Keychain [Attached to Katana]" is a keychain.
-function listIconKind(listKey, text) {
+function listIconKind(listKey, text, opts = {}) {
   if (listKey === "quests") return "quest";
+  if (!opts.auto) {
+    const ov = iconOverrideFor(listKey, text);
+    if (ov && LIST_ICONS[ov]) return ov;
+  }
   if (listKey === "inventory") {
     const head = String(descSplit(text).head || text).toLowerCase();
     const paren = (head.match(/\(([^)]*)\)/g) || []).join(" ");
@@ -6205,6 +6268,60 @@ function listIconKind(listKey, text) {
   const all = stripStatusTags(String(text)).toLowerCase();
   for (const [kind, re] of SKILL_KINDS) if (re.test(all)) return kind;
   return listKey === "passives" ? "badge" : "burst";
+}
+
+// ---- icons you've picked yourself ----
+// Keyed by list and the entry's name (the part before any description), so
+// they survive the AI rewording a description or changing a "+10 ATK", and
+// apply in every chat. Kept in SillyTavern's own settings when available, so
+// they follow you to your other devices, with a local copy as a fallback.
+const ICON_OVR_KEY = "rpgHud:iconOverrides";
+let iconOvrLocal = null;
+function iconOverridesAll() {
+  try {
+    const synced = SillyTavern.getContext()?.extensionSettings?.rpgHud?.iconOverrides;
+    if (synced && typeof synced === "object") return synced;
+  } catch {}
+  if (!iconOvrLocal) {
+    try { iconOvrLocal = JSON.parse(localStorage.getItem(ICON_OVR_KEY) || "{}") || {}; } catch { iconOvrLocal = {}; }
+  }
+  return iconOvrLocal;
+}
+function saveIconOverrides(map) {
+  iconOvrLocal = map;
+  try { localStorage.setItem(ICON_OVR_KEY, JSON.stringify(map)); } catch {}
+  try {
+    const ctx = SillyTavern.getContext();
+    if (ctx?.extensionSettings) {
+      ctx.extensionSettings.rpgHud = ctx.extensionSettings.rpgHud || {};
+      ctx.extensionSettings.rpgHud.iconOverrides = map;
+      ctx.saveSettingsDebounced?.();
+    }
+  } catch {}
+}
+const iconOvrKey = (listKey, text) => `${listKey}|${tItemKey(text)}`;
+function iconOverrideFor(listKey, text) {
+  const k = tItemKey(text);
+  return k ? iconOverridesAll()[`${listKey}|${k}`] || null : null;
+}
+function setIconOverride(listKey, text, kind) {
+  if (!tItemKey(text)) return;
+  const map = { ...iconOverridesAll() };
+  if (kind && LIST_ICONS[kind]) map[iconOvrKey(listKey, text)] = kind;
+  else delete map[iconOvrKey(listKey, text)];
+  saveIconOverrides(map);
+}
+
+// every icon, the list's own kind first
+const ITEM_ICON_ORDER = ["sword", "dagger", "spear", "axe", "hammer", "bow", "gun", "staff", "shield", "armor", "ring", "potion",
+  "food", "key", "book", "gem", "coin", "bag", "phone", "laptop", "camera", "misc"];
+const SKILL_ICON_ORDER = ["fire", "ice", "bolt", "heal", "dark", "wind", "burst", "badge"];
+function iconPickerHtml(listKey, i, current, isCustom) {
+  const order = listKey === "inventory" ? [...ITEM_ICON_ORDER, ...SKILL_ICON_ORDER] : [...SKILL_ICON_ORDER, ...ITEM_ICON_ORDER];
+  return `<div class="rpg-sao-icopick">
+      <button class="rpg-sao-ico rpg-sao-pickopt auto${isCustom ? "" : " on"}" data-i="${i}" data-kind="" title="Pick from the name">Auto</button>
+      ${order.map((k) => `<button class="rpg-sao-ico rpg-sao-pickopt${isCustom && current === k ? " on" : ""}" data-i="${i}" data-kind="${k}" title="${k}">${LIST_ICONS[k]}</button>`).join("")}
+    </div>`;
 }
 
 function listIconHtml(listKey, text, editable) {
@@ -6364,22 +6481,34 @@ function saoListEditorHtml(key) {
   const label = { inventory: "Items", skills: "Skills", passives: "Passives", quests: "Quests" }[key] || key;
   const isQuests = key === "quests";
   const n = saoListEdit.rows.length;
-  const rows = saoListEdit.rows.map((r, i) => `
+  // a row's icon: the one picked in this editor, else any saved one, else from the name
+  const rowIcon = (r) => {
+    if (r.icon === "") return { kind: listIconKind(key, r.text, { auto: true }), custom: false };
+    if (r.icon) return { kind: r.icon, custom: true };
+    const ov = iconOverrideFor(key, r.orig || r.text);
+    return ov && LIST_ICONS[ov] ? { kind: ov, custom: true } : { kind: listIconKind(key, r.text, { auto: true }), custom: false };
+  };
+  const rows = saoListEdit.rows.map((r, i) => {
+    const ic = isQuests ? { kind: "quest", custom: false } : rowIcon(r);
+    return `
     <div class="rpg-sao-ledit">
       ${reorderBtns("list", i, n)}
-      <span class="rpg-sao-ico">${LIST_ICONS[listIconKind(key, r.text)]}</span>
+      ${isQuests ? `<span class="rpg-sao-ico">${LIST_ICONS.quest}</span>`
+        : `<button class="rpg-sao-ico rpg-sao-ledit-ico${ic.custom ? " custom" : ""}${saoListEdit.pick === i ? " picking" : ""}" data-i="${i}"
+            title="${ic.custom ? "Your icon" : "Icon from the name"} \u00B7 tap to choose">${LIST_ICONS[ic.kind]}</button>`}
       <textarea class="rpg-sao-ledit-text" data-i="${i}" rows="2" spellcheck="false">${escHtml(r.text)}</textarea>
       <span class="rpg-sao-ledit-side">
         <button class="rpg-sao-ledit-del" data-i="${i}" title="Remove">&#10005;</button>
         ${isQuests ? "" : `<button class="rpg-sao-ledit-lock${r.locked ? " on" : ""}" data-i="${i}"
           title="${r.locked ? "Locked to this position: the AI can't move it. Tap to unlock." : "Lock to this position"}">${r.locked ? LOCK_ICON.on : LOCK_ICON.off}</button>`}
       </span>
-    </div>`).join("");
+    </div>${!isQuests && saoListEdit.pick === i ? iconPickerHtml(key, i, ic.kind, ic.custom) : ""}`;
+  }).join("");
   const depth = Math.max(0, parseInt(uiSettings.listEditHistory, 10) || 0);
   return `<div class="rpg-sao-meditor rpg-sao-leditor">
       ${rows || `<p class="rpg-sao-empty">Empty. Add one below.</p>`}
       <button class="rpg-sao-mini" id="rpg-sao-ledit-add">+ Add</button>
-      <p class="rpg-sao-hint">${isQuests
+      <p class="rpg-sao-hint">${isQuests ? "" : "Tap an icon to choose a different one; it sticks to that name in every chat. "}${isQuests
         ? "Quests are shared by everyone. Saving updates the latest reply."
         : depth
         ? `Saving also updates ${depth} earlier repl${depth === 1 ? "y" : "ies"} (setting: Edits rewrite past replies).`
@@ -6471,8 +6600,18 @@ function saoSaveListEdit() {
   const isVehicle = isQuests ? true : active.isVehicle;   // quests: no locks, no history
   const before = (Array.isArray(display[key]) ? display[key] : []).map(String);
   // ";" and "|" would split the entry apart in the block
-  let rows = saoListEdit.rows.map((r) => ({ orig: r.orig, locked: !!r.locked, text: String(r.text || "").replace(/;/g, ",").replace(/\|/g, "/").replace(/\s*\n\s*/g, " ").trim() }))
+  let rows = saoListEdit.rows.map((r) => ({ orig: r.orig, locked: !!r.locked, icon: r.icon, text: String(r.text || "").replace(/;/g, ",").replace(/\|/g, "/").replace(/\s*\n\s*/g, " ").trim() }))
     .filter((r) => r.text);
+  if (!isQuests) {
+    rows.forEach((r) => {
+      if (r.icon !== undefined) { setIconOverride(key, r.text, r.icon); return; }
+      // renamed: a saved icon follows the entry to its new name
+      if (r.orig && tItemKey(r.orig) !== tItemKey(r.text)) {
+        const ov = iconOverrideFor(key, r.orig);
+        if (ov && !iconOverrideFor(key, r.text)) setIconOverride(key, r.text, ov);
+      }
+    });
+  }
   const kept = new Set(rows.map((r) => r.orig).filter(Boolean));
   let removed = before.filter((t) => !kept.has(t));
   if (removed.length) {
@@ -6499,7 +6638,7 @@ function saoSaveListEdit() {
   const who = activeListOwner();
   if (depth && edits.length && !isVehicle && who !== undefined) {
     const n = rewriteListHistory(who, key, edits, depth);
-    if (window.toastr) window.toastr.info(n ? `Also updated ${n} earlier repl${n === 1 ? "y" : "ies"}.` : "No earlier replies needed changing.");
+    if (window.toastr) hudToast.info(n ? `Also updated ${n} earlier repl${n === 1 ? "y" : "ies"}.` : "No earlier replies needed changing.");
   }
   try { checkMessage(); } catch {}
 }
@@ -6532,11 +6671,23 @@ function saoBindListEditor() {
     el.onclick = (e) => e.stopPropagation();
     el.onkeydown = (e) => e.stopPropagation();
   });
+  box.querySelectorAll(".rpg-sao-ledit-ico").forEach((el) => {
+    el.onclick = (e) => { e.stopPropagation(); const i = +el.dataset.i; saoListEdit.pick = saoListEdit.pick === i ? null : i; renderRPG(); };
+  });
+  box.querySelectorAll(".rpg-sao-pickopt").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const r = saoListEdit.rows[+el.dataset.i];
+      if (r) r.icon = el.dataset.kind;        // "" = back to automatic
+      saoListEdit.pick = null;
+      renderRPG();
+    };
+  });
   box.querySelectorAll(".rpg-sao-ledit-lock").forEach((el) => {
     el.onclick = (e) => { e.stopPropagation(); const r = saoListEdit.rows[+el.dataset.i]; if (r) { r.locked = !r.locked; renderRPG(); } };
   });
   box.querySelectorAll(".rpg-sao-ledit-del").forEach((el) => {
-    el.onclick = (e) => { e.stopPropagation(); saoListEdit.rows.splice(+el.dataset.i, 1); renderRPG(); };
+    el.onclick = (e) => { e.stopPropagation(); saoListEdit.rows.splice(+el.dataset.i, 1); saoListEdit.pick = null; renderRPG(); };
   });
   const one = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
   one("rpg-sao-ledit-add", () => {
@@ -7042,7 +7193,7 @@ function saoUndoLastTurn() {
   setMessageText(msg, after);
   turnUndo = { key: currentChatKey(ctx), idx: last.idx, before, after };
   afterTurnEdit(ctx, last.idx);
-  if (window.toastr) window.toastr.info(keep.length ? `Latest turn undone, keeping ${keep.length} locked change${keep.length === 1 ? "" : "s"}.` : "Latest turn undone.");
+  if (window.toastr) hudToast.info(keep.length ? `Latest turn undone, keeping ${keep.length} locked change${keep.length === 1 ? "" : "s"}.` : "Latest turn undone.");
 }
 
 // Revert one change from the newest turn: reparse that turn's block, put the
@@ -7059,7 +7210,7 @@ function saoUndoChange(ci, expectText) {
   // the chat may have moved on since the log was drawn
   const change = diffTurn(prev.state, last.state)[ci];
   if (!change || !change.u || change.text !== expectText) {
-    if (window.toastr) window.toastr.info("That change has already moved on. The log has been refreshed.");
+    if (window.toastr) hudToast.info("That change has already moved on. The log has been refreshed.");
     renderRPG();
     return;
   }
@@ -7075,7 +7226,7 @@ function saoUndoChange(ci, expectText) {
   setMessageText(msg, after);
   turnUndo = { key: currentChatKey(ctx), idx: last.idx, before, after };
   afterTurnEdit(ctx, last.idx);
-  if (window.toastr) window.toastr.info(`Reverted: ${change.text}`);
+  if (window.toastr) hudToast.info(`Reverted: ${change.text}`);
 }
 
 function saoCanRedo(ctx) {
@@ -7091,7 +7242,7 @@ function saoRedoLastTurn() {
   const idx = turnUndo.idx;
   turnUndo = null;
   afterTurnEdit(ctx, idx);
-  if (window.toastr) window.toastr.info("Turn restored.");
+  if (window.toastr) hudToast.info("Turn restored.");
 }
 
 // Classic's Log tab: the same turn log, undo and per-change undo as the SAO
@@ -7126,6 +7277,12 @@ const CLASSIC_ED_CSS = `<style>
 .rpg-c-ed .rpg-sao-empty{opacity:.6; font-style:italic; margin:2px 0}
 .rpg-c-ed .rpg-sao-ledit{display:flex; gap:6px; align-items:flex-start; margin-bottom:6px}
 .rpg-c-ed .rpg-sao-ledit > .rpg-sao-ico{align-self:center}
+.rpg-c-ed .rpg-sao-icopick{display:flex; flex-wrap:wrap; gap:4px; margin:-2px 0 8px; padding:6px; border:1px dashed #555; border-radius:3px}
+.rpg-c-ed .rpg-sao-icopick .on, .rpg-c-ed .rpg-sao-ledit-ico.picking{border-color:#C0A040; color:#ffd54f; box-shadow:inset 0 0 0 1px #C0A040}
+.rpg-c-ed .rpg-sao-icopick .auto{width:auto; padding:0 7px; font:inherit; font-size:.85em}
+.rpg-c-ed .rpg-sao-ledit-ico.custom{position:relative}
+.rpg-c-ed .rpg-sao-ledit-ico.custom::after{content:""; position:absolute; top:-3px; right:-3px; width:7px; height:7px; border-radius:50%;
+  background:#4FC3F7; box-shadow:0 0 0 1.5px #111}
 .rpg-sao-ledit > .rpg-sao-ico{align-self:center}
 .rpg-c-ed .rpg-sao-ledit-text{flex:1; min-width:0; box-sizing:border-box; resize:vertical; font:inherit; line-height:1.35;
   padding:3px 5px; color:#eee; background:#1b1b1b; border:1px solid #555; border-radius:2px}
@@ -7146,6 +7303,18 @@ const CLASSIC_ED_CSS = `<style>
 .rpg-c-ed .rpg-sao-mast-edit input[type=text]{min-width:0; width:100%; box-sizing:border-box; font:inherit;
   padding:2px 4px; color:#eee; background:#1b1b1b; border:1px solid #555; border-radius:2px}
 .rpg-c-ed .rpg-sao-m-slash{text-align:center; color:#888}
+.rpg-c-ed .rpg-sao-mrow-edit{display:flex; flex-wrap:wrap; align-items:center; gap:4px; margin-bottom:6px; padding-bottom:6px;
+  border-bottom:1px solid #333}
+.rpg-c-ed .rpg-sao-mrow-edit input[type=text]{min-width:0; box-sizing:border-box; font:inherit; padding:2px 4px; color:#eee;
+  background:#1b1b1b; border:1px solid #555; border-radius:2px}
+.rpg-c-ed .rpg-sao-m-name{flex:1 1 90px}
+.rpg-c-ed .rpg-sao-m-curr, .rpg-c-ed .rpg-sao-m-max{flex:0 0 46px; width:46px; text-align:center}
+.rpg-c-ed .rpg-sao-m-color{flex:0 0 26px; width:26px; height:22px; padding:0; border:1px solid #555; background:none; cursor:pointer}
+.rpg-c-ed .rpg-sao-m-auto, .rpg-c-ed .rpg-sao-m-del{width:22px; height:22px; padding:0; cursor:pointer; display:grid; place-items:center;
+  font-size:12px; border-radius:2px; background:#262626; border:1px solid #555; color:#bbb}
+.rpg-c-ed .rpg-sao-m-auto.off{opacity:.35}
+.rpg-c-ed .rpg-sao-m-del:hover{color:#ef5350; border-color:#ef5350}
+.rpg-c-medit{margin:6px 0; padding:6px; border:1px dashed #555; font-size:.85em}
 </style>`;
 
 const LIST_TAB_KEYS = { inventory: "inventory", skills: "skills", passives: "passives" };
@@ -7199,7 +7368,7 @@ function classicBindEditors() {
       const rows = reorderRows(el.dataset.kind);
       const i = +el.dataset.i, j = i + (+el.dataset.d);
       if (!rows || j < 0 || j >= rows.length) return;
-      [rows[i], rows[j]] = [rows[j], rows[i]];
+      [rows[i], rows[j]] = [rows[j], rows[i]]; if (saoListEdit) saoListEdit.pick = null;
       renderRPG();
     };
   });
@@ -7272,6 +7441,8 @@ const SYS_CSS = `
 .rpg-sys .sys-hero.clock{display:flex; align-items:center; gap:12px}
 .rpg-sys .sys-clock{flex:0 0 auto; width:64px; height:64px; color:var(--sc); filter:drop-shadow(0 0 4px var(--sg))}
 .rpg-sys .sys-clock svg{display:block; width:100%; height:100%}
+.rpg-sys .sys-clock.hat{width:76px; height:84px; filter:drop-shadow(0 0 5px rgba(150,190,255,.45))}
+.rpg-sys .sys-clock.hat.system{filter:drop-shadow(0 0 4px var(--sg))}
 .rpg-sys .sys-hero.clock .sys-info{flex:1; min-width:0}
 .rpg-sys .sys-pick{position:relative; display:inline-block; max-width:100%; cursor:pointer}
 .rpg-sys .sys-pick select{position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; font-size:16px;
@@ -7323,7 +7494,21 @@ const SYS_CSS = `
 .rpg-sys .rpg-c-ed .rpg-sao-ico{border-color:rgba(143,208,255,.45); background:rgba(10,26,48,.85); color:#dff1ff;
   box-shadow:0 0 5px rgba(90,170,255,.18)}
 .rpg-sys .rpg-c-ed button.rpg-sao-ico:hover{border-color:var(--sc); color:#fff}
+.rpg-sys .rpg-c-ed .rpg-sao-icopick{border-color:rgba(143,208,255,.35)}
+.rpg-sys .rpg-c-ed .rpg-sao-icopick .on,.rpg-sys .rpg-c-ed .rpg-sao-ledit-ico.picking{border-color:var(--sc); color:#fff;
+  box-shadow:inset 0 0 0 1px var(--sc), 0 0 6px var(--sg)}
+.rpg-sys .rpg-c-ed .rpg-sao-ledit-ico.custom::after{background:var(--sc); box-shadow:0 0 0 1.5px #04090f, 0 0 5px var(--sg)}
 .rpg-sys .rpg-c-ed .rpg-sao-mini{background:rgba(10,26,48,.9); border-color:rgba(143,208,255,.5); color:#dff1ff}
+.rpg-sys .sys-ibtn{display:inline-grid; place-items:center; padding:0; margin:0; border:0; background:none; color:inherit;
+  cursor:pointer; -webkit-tap-highlight-color:transparent; font:inherit; line-height:0}
+.rpg-sys .sys-ibtn:hover .sys-svg{color:#fff; filter:drop-shadow(0 0 4px var(--sg))}
+.rpg-sys .sys-medit{margin:-2px 0 8px}
+.rpg-sys .rpg-c-ed .rpg-sao-mini.primary{background:rgba(40,110,190,.55); border-color:var(--sc); color:#fff; box-shadow:0 0 6px var(--sg)}
+.rpg-sys .sys-medit .rpg-c-medit{margin:0; padding:0; border:0; font-size:.8em}
+.rpg-sys .rpg-c-ed .rpg-sao-mrow-edit{border-bottom-color:rgba(143,208,255,.15)}
+.rpg-sys .rpg-c-ed .rpg-sao-mrow-edit input[type=text]{background:rgba(6,16,30,.9); border-color:rgba(143,208,255,.35); color:#eaf6ff}
+.rpg-sys .rpg-c-ed .rpg-sao-m-auto,.rpg-sys .rpg-c-ed .rpg-sao-m-del,.rpg-sys .rpg-c-ed .rpg-sao-m-color{background:rgba(10,26,48,.9);
+  border-color:rgba(143,208,255,.4); color:#cfe6f8}
 .rpg-sys .rpg-c-ed .rpg-sao-ledit-text,.rpg-sys .rpg-c-ed .rpg-sao-mast-edit input[type=text]{background:rgba(6,16,30,.9);
   border-color:rgba(143,208,255,.35); color:#eaf6ff}
 .rpg-sys .rpg-c-ed .rpg-sao-ledit-del,.rpg-sys .rpg-c-ed .rpg-sao-ms-del,.rpg-sys .rpg-c-ed .rpg-sao-ledit-lock,
@@ -7438,25 +7623,94 @@ function sysClockSvg(clock) {
   </svg>`;
 }
 
+// The storybook clock: a round case with ears, little arms and feet, a face
+// with Roman numerals set around the rim, a bow and a little top hat.
+// "storybook" is pale blue, white and navy; "system" is the same drawing in
+// the window's own glow, so it follows the frame (red for enemies and so on).
+const HAT_CLOCK_LOOKS = {
+  storybook: { case_: "#b7cdee", edge: "#7f9ccc", stitch: "#8eaad6", stitchOp: 1, face: "#fbfcff", faceEdge: "#8eaad6",
+    dots: "#444", nums: "#2f2f2f", hands: "#2b2b2b", hub: "#fff", ampm: "#8a96a8",
+    bow: "#1f3a9e", bowDk: "#152a78", bowEdge: "#152a78", hat: "#0b0b0e", brim: "#0b0b0e", hatEdge: "#000", shine: "#3a3a44" },
+  system: { case_: "#0a1a30", edge: "currentColor", stitch: "currentColor", stitchOp: .45, face: "#050c18", faceEdge: "currentColor",
+    dots: "#8fb6d8", nums: "#e6f5ff", hands: "#f4fbff", hub: "#04090f", ampm: "#8fb6d8",
+    bow: "rgba(90,170,255,.28)", bowDk: "rgba(90,170,255,.45)", bowEdge: "currentColor", hat: "#000", brim: "#000", hatEdge: "currentColor", shine: "rgba(143,208,255,.35)" },
+};
+function sysHatClockSvg(clock, look = "storybook") {
+  const L = HAT_CLOCK_LOOKS[look] || HAT_CLOCK_LOOKS.storybook;
+  const p = parseClock(clock);
+  const cx = 60, cy = 70;
+  const h = p ? Math.floor(p.mins / 60) : 0, mi = p ? p.mins % 60 : 0;
+  const ha = ((h % 12) + mi / 60) * 30, ma = mi * 6;
+  const ROMAN = ["XII", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI"];
+  let dots = "";
+  for (let i = 0; i < 60; i++) {
+    const a = (i * 6 - 90) * Math.PI / 180;
+    dots += `<circle cx="${(cx + 34.5 * Math.cos(a)).toFixed(2)}" cy="${(cy + 34.5 * Math.sin(a)).toFixed(2)}" r=".75"/>`;
+  }
+  const nums = ROMAN.map((r, i) =>
+    `<text x="${cx}" y="${cy - 26}" transform="rotate(${i * 30} ${cx} ${cy})" text-anchor="middle"
+      font-size="${r.length > 3 ? 6.4 : 7.6}" letter-spacing="-.3">${r}</text>`).join("");
+  return `<svg viewBox="0 0 120 132" role="img" aria-label="${escAttr(p ? `Time ${clock}` : "Time unknown")}">
+    <!-- ears, arms and legs first, each with its stitching, so the body covers the joins -->
+    <g fill="${L.case_}" stroke="${L.edge}" stroke-width="1.6">
+      <circle cx="22" cy="34" r="15"/><circle cx="98" cy="34" r="15"/>
+      <ellipse cx="11" cy="84" rx="10" ry="11"/><ellipse cx="109" cy="84" rx="10" ry="11"/>
+      <rect x="31" y="98" width="17" height="30" rx="8.5"/><rect x="72" y="98" width="17" height="30" rx="8.5"/>
+    </g>
+    <g fill="none" stroke="${L.stitch}" stroke-opacity="${L.stitchOp}" stroke-width=".8" stroke-dasharray="1.3 1.3">
+      <circle cx="22" cy="34" r="12.6"/><circle cx="98" cy="34" r="12.6"/>
+      <ellipse cx="11" cy="84" rx="7.6" ry="8.6"/><ellipse cx="109" cy="84" rx="7.6" ry="8.6"/>
+      <rect x="33.4" y="100.4" width="12.2" height="25.2" rx="6.1"/><rect x="74.4" y="100.4" width="12.2" height="25.2" rx="6.1"/>
+    </g>
+    <circle cx="${cx}" cy="${cy}" r="47" fill="${L.case_}" stroke="${L.edge}" stroke-width="1.6"/>
+    <circle cx="${cx}" cy="${cy}" r="44.6" fill="none" stroke="${L.stitch}" stroke-opacity="${L.stitchOp}" stroke-width=".8" stroke-dasharray="1.3 1.3"/>
+    <circle cx="${cx}" cy="${cy}" r="39" fill="${L.face}" stroke="${L.faceEdge}" stroke-width="1.2"/>
+    <g fill="${L.dots}">${dots}</g>
+    <g fill="${L.nums}" font-family="'Times New Roman',Georgia,serif" font-weight="700">${nums}</g>
+    ${p ? `<g fill="${L.hands}">
+      <path d="M${cx - 2.6} ${cy} L${cx} ${cy - 20} L${cx + 2.6} ${cy} L${cx} ${cy + 4} Z" transform="rotate(${ha.toFixed(1)} ${cx} ${cy})"/>
+      <path d="M${cx - 2} ${cy} L${cx} ${cy - 32} L${cx + 2} ${cy} L${cx} ${cy + 5} Z" transform="rotate(${ma} ${cx} ${cy})"/>
+    </g>` : `<text x="${cx}" y="${cy + 14}" text-anchor="middle" font-size="9" fill="${L.ampm}">?</text>`}
+    <circle cx="${cx}" cy="${cy}" r="3.6" fill="${L.hub}" stroke="${L.hands}" stroke-width="1.6"/>
+    ${p ? `<text x="${cx}" y="${cy + 17}" text-anchor="middle" font-size="6.5" letter-spacing=".6" fill="${L.ampm}" font-family="inherit">${h >= 12 ? "PM" : "AM"}</text>` : ""}
+    <g transform="translate(${cx} 112)">
+      <path d="M-2 -1 L-6 12 L-2.5 10 L0 13 Z M2 -1 L6 12 L2.5 10 L0 13 Z" fill="${L.bowDk}" stroke="${L.bowEdge}" stroke-width=".6"/>
+      <path d="M-1.5 0 C-7 -8 -16 -7 -15 0 C-16 7 -7 8 -1.5 0 Z" fill="${L.bow}" stroke="${L.bowEdge}" stroke-width=".8"/>
+      <path d="M1.5 0 C7 -8 16 -7 15 0 C16 7 7 8 1.5 0 Z" fill="${L.bow}" stroke="${L.bowEdge}" stroke-width=".8"/>
+      <rect x="-3.2" y="-3.6" width="6.4" height="7.2" rx="1.8" fill="${L.bowDk}" stroke="${L.bowEdge}" stroke-width=".6"/>
+    </g>
+    <g>
+      <ellipse cx="${cx}" cy="25.5" rx="17" ry="4" fill="${L.brim}" stroke="${L.hatEdge}" stroke-width=".8"/>
+      <path d="M${cx - 10} 25 L${cx - 10.5} 5.5 Q${cx} 3 ${cx + 10.5} 5.5 L${cx + 10} 25 Z" fill="${L.hat}" stroke="${L.hatEdge}" stroke-width=".8"/>
+      <path d="M${cx - 7} 8 Q${cx - 6.5} 13 ${cx - 7} 16.5" stroke="${L.shine}" stroke-width="1.2" fill="none" stroke-linecap="round"/>
+    </g>
+  </svg>`;
+}
+
 function sysBar(icon, label, curr, max, extra = {}) {
+  const iconHtml = extra.editMeters
+    ? `<button class="sys-ibtn" data-meter-edit title="Edit meters" aria-label="Edit meters">${sysIcon(icon)}</button>`
+    : sysIcon(icon);
   const maxNum = safeParseFloatOrInf(max, 0);
   if (extra.skipEmpty && Number.isFinite(maxNum) && maxNum <= 0) return "";
   const pct = extra.pct ?? percentFrom(curr, max);
   const cls = extra.tint ? "tint" : (extra.lowWarn && pct <= 25 ? "low" : "");
   return `<div class="sys-bar">
-      <div class="sys-bar-lab">${sysIcon(icon)}<span>${escHtml(label)}</span>
+      <div class="sys-bar-lab">${iconHtml}<span>${escHtml(label)}</span>
         <span class="sys-bar-num">${extra.numHtml ?? `${renderInlineValue(curr)} / ${renderInlineValue(max)}`}</span></div>
       <div class="sys-cap ${cls}"${extra.tint ? ` style="--mc:${escAttr(extra.tint)}"` : ""}><i style="width:${pct}%"></i></div>
     </div>`;
 }
 
-function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLabel, coin, time }) {
+function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLabel, coin, time, meterEditorHtml = "" }) {
   const kind = isVehicle ? "VEHICLE" : ({ player: "PLAYER", party: "PARTY", npc: "NPC", enemy: "ENEMY" }[type] || "");
   const name = isVehicle ? displayName(display.name, "Vehicle")
     : type === "player" ? playerDisplayName() : displayName(display.name, "Unit");
   const pick = (inner) => `<span class="sys-pick">${inner}<span class="sys-caret">▾</span>` +
     `<select id="rpg-char-select" title="Switch character">${getCharOptions().replace(/>\s*\p{Extended_Pictographic}\uFE0F?\s*/gu, ">")}</select></span>`;
-  const clockMode = uiSettings.sysBigSlot === "clock";
+  const clockMode = ["clock", "hatclock", "hatclock2"].includes(uiSettings.sysBigSlot);
+  const hatClock = uiSettings.sysBigSlot === "hatclock" || uiSettings.sysBigSlot === "hatclock2";
+  const hatLook = uiSettings.sysBigSlot === "hatclock2" ? "system" : "storybook";
 
   const wd = worldWeekday(time);
   const dateText = `${wd ? wd + ", " : ""}${time.month ?? "???"} ${time.day ?? ""}${time.year ? ", " + time.year : ""}`;
@@ -7473,7 +7727,7 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
 
   const size = name.length > 18 ? " s" : name.length > 11 ? " m" : "";
   const hero = clockMode
-    ? `<div class="sys-hero clock"><div class="sys-clock">${sysClockSvg(time.clock)}</div>${info}</div>`
+    ? `<div class="sys-hero clock"><div class="sys-clock${hatClock ? ` hat ${hatLook}` : ""}">${hatClock ? sysHatClockSvg(time.clock, hatLook) : sysClockSvg(time.clock)}</div>${info}</div>`
     : `<div class="sys-hero name"><div class="sys-big${size}">${pick(escHtml(name))}</div><div class="sys-rule"></div>${info}</div>`;
 
   // bars: HP, MP/EN, bond for party and NPCs, then any meters
@@ -7492,7 +7746,7 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
     if (!mt || typeof mt !== "object") return;
     const nm = mt.name ?? mt.label ?? "Meter";
     bars += sysBar("meter", String(nm).toUpperCase(), mt.curr ?? mt.value ?? 0, mt.max ?? 100,
-      { skipEmpty: true, tint: meterColorByName(nm) });
+      { skipEmpty: true, tint: meterColorByName(nm), editMeters: true });
   });
 
   const stat = (icon, label, raw) => {
@@ -7518,7 +7772,8 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
     <div class="sys-panels">
       <div class="sys-box">${bars}</div>
       ${stats ? `<div class="sys-box sys-stats">${stats}</div>` : ""}
-    </div>`;
+    </div>
+    ${meterEditorHtml ? `<div class="sys-box sys-medit"><div class="sys-sec">METERS</div>${meterEditorHtml}</div>` : ""}`;
 }
 
 // Party, NPC and enemy rows in the same capsule bars as the status window.
@@ -7557,12 +7812,12 @@ function sysSettingsHtml() {
   const sel = "width:100%; background:#0d1a2c; border:1px solid #3d6a94; color:#dff1ff; padding:6px; margin-bottom:8px;";
   const lab = "font-size:0.75em; color:#9fc6e6; margin-bottom:4px;";
   const opt = (v, t, cur) => `<option value="${v}"${cur === v ? " selected" : ""}>${t}</option>`;
-  const big = uiSettings.sysBigSlot === "clock" ? "clock" : "name";
+  const big = ["clock", "hatclock", "hatclock2"].includes(uiSettings.sysBigSlot) ? uiSettings.sysBigSlot : "name";
   const font = uiSettings.sysFont || "exo";
   return `
     <div style="margin:0 0 10px; padding:8px; border:1px solid rgba(143,208,255,0.35); background:rgba(90,170,255,0.06);">
       <div style="${lab}">Big slot</div>
-      <select id="rpg-sys-bigslot" style="${sel}">${opt("name", "Name", big)}${opt("clock", "Clock (in-world time)", big)}</select>
+      <select id="rpg-sys-bigslot" style="${sel}">${opt("name", "Name", big)}${opt("clock", "Clock (in-world time)", big)}${opt("hatclock", "Clock: Roman, top hat", big)}${opt("hatclock2", "Clock: Roman, top hat (System colours)", big)}</select>
       <div style="${lab}">Font</div>
       <select id="rpg-sys-font" style="${sel}">${opt("exo", "Exo 2", font)}${opt("squarish", "Squarish (Rajdhani)", font)}${opt("saira", "Saira Condensed", font)}${opt("teko", "Teko", font)}${opt("sans", "Sans", font)}${opt("preset", "Follow preset", font)}</select>
       <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
@@ -7717,6 +7972,24 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-24.1", items: [
+    "Fix: a field missing its colon (like |Timers| instead of |Timers:|) raised the broken-format warning, but the details panel came up empty. It now names the field, shows the line with the spot marked, and says how to write it.",
+  ] },
+  { build: "2026-10-23.6", items: [
+    "System skin: two new clocks for the Big slot. \u201cClock: Roman, top hat\u201d is a pale blue storybook clock with ears, little arms and legs, fine stitching, Roman numerals around the rim, a navy bow and a black top hat. \u201cClock: Roman, top hat (System colours)\u201d is the same clock drawn in the System window's glow. Both show the in-world time like the original clock.",
+  ] },
+  { build: "2026-10-22.3", items: [
+    "New setting, Toast seconds (default 8): how long the HUD's pop-up messages stay. 0 keeps them until tapped, the old behaviour.",
+    "Fix: the HUD was making every toast permanent, SillyTavern's own included. Its toasts now set their own duration and leave SillyTavern's alone.",
+    "New setting, Ignore amount changes (on by default): Change Alerts no longer fire when only an amount in a description changed, like an oxygen tank going from 4 hours to 3.5 hours, x3 to x2, or 60% to 55%. Those still show in the Log.",
+  ] },
+  { build: "2026-10-22.2", items: [
+    "Edit meters straight from the panel: in the System skin tap a meter's icon, in classic tap its name. The editor opens for that character: rename, change values, colour, reorder, add or remove, then Save.",
+  ] },
+  { build: "2026-10-22.1", items: [
+    "Pick your own icon for any item, skill or passive: open the list editor (tap an icon), then tap a row's icon and choose one, or Auto to go back to guessing from the name. Save keeps it.",
+    "Your icon sticks to the entry's name, so it survives the AI rewording the description or changing its stats, follows a rename you make in the editor, and applies in every chat. It's stored in SillyTavern's settings, so it carries over to your other devices.",
+  ] },
   { build: "2026-10-21.9", items: [
     "12-hour times now work everywhere: \u201c2:30 PM\u201d, \u201c2:30pm\u201d, \u201c2 p.m.\u201d, \u201cnoon\u201d and \u201cmidnight\u201d are understood in Time: and in timer deadlines, so countdowns, time-passed in the log and the analog clock are right. Before, PM was ignored.",
     "New setting, Clock: As written (default), 12-hour or 24-hour. It changes how times are shown in every skin, not what's in the story.",
@@ -7833,6 +8106,8 @@ const CLASSIC_HELP = [
   ["The dot", "Top right. Green: the latest reply has a valid state. Yellow: the block is broken (tap for details). Grey: no block."],
   ["Tabs", "Party, Bonds, Timers, Items, Skills, Passive, Mastery, Quest, Environment and Log. Pick a character from the name dropdown to see their tabs."],
   ["Editing lists", "In Items, Skills and Passive, tap any icon to edit that list: change text, ✕ to delete, ▲▼ to reorder, + Add. Mastery and Quest have a ✎ button instead."],
+  ["Meters", "Tap a meter's name (in the System skin, its icon) to edit that character's meters: rename, change values, pick a colour (↺ goes back to automatic), reorder, add or remove. Save writes them to the latest reply."],
+  ["Your own icons", "In the list editor, tap a row's icon to pick a different one (Auto goes back to guessing from the name), then Save. It sticks to that name in every chat and on your other devices; a blue dot marks it in the editor."],
   ["Position locks", "In the item, skill and passive editor, the padlock under ✕ pins an entry to its place. If the AI reorders the list, locked entries are put back; the rest keep their order."],
   ["Edits Rewrite Past Replies", "Settings. List edits also fix this many earlier replies, so the AI can't copy the old version back from history. 0 means the latest reply only."],
   ["Bonds", "✎ to edit, + to add. Deleting asks whether to also remove the name from earlier Bonds lists; characters' own Bond values are left alone."],
@@ -7840,6 +8115,8 @@ const CLASSIC_HELP = [
   ["Log", "What changed each turn. Undo last turn reverts the newest turn; ↶ reverts a single change; the padlock keeps a change through Undo last turn. Redo puts it back."],
   ["Edit state", "Settings → ✏️ Edit: edit everything about the selected character. With Note Edits for AI on, saving leaves an (OOC: ...) line telling the AI what you changed."],
   ["Move", "Settings: move the selected character between Party, NPCs and Enemies."],
+  ["Toast Seconds", "Settings. How long the HUD's pop-up messages stay before fading, in seconds. 0 keeps them until you tap them."],
+  ["Ignore Amount Changes", "Settings (on by default). Change Alerts stay quiet when only an amount in a description changed, like an oxygen tank going from 4 hours to 3.5, x3 to x2, or 60% to 55%. Those still show in the Log."],
   ["Change Alerts", "A toast when an item, skill or passive's description changes or loses detail, for anyone."],
   ["Restore Lost Descriptions", "If the AI drops a description entirely, the old one is put back onto the new entry. Tap the toast to undo."],
   ["Add Weekdays", "If a new reply's Time: has no weekday, one is written in. Tap the toast to undo. Edit state also has a Weekday choice: Auto, a specific day, or None."],
@@ -7849,7 +8126,7 @@ const CLASSIC_HELP = [
 
 const SYS_HELP = [
   ["System window", "The panel shows the selected character. Tap the big name (or NAME, with the clock) to switch character. The frame turns red for enemies and purple for vehicles."],
-  ["Big slot", "Settings → Big slot: the character's name, or an analog clock of the in-world time."],
+  ["Big slot", "Settings → Big slot: the character's name, or an analog clock of the in-world time: the glowing one, or a storybook clock with Roman numerals, a bow and a little top hat, in its own pale blue or in the System window's glow."],
   ["Notifications", "Settings → Notifications: a System popup when a reply gives you items, skills, passives, coin or a status, adds quests, timers or party members, or brings in enemies. Tap one to dismiss it. Your own edits never trigger them."],
 ];
 
@@ -7944,7 +8221,7 @@ function classicBindLog() {
       e.stopPropagation();
       const mes = document.querySelector(`#chat .mes[mesid="${el.dataset.mes}"]`);
       if (mes) mes.scrollIntoView({ behavior: "smooth", block: "center" });
-      else if (window.toastr) window.toastr.info("That message isn't loaded in the chat view.");
+      else if (window.toastr) hudToast.info("That message isn't loaded in the chat view.");
     };
   });
   document.querySelectorAll(".rpg-c-tuse").forEach((el) => {
@@ -8128,10 +8405,16 @@ function saoHelpPanel() {
           "Works for everyone: you, party members, NPCs and enemies. When a reply keeps an item, skill or passive but drops its description entirely, the old description is put back onto the new entry, so other changes (+10 to +15 ATK, a new cost) stay. A description that was only trimmed or reworded is left alone. A toast says what was restored; tap it to undo. Masteries are never touched.")
       + item("Note edits for AI",
           "When on, saving from Edit state adds one (OOC: ...) line to the block listing exactly what you changed, and asks the AI to treat it as canon without replying to it. Several edits before the AI answers are merged into one note. Other HUD edits keep the note in place. Edits made directly in the panels don't add one.")
+      + item("Toast seconds",
+          "How long the HUD's pop-up messages stay before fading, in seconds. 0 keeps them until you tap them.")
+      + item("Ignore amount changes",
+          "On by default. Change alerts stay quiet when only an amount in a description changed, like an oxygen tank going from 4 hours to 3.5, x3 to x2, or 60% to 55%. Those still show in the turn log.")
       + item("Charges",
           "A timer written as 2/2x, 2x or \u201c2 uses\u201d counts uses instead of turns, for effects like \u201cblock the next 2 attacks\u201d. It never ticks down on its own; the AI lowers it when it's used, or tap \u22121 in the timer list.")
       + item("Meters",
           "Open a character in Status and use Edit under Meters to add, rename, change or remove them. The swatch sets a colour; \u21BA puts it back to automatic. Colours follow the meter's name, so every character's Shield matches.")
+      + item("Your own icons",
+          "Tap an item, skill or passive's icon to open the list editor, then tap a row's icon to pick a different one. Auto goes back to guessing from the name. After Save it sticks to that name in every chat and on your other devices; a blue dot marks it in the editor.")
       + item("Animations",
           "Bars slide to their new value, orbs unfold when you reopen the HUD, and panels fade in. Off means everything snaps.")
       + item("Bar style",
@@ -8185,6 +8468,9 @@ function saoSettingsHtml() {
     + row("rpg-sao-insert", "&#8595;", "Insert state")
     + row("rpg-sao-remind", "&#9993;", "Remind state")
     + toggle("rpg-sao-sw-alerts", "Change alerts", !!uiSettings.changeAlerts)
+    + toggle("rpg-sao-sw-ignorecounts", "Ignore amount changes", uiSettings.ignoreCountChanges !== false)
+    + `<div class="rpg-sao-mrow toggle"><span title="How long the HUD's pop-up messages stay, in seconds. 0 keeps them until you tap them.">Toast seconds</span>
+        <input id="rpg-sao-toastsecs" type="number" min="0" max="120" step="1" value="${Math.max(0, Math.min(120, Number(uiSettings.toastSeconds ?? 8)))}"></div>`
     + toggle("rpg-sao-sw-inject", "Auto-inject", !!autoInjectState)
     + toggle("rpg-sao-sw-ooc", "Note edits for AI", uiSettings.oocEditNotes !== false)
     + toggle("rpg-sao-sw-restore", "Restore lost descriptions", !!uiSettings.restoreLostDesc)
@@ -8541,7 +8827,7 @@ function saoBind() {
     const rows = reorderRows(el.dataset.kind);
     const i = +el.dataset.i, j = i + (+el.dataset.d);
     if (!rows || j < 0 || j >= rows.length) return;
-    [rows[i], rows[j]] = [rows[j], rows[i]];
+    [rows[i], rows[j]] = [rows[j], rows[i]]; if (saoListEdit) saoListEdit.pick = null;
     renderRPG();
   });
   on(".rpg-sao-moveto", (el) => moveActiveCharacter(el.dataset.to));
@@ -8576,7 +8862,7 @@ function saoBind() {
   on(".rpg-sao-turnhead", (el) => {
     const mes = document.querySelector(`#chat .mes[mesid="${el.dataset.mes}"]`);
     if (mes) mes.scrollIntoView({ behavior: "smooth", block: "center" });
-    else if (window.toastr) window.toastr.info("That message isn't loaded in the chat view.");
+    else if (window.toastr) hudToast.info("That message isn't loaded in the chat view.");
   });
 
   const clock = document.getElementById("rpg-sao-clock");
@@ -8628,7 +8914,7 @@ function saoBind() {
   });
   bind("rpg-sao-layout-copy", () => {
     const ta = document.getElementById("rpg-sao-layout-text");
-    const done = () => { if (window.toastr) window.toastr.info("Layout report copied."); };
+    const done = () => { if (window.toastr) hudToast.info("Layout report copied."); };
     try { navigator.clipboard.writeText(layoutReportText).then(done, () => { ta?.select(); document.execCommand("copy"); done(); }); }
     catch { ta?.select(); try { document.execCommand("copy"); done(); } catch {} }
   });
@@ -8715,6 +9001,13 @@ function saoBind() {
   bind("rpg-sao-insert", insertLastStateIntoNarrative);
   bind("rpg-sao-remind", remindStateInLastMessage);
   bind("rpg-sao-sw-alerts", () => { uiSettings.changeAlerts = !uiSettings.changeAlerts; saveUiSettings(); renderRPG(); });
+  bind("rpg-sao-sw-ignorecounts", () => { uiSettings.ignoreCountChanges = uiSettings.ignoreCountChanges === false; saveUiSettings(); renderRPG(); });
+  const tsI = document.getElementById("rpg-sao-toastsecs");
+  if (tsI) {
+    tsI.onclick = (e) => e.stopPropagation();
+    tsI.onkeydown = (e) => e.stopPropagation();
+    tsI.onchange = () => { uiSettings.toastSeconds = Math.max(0, Math.min(120, parseInt(tsI.value, 10) || 0)); saveUiSettings(); };
+  }
   const eh = document.getElementById("rpg-sao-edithist");
   if (eh) {
     eh.onclick = (e) => e.stopPropagation();
@@ -8745,7 +9038,7 @@ function saoBind() {
     autoInjectState = !autoInjectState;
     const box = document.getElementById("rpg-settings-autoinject");
     if (box) box.checked = autoInjectState;
-    if (window.toastr) window.toastr.info(`Auto-Inject ${autoInjectState ? "Enabled" : "Disabled"}`);
+    if (window.toastr) hudToast.info(`Auto-Inject ${autoInjectState ? "Enabled" : "Disabled"}`);
     renderRPG();
   });
   bind("rpg-sao-sw-bars", () => { uiSettings.barsOnMin = !uiSettings.barsOnMin; saveUiSettings(); renderRPG(); });
@@ -8758,7 +9051,7 @@ function saoBind() {
   bind("rpg-sao-sw-autobond", () => { uiSettings.autoAddBonds = !uiSettings.autoAddBonds; saveUiSettings(); renderRPG(); });
   bind("rpg-sao-unblock", () => {
     clearBondBlocklist();
-    if (window.toastr) window.toastr.info("Bond blocklist cleared for this chat.");
+    if (window.toastr) hudToast.info("Bond blocklist cleared for this chat.");
     renderRPG();
   });
 
@@ -9318,6 +9611,12 @@ button.rpg-sao-ico:hover{border-color:#b3903f; color:#8a6a12}
 .rpg-sao-empty .rpg-sao-ico{display:inline-grid; width:auto; padding:0 6px; height:auto; margin:0 0 0 4px; border-radius:4px}
 .rpg-sao-ledit{display:flex; gap:6px; align-items:flex-start; margin-bottom:6px}
 .rpg-sao-ledit > .rpg-sao-ico{align-self:center}
+.rpg-sao-icopick{display:flex; flex-wrap:wrap; gap:4px; margin:-2px 0 8px; padding:6px; border:1px dashed var(--rpg-sao-rule, #b9b9b9); border-radius:4px}
+.rpg-sao-icopick .on, .rpg-sao-ledit-ico.picking{border-color:#b3903f; color:#8a6a12; box-shadow:inset 0 0 0 1px #b3903f}
+.rpg-sao-icopick .auto{width:auto; padding:0 8px; font:inherit; font-size:.85em}
+.rpg-sao-ledit-ico.custom{position:relative}
+.rpg-sao-ledit-ico.custom::after{content:""; position:absolute; top:-3px; right:-3px; width:7px; height:7px; border-radius:50%;
+  background:#3d9be0; box-shadow:0 0 0 1.5px #fff}
 .rpg-sao-reorder{flex:0 0 auto; display:flex; flex-direction:column; gap:2px}
 .rpg-sao-mv{width:18px; height:13px; padding:0; cursor:pointer; font-size:8px; line-height:1; border-radius:2px;
   color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule);
@@ -9335,7 +9634,7 @@ button.rpg-sao-ico:hover{border-color:#b3903f; color:#8a6a12}
   background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); color:var(--rpg-sao-ink-dim)}
 .rpg-sao-ledit-lock.on{color:#8a6a12; border-color:#b3903f; background:rgba(179,144,63,.16)}
 .rpg-sao-poslock{flex:0 0 auto; display:grid; place-items:center; color:#8a6a12; opacity:.85}
-#rpg-sao-edithist{width:52px; font:inherit; font-size:12px; padding:2px 4px; text-align:center}
+#rpg-sao-edithist, #rpg-sao-toastsecs{width:52px; font:inherit; font-size:12px; padding:2px 4px; text-align:center}
 .rpg-sao-customfont input{width:100%; box-sizing:border-box; font:inherit; font-size:12px; padding:4px 6px;
   color:var(--rpg-sao-ink); background:var(--rpg-sao-chip); border:1px solid var(--rpg-sao-rule); border-radius:2px}
 .rpg-sao-livebond b{display:flex; align-items:center; gap:4px}
@@ -10180,7 +10479,7 @@ const checkMessage = async (manual = false) => {
   };
 
   console.error("RPG HUD Parse Error:", err);
-  if (manual && window.toastr) window.toastr.error("Pipe Parser failed to read the block.");
+  if (manual && window.toastr) hudToast.error("Pipe Parser failed to read the block.");
 }
 };
 
@@ -10217,7 +10516,7 @@ eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, (payload) => {
 $(document).on('change', '#rpg-settings-autoinject', function() {
     autoInjectState = this.checked;
     if (window.toastr) {
-        window.toastr.info(`Auto-Inject ${autoInjectState ? 'Enabled' : 'Disabled'}`);
+        hudToast.info(`Auto-Inject ${autoInjectState ? 'Enabled' : 'Disabled'}`);
     }
     console.log("RPG HUD: Auto-inject toggle set to", autoInjectState);
 });
@@ -10252,18 +10551,7 @@ if (event_types?.CHAT_CHANGED) {
 jQuery(() => {
   console.log("RPG HUD: boot start ✅");
   try {
-    if (window.toastr) {
-      window.toastr.options = {
-        ...window.toastr.options,
-        timeOut: 0,              
-        extendedTimeOut: 0,
-        tapToDismiss: true,
-        closeButton: true,
-        progressBar: false,
-        newestOnTop: true,
-        preventDuplicates: true,
-      };
-    }
+    // (no global toastr options: HUD toasts set their own, see hudToastOpts)
   } catch {}
 
   try {
