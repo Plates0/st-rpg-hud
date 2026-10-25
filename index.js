@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-25.1";
+const HUD_BUILD = "2026-10-25.2";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -3877,7 +3877,11 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
     if (saoMeterEdit && meterEditIdx !== charIndex) saoMeterEdit = null;   // switched character: drop the draft
     const meterEditorHtml = saoMeterEdit ? `${CLASSIC_ED_CSS}<div class="rpg-c-ed rpg-c-medit">${saoMetersSection(display)}</div>` : "";
-    const metersHtml = saoMeterEdit ? meterEditorHtml : renderMeters(display.meters, true);
+    const hasMeters = Array.isArray(display.meters) && display.meters.length > 0;
+    const metersHtml = saoMeterEdit ? meterEditorHtml
+      : hasMeters ? renderMeters(display.meters, true)
+      : `<div style="text-align:right; margin-top:2px;"><span data-meter-edit data-meter-add title="Add a meter"
+          style="cursor:pointer; font-size:0.72em; color:#888;">+ meter</span></div>`;
 
     const coin = toNumberOr(display.dankcoin ?? root.dankcoin ?? 0, 0);
 
@@ -4318,7 +4322,19 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     classicBindEditors();
     classicBindInfo();
     container.querySelectorAll("[data-meter-edit]").forEach((el) => {
-      el.onclick = (e) => { e.stopPropagation(); meterEditIdx = charIndex; saoStartMeterEdit(); renderRPG(); };
+      el.onclick = (e) => {
+        e.stopPropagation();
+        meterEditIdx = charIndex;
+        saoStartMeterEdit();
+        // "+ meter" opens straight onto a new, empty row
+        if (el.hasAttribute("data-meter-add")) {
+          saoMeterEdit.push({ name: "", curr: "0", max: "100", color: "#26a69a", custom: false, orig: "" });
+        }
+        renderRPG();
+        if (el.hasAttribute("data-meter-add")) {
+          requestAnimationFrame(() => { const n = document.querySelectorAll(".rpg-sao-m-name"); n[n.length - 1]?.focus(); });
+        }
+      };
     });
     if (saoMeterEdit) saoBindMeterEditor();
 	  
@@ -7507,6 +7523,10 @@ const SYS_CSS = `
   cursor:pointer; -webkit-tap-highlight-color:transparent; font:inherit; line-height:0}
 .rpg-sys .sys-ibtn:hover .sys-svg{color:#fff; filter:drop-shadow(0 0 4px var(--sg))}
 .rpg-sys .sys-medit{margin:-2px 0 8px}
+.rpg-sys .sys-addmeter-row{display:flex; justify-content:flex-end; margin-top:5px}
+.rpg-sys .sys-addmeter{padding:0; border:0; background:none; cursor:pointer; font:inherit; font-size:.62em; letter-spacing:.12em;
+  color:#6f93b5; -webkit-tap-highlight-color:transparent}
+.rpg-sys .sys-addmeter:hover{color:var(--sc); text-shadow:0 0 6px var(--sg)}
 .rpg-sys .rpg-c-ed .rpg-sao-mini.primary{background:rgba(40,110,190,.55); border-color:var(--sc); color:#fff; box-shadow:0 0 6px var(--sg)}
 .rpg-sys .sys-medit .rpg-c-medit{margin:0; padding:0; border:0; font-size:.8em}
 .rpg-sys .rpg-c-ed .rpg-sao-mrow-edit{border-bottom-color:rgba(143,208,255,.15)}
@@ -7752,6 +7772,9 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
     bars += sysBar("meter", String(nm).toUpperCase(), mt.curr ?? mt.value ?? 0, mt.max ?? 100,
       { skipEmpty: true, tint: meterColorByName(nm), editMeters: true });
   });
+  if (!(Array.isArray(display.meters) && display.meters.length) && !meterEditorHtml) {
+    bars += `<div class="sys-addmeter-row"><button class="sys-addmeter" data-meter-edit data-meter-add title="Add a meter">+ METER</button></div>`;
+  }
 
   const stat = (icon, label, raw) => {
     const has = raw !== undefined && raw !== null && String(raw).trim() !== "";
@@ -7976,6 +7999,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-25.2", items: [
+    "A character with no meters now shows a small + meter (System and classic). It opens the meter editor on a new row, so the first meter can be added without Edit state.",
+  ] },
   { build: "2026-10-25.1", items: [
     "Fix: a pipe inside an item, like \u201cF-Rank Card [ 0 | 0 ]\u201d, set off a false broken-format warning. The check now reads lines the same way the parser does, so only real problems are flagged.",
   ] },
@@ -8113,7 +8139,7 @@ const CLASSIC_HELP = [
   ["The dot", "Top right. Green: the latest reply has a valid state. Yellow: the block is broken (tap for details). Grey: no block."],
   ["Tabs", "Party, Bonds, Timers, Items, Skills, Passive, Mastery, Quest, Environment and Log. Pick a character from the name dropdown to see their tabs."],
   ["Editing lists", "In Items, Skills and Passive, tap any icon to edit that list: change text, ✕ to delete, ▲▼ to reorder, + Add. Mastery and Quest have a ✎ button instead."],
-  ["Meters", "Tap a meter's name (in the System skin, its icon) to edit that character's meters: rename, change values, pick a colour (↺ goes back to automatic), reorder, add or remove. Save writes them to the latest reply."],
+  ["Meters", "Tap a meter's name (in the System skin, its icon) to edit that character's meters, or + meter when they have none: rename, change values, pick a colour (↺ goes back to automatic), reorder, add or remove. Save writes them to the latest reply."],
   ["Your own icons", "In the list editor, tap a row's icon to pick a different one (Auto goes back to guessing from the name), then Save. It sticks to that name in every chat and on your other devices; a blue dot marks it in the editor."],
   ["Position locks", "In the item, skill and passive editor, the padlock under ✕ pins an entry to its place. If the AI reorders the list, locked entries are put back; the rest keep their order."],
   ["Edits Rewrite Past Replies", "Settings. List edits also fix this many earlier replies, so the AI can't copy the old version back from history. 0 means the latest reply only."],
