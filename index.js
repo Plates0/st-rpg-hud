@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-24.1";
+const HUD_BUILD = "2026-10-25.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -1445,13 +1445,17 @@ function getLatestRpgValidity(chat) {
     const t = line.trim();
     if (!t || t.startsWith('[')) return;
 
-    // Upgraded check: properly handles adjacent pipes || without skipping
-    const pipeSegments = [...t.matchAll(/\|([^|]+)(?=\|)/g)];
+    // Read the line the way the parser does: a pipe that's plainly part of a
+    // value ("Card [ 0 | 0 ]") isn't a field boundary, so it can't be a broken
+    // field either. The swap is one character for one, so positions still line up.
+    const pipeSegments = [...sanitizeBrokenPipeLine(t).matchAll(/\|([^|]+)(?=\|)/g)];
     pipeSegments.forEach(seg => {
-      const content = seg[1].trim();
+      const content = seg[1].replace(/\uFF5C/g, "").trim();
       // If there is content inside the pipe, it MUST have a colon
       if (content && !content.includes(':')) {
-        errors.push({ line: index - Math.max(0, lead) + 1, char: (seg.index ?? 0) + 1, text: t, content });
+        // the caret goes on the field's first letter
+        const pad = seg[1].match(/^[\s\uFF5C]*/)[0].length;
+        errors.push({ line: index - Math.max(0, lead) + 1, char: (seg.index ?? 0) + 1 + pad, text: t, content });
       }
     });
   });
@@ -7972,6 +7976,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-25.1", items: [
+    "Fix: a pipe inside an item, like \u201cF-Rank Card [ 0 | 0 ]\u201d, set off a false broken-format warning. The check now reads lines the same way the parser does, so only real problems are flagged.",
+  ] },
   { build: "2026-10-24.1", items: [
     "Fix: a field missing its colon (like |Timers| instead of |Timers:|) raised the broken-format warning, but the details panel came up empty. It now names the field, shows the line with the spot marked, and says how to write it.",
   ] },
