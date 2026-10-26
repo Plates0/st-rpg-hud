@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-25.2";
+const HUD_BUILD = "2026-10-25.3";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -4593,6 +4593,28 @@ function tDiffVitals(out, label, a, b, who) {
       text: `${pre}${eb.label || "MP"} ${e0} \u2192 ${e1}${eb.max ? "/" + splitMathValue(String(eb.max)).val : ""} (${tSigned(e1 - e0)})` });
   }
 
+  // the stats themselves: max HP and MP, then ATK, MATK and the rest
+  const stat = (label, raw0, raw1, u) => {
+    const s0 = String(raw0 ?? "").trim(), s1 = String(raw1 ?? "").trim();
+    if (s0 === s1 || (!s0 && !s1)) return;
+    const n0 = tNum(raw0), n1 = tNum(raw1);
+    const show = (v) => splitMathValue(String(v ?? "")).val || "\u2013";
+    if (n0 !== null && n1 !== null) {
+      if (n0 === n1) return;                       // only the breakdown in brackets moved
+      out.push({ tone: n1 > n0 ? "good" : "bad", u, text: `${pre}${label} ${n0} \u2192 ${n1} (${tSigned(n1 - n0)})` });
+    } else {
+      out.push({ tone: "neutral", u, text: `${pre}${label} ${show(raw0)} \u2192 ${show(raw1)}` });
+    }
+  };
+  stat("Max HP", a?.hp_max, b?.hp_max, { f: "hpmax", who });
+  stat(`Max ${eb.label || "MP"}`, ea.max, eb.max, { f: "mpmax", who });
+  const st0 = a?.stats || {}, st1 = b?.stats || {};
+  const order = ["atk", "matk", "def", "satk", "sdef"];
+  [...new Set([...order, ...Object.keys(st0), ...Object.keys(st1)])].forEach((k) => {
+    if (!(k in st0) && !(k in st1)) return;
+    stat(k.toUpperCase(), st0[k], st1[k], { f: "stat", who, key: k });
+  });
+
   // "Healthy", "None" and the like mean no status, so going from Poisoned to
   // Healthy is logged as losing Poisoned, not also as gaining Healthy
   const realStatus = (list) => new Set((list || []).map((x) => String(x).trim())
@@ -4728,13 +4750,28 @@ function applyTurnUndo(b, a, u) {
     case "combat": b.combat = tClone(a.combat); break;
     case "coin": b.dankcoin = a.dankcoin; break;
     case "hp":
-      if (tb && ta) { tb.hp_curr = ta.hp_curr; tb.hp_max = ta.hp_max; }
+      if (tb && ta) tb.hp_curr = ta.hp_curr;
       break;
     case "mp":
-      if (tb && ta) ["mp_curr", "mp_max", "mp", "en_curr", "en_max", "en"].forEach((k) => {
+      if (tb && ta) ["mp_curr", "mp", "en_curr", "en"].forEach((k) => {
         if (k in ta) tb[k] = ta[k]; else delete tb[k];
       });
       break;
+    case "hpmax":
+      if (tb && ta) tb.hp_max = ta.hp_max;
+      break;
+    case "mpmax":
+      if (tb && ta) ["mp_max", "en_max"].forEach((k) => {
+        if (k in ta) tb[k] = ta[k]; else delete tb[k];
+      });
+      break;
+    case "stat": {
+      if (!tb || !ta) break;
+      const sa = ta.stats || {};
+      tb.stats = { ...(tb.stats || {}) };
+      if (u.key in sa) tb.stats[u.key] = sa[u.key]; else delete tb.stats[u.key];
+      break;
+    }
     case "status": {
       if (!tb) break;
       const list = Array.isArray(tb.status_effects) ? tb.status_effects : (tb.status_effects = []);
@@ -7999,6 +8036,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-25.3", items: [
+    "The turn log now tracks stat changes: max HP and max MP, and ATK, MATK, DEF, SATK and SDEF, for you, the party, NPCs and enemies. Each can be undone or locked like any other change.",
+  ] },
   { build: "2026-10-25.2", items: [
     "A character with no meters now shows a small + meter (System and classic). It opens the meter editor on a new row, so the first meter can be added without Edit state.",
   ] },
