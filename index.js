@@ -401,6 +401,7 @@ let historyMemoryKey = null;
 let isMinimized = false;
 let fogDockOpen = false;     // Gray Fog: the centred menu button's buttons are fanned out
 let fogDockAnim = false;     // play the fan-out once, on the render right after a toggle
+let fogDockOpenedAt = 0;     // keeps the star's slow spin continuous across re-renders
 let scanTimer = null;
 let charIndex = 0;
 let tabStripScrollLeft = 0; 
@@ -422,7 +423,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-26.24";
+const HUD_BUILD = "2026-10-26.26";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -3770,7 +3771,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
   ${SYS ? `background: var(--sys-bg); border: 1px solid var(--sc); color: #e4f3ff;` : `
   background: rgba(10, 10, 15, 0.95);
   border: 2px solid #C0A040; color: #E0E0E0;`}
-  padding: 10px 10px 46px 10px;
+  padding: 10px 10px ${FOG ? 53 : 46}px 10px;
   z-index: 9999;
   font-family: ${FONT_FAMILY};
   font-size: ${FONT_SIZE};
@@ -4165,8 +4166,9 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    box-sizing:border-box;
 	  ">↻</button>
 	  ${FOG ? `<button id="rpg-fog-dock" title="${fogDockOpen ? "Close the menu" : "Menu"}" aria-expanded="${fogDockOpen}">
-	    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5 L13.6 10.4 L21.5 12 L13.6 13.6 L12 21.5 L10.4 13.6 L2.5 12 L10.4 10.4 Z" fill="currentColor"/>
-	      <circle cx="12" cy="12" r="6.3" fill="none" stroke="currentColor" stroke-width="1" opacity=".55"/></svg>
+	    <svg viewBox="0 0 24 24" aria-hidden="true"${fogDockOpen ? ` style="animation-delay:-${Date.now() - fogDockOpenedAt}ms"` : ""}><g class="fog-star">
+	      <path d="M12 2.5 L13.6 10.4 L21.5 12 L13.6 13.6 L12 21.5 L10.4 13.6 L2.5 12 L10.4 10.4 Z" fill="currentColor"/>
+	      <circle cx="12" cy="12" r="6.3" fill="none" stroke="currentColor" stroke-width="1" opacity=".55"/></g></svg>
 	    ${!fogDockOpen && changelogUnseen() ? `<span class="fog-dock-badge"></span>` : ""}</button>` : ""}
 	  <button id="rpg-help-btn" title="Help" style="
 	    position:relative; background:#333; border:1px solid #777; color:#fff;
@@ -4253,6 +4255,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     bind("rpg-fog-dock", (e) => {
       e?.stopPropagation();
       fogDockOpen = !(fogDockOpen || isSettingsOpen || classicInfo);
+      if (fogDockOpen) fogDockOpenedAt = Date.now();
       if (!fogDockOpen) { if (isSettingsOpen) { flushInlineEdits(); isSettingsOpen = false; } classicInfo = null; }
       fogDockAnim = true;
       renderRPG();
@@ -7833,13 +7836,21 @@ const FOG_CSS = `
 .rpg-fog .sys-ctl{right:20px; gap:5px}
 .rpg-fog #rpg-min-btn{width:24px !important}
 /* the bottom buttons tuck behind one centred button and fan out from it */
-.rpg-sys.rpg-fog .rpg-c-btns.fog-dock{left:50% !important; bottom:9px !important; transform:translateX(-50%); align-items:center; gap:7px !important}
+.rpg-sys.rpg-fog .rpg-c-btns.fog-dock{left:50% !important; bottom:13.5px !important; transform:translateX(-50%); align-items:center; gap:7px !important}
 .rpg-fog .fog-dock:not(.open) > button:not(#rpg-fog-dock){display:none !important}
 .rpg-fog #rpg-fog-dock{position:relative; width:32px; height:32px; border-radius:50%; padding:0; cursor:pointer; display:grid; place-items:center;
   color:#eceef3; background:radial-gradient(circle at 35% 28%, #4a4c56, #1b1b21 70%);
   border:1px solid rgba(214,217,226,.75); box-shadow:0 0 0 3px rgba(18,18,23,.8), 0 0 0 4px rgba(214,217,226,.28), 0 0 12px var(--sg)}
-.rpg-fog #rpg-fog-dock svg{width:20px; height:20px; transition:transform .3s ease; filter:drop-shadow(0 0 3px var(--sg))}
-.rpg-fog .fog-dock.open #rpg-fog-dock svg{transform:rotate(45deg) scale(.9)}
+.rpg-fog #rpg-fog-dock svg{width:20px; height:20px; overflow:visible; filter:drop-shadow(0 0 3px var(--sg))}
+.rpg-fog #rpg-fog-dock .fog-star{transform-origin:12px 12px}
+.rpg-fog .fog-dock.open #rpg-fog-dock .fog-star{transform:rotate(45deg) scale(.9)}
+.rpg-fog .fog-dock.open #rpg-fog-dock svg{animation:fogDockSpin 14s linear infinite}
+.rpg-fog .fog-dock.open.anim #rpg-fog-dock .fog-star{animation:fogDockTurn .35s ease-out both}
+.rpg-fog .fog-dock.anim:not(.open) #rpg-fog-dock .fog-star{animation:fogDockUnturn .3s ease-out both}
+@keyframes fogDockSpin{to{transform:rotate(360deg)}}
+@keyframes fogDockTurn{from{transform:none} to{transform:rotate(45deg) scale(.9)}}
+@keyframes fogDockUnturn{from{transform:rotate(45deg) scale(.9)} to{transform:none}}
+@media (prefers-reduced-motion: reduce){.rpg-fog .fog-dock.open #rpg-fog-dock svg{animation:none}}
 .rpg-fog #rpg-fog-dock:hover{border-color:#fff}
 .rpg-fog .fog-dock-badge{position:absolute; top:-2px; right:-2px; width:8px; height:8px; border-radius:50%; background:#ff5252; box-shadow:0 0 0 2px #111}
 .rpg-fog .fog-dock.anim > #rpg-settings-btn,.rpg-fog .fog-dock.anim > #rpg-scan-btn{animation:fogDockL .3s cubic-bezier(.2,.8,.3,1.2) both}
