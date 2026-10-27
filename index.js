@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-25.3";
+const HUD_BUILD = "2026-10-26.22";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -450,6 +450,7 @@ const defaultUiSettings = {
   sysBigSlot: "name",     // system skin: the big slot shows "name" or an analog "clock"
   sysNotices: true,       // system skin: "You have acquired..." popups when a reply adds things
   sysFont: "exo",         // system skin font: a SAO_FONTS key, or "preset" for the classic preset
+  fogNumber: "auto",      // Gray Fog's tarot number: "auto" (Sequence, else the day) | "day" | "sequence" | "none"
   fontPreset: "retro_mono",
   fontFamily: "'Courier New', Courier, monospace",
   fontScale: 1.0,
@@ -528,7 +529,7 @@ function applyHudTypography(container) {
     uiSettings.fontFamily = fontPresetToFamily(uiSettings.fontPreset);
   }
 
-  container.style.fontFamily = uiSettings.skin === "system" ? sysFontStack() : uiSettings.fontFamily;
+  container.style.fontFamily = isSysSkin() ? sysFontStack() : uiSettings.fontFamily;
   container.style.fontSize = `${0.9 * scale}em`;
 }
 
@@ -966,7 +967,7 @@ function maybeReportListChanges() {
   if (!a || !b) return;
   // only for a reply that's just arrived: opening a chat, or the HUD tidying
   // an old block's format, is not something being acquired
-  if (uiSettings.skin === "system" && uiSettings.sysNotices !== false
+  if (isSysSkin() && uiSettings.sysNotices !== false
       && Date.now() - lastReplyAt < 120000 && idx === chat.length - 1) {
     try { sysShowNotices(sysNoticesFor(a, b), `${key}|${idx}|${chat[idx]?.swipe_id ?? 0}`); }
     catch (e) { console.warn("RPG HUD: system notice failed", e); }
@@ -2457,7 +2458,7 @@ function makeList(items, emptyText) {
 
 function renderEnemySummary() {
   if (!Array.isArray(rpgState.enemies) || rpgState.enemies.length === 0) return "";
-  if (uiSettings.skin === "system") {
+  if (isSysSkin()) {
     return `<div class="sys-foes">${sysUnitList(rpgState.enemies, { title: "HOSTILES", jumpType: "enemy", foe: true, hpOnly: true })}</div>`;
   }
 
@@ -2567,7 +2568,7 @@ function renderMiniUnitBars(list, options = {}) {
 function renderPartyTab() {
   const party = Array.isArray(rpgState.party) ? rpgState.party : [];
   const npcs = Array.isArray(rpgState.npcs) ? rpgState.npcs : [];
-  if (uiSettings.skin === "system") {
+  if (isSysSkin()) {
     return sysUnitList(party, { title: "PARTY", jumpType: "party", emptyText: "No party members" })
       + sysUnitList(npcs, { title: "NPCS", jumpType: "npc", emptyText: "No NPCs" });
   }
@@ -2615,7 +2616,7 @@ function renderBondsTab() {
     `<button id="${id}" style="background:#333; border:1px solid ${color}; color:${color};
       cursor:pointer; font-size:0.9em; padding:1px 7px; font-weight:bold;">${text}</button>`;
 
-  const SYS = uiSettings.skin === "system";
+  const SYS = isSysSkin();
   const header = `
     <div class="${SYS ? "sys-tabhead" : ""}" style="display:flex; justify-content:space-between; align-items:center; gap:4px; margin-bottom:4px;">
       ${SYS ? `<span>${sysIcon("bond")}BONDS</span>` : `<span style="color:#f06292; font-weight:bold;">❤️ Bonds</span>`}
@@ -2857,7 +2858,7 @@ function renderTimersTab() {
     `<button id="${id}" title="${escAttr(title || "")}" style="background:#333; border:1px solid ${color};
       color:${color}; cursor:pointer; font-size:0.9em; padding:1px 7px; font-weight:bold;">${text}</button>`;
 
-  const SYS = uiSettings.skin === "system";
+  const SYS = isSysSkin();
   const header = `
     <div class="${SYS ? "sys-tabhead" : ""}" style="display:flex; justify-content:space-between; align-items:center; gap:4px; margin-bottom:4px;">
       ${SYS ? `<span>${sysIcon("timer")}TIMERS</span>` : `<span style="color:#90caf9; font-weight:bold;">⏱️ Timers</span>`}
@@ -2929,13 +2930,13 @@ function renderTimersTab() {
         const use = info.mode === "charges" && !info.done
           ? `<button class="rpg-c-tuse" data-key="${escAttr(timerKey(t))}" title="Use one charge"
                style="margin-left:2px; padding:0 5px; font-size:0.85em; line-height:1.4; cursor:pointer;
-                      background:rgba(10,26,48,.9); color:#dff1ff; border:1px solid rgba(143,208,255,.55);">\u22121</button>` : "";
+                      background:rgba(var(--t-10_26_48, 10,26,48),.9); color:var(--t-dff1ff, #dff1ff); border:1px solid rgba(var(--t-143_208_255, 143,208,255),.55);">\u22121</button>` : "";
         return `
         <div class="sys-unit${dim ? " dim" : ""}">
           <div class="sys-unit-head">
             <span class="sys-tkind" style="--tc:${st.color}">${sysIcon(SYS_TIMER_ICON[info.kind] || "hourglass")}</span>
             <span class="nm">${ownerTag}${escHtml(t.name)}${mark}${keptMark}</span>
-            <span class="sys-unit-val" style="color:${st.color};">${escHtml(info.label)}${delta ? `<span class="d" style="color:#8aa3b8;">${escHtml(delta)}</span>` : ""}${use}</span>
+            <span class="sys-unit-val" style="color:${st.color};">${escHtml(info.label)}${delta ? `<span class="d" style="color:var(--t-8aa3b8, #8aa3b8);">${escHtml(delta)}</span>` : ""}${use}</span>
           </div>
           ${info.pct === null ? "" : `<div class="sys-cap sm tint" style="--mc:${st.color}"><i style="width:${info.pct}%"></i></div>`}
         </div>`;
@@ -3677,7 +3678,8 @@ function renderClassicSkin() {
   saoSaveScroll(container);
   queueMicrotask(() => saoRestoreScroll(container));
 
-  const SYS = uiSettings.skin === "system";   // the System skin is this panel, restyled
+  const SYS = isSysSkin();   // the System and Gray Fog skins are this panel, restyled
+  const FOG = isFogSkin();
   const ico = (emoji, k) => (SYS ? sysIcon(k) : emoji);   // emoji in classic, line icons in System
   if (SYS) { sysEnsureCss(); sysEnsureWebFont(); }
   const BOX_RADIUS = "0px";
@@ -3702,8 +3704,8 @@ function renderClassicSkin() {
         top: clamp(calc(env(safe-area-inset-top, 0px) + 50px), 20vh, calc(100vh - env(safe-area-inset-bottom, 0px) - 50px));
         transform: translateY(-50%);
         width: 26px; height: 58px;
-        background: rgba(5,12,24,0.92);
-        border: 1px solid #8fd0ff; border-right: 0;
+        background: ${FOG ? "rgba(26,26,32,0.94)" : "rgba(5,12,24,0.92)"};
+        border: 1px solid ${FOG ? "#c9ccd6" : "#8fd0ff"}; border-right: 0;
         z-index: 99999; cursor: pointer; box-sizing: border-box;
         box-shadow: 0 0 10px rgba(90,180,255,0.55), inset 0 0 8px rgba(90,180,255,0.25);
         display: flex; align-items: center; justify-content: center;
@@ -3779,12 +3781,12 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
   applyHudTypography(container);
   if (SYS) container.style.fontFamily = sysFontStack();
-  container.className = SYS ? "rpg-sys" : "";
+  container.className = SYS ? `rpg-sys${FOG ? " rpg-fog" : ""}` : "";
   container.onclick = null;
 
   try {
     const { root, display, type, isVehicle } = getActiveData();
-    if (SYS) container.className = `rpg-sys rpg-sys-${isVehicle ? "veh" : type}`;
+    if (SYS) container.className = `rpg-sys${FOG ? " rpg-fog" : ""} rpg-sys-${isVehicle ? "veh" : type}`;
     const context = SillyTavern.getContext();
     const chat = context?.chat;
     latest = updateLatestStatusAndToast(chat);
@@ -3890,8 +3892,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     const tabStyle = (name) => SYS
       ? `flex:0 0 auto; min-width:52px; text-align:center; cursor:pointer; padding:4px 8px; font-size:0.74em; letter-spacing:0.1em; text-transform:uppercase; user-select:none; ` +
         (activeTab === name
-          ? "border:1px solid var(--sc); color:#fff; background:rgba(90,170,255,0.16); text-shadow:0 0 6px var(--sg); box-shadow:inset 0 0 6px var(--sg);"
-          : "border:1px solid transparent; color:#8fb6d8;")
+          ? "border:1px solid var(--sc); color:#fff; background:rgba(var(--t-90_170_255, 90,170,255),0.16); text-shadow:0 0 6px var(--sg); box-shadow:inset 0 0 6px var(--sg);"
+          : "border:1px solid transparent; color:var(--t-8fb6d8, #8fb6d8);")
       :
       `flex:0 0 auto; min-width:56px; text-align:center; cursor:pointer; padding:5px 8px; font-size:0.8em; border-radius:3px; user-select:none; ` +
       `${activeTab === name ? "background:#C0A040; color:#000; font-weight:bold;" : "background:transparent; color:#ddd;"}`;
@@ -4002,6 +4004,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         <select id="rpg-skin-select" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px;">
             <option value="classic">Classic panel</option>
             <option value="system">System window</option>
+            <option value="fog">Gray Fog</option>
             <option value="sao">SAO overlay</option>
         </select>
 
@@ -4051,6 +4054,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
 
     container.innerHTML = `
+    ${SYS ? emblemLayersHtml() : ""}
     ${SYS ? sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLabel, coin, time, meterEditorHtml }) : `
 	<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; padding-bottom:5px; border-bottom:1px solid ${borderColor}; min-height:24px;">
 	  <div style="display:flex; align-items:center; gap:6px; min-width:0;">
@@ -4112,7 +4116,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       </div>
     `}
 
-      <div id="rpg-tab-strip" data-scroll-key="c:strip" style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid ${SYS ? "rgba(143,208,255,0.35)" : "#555"}; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
+      <div id="rpg-tab-strip" data-scroll-key="c:strip" style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid ${SYS ? "rgba(var(--t-143_208_255, 143,208,255),0.35)" : "#555"}; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
         <div id="tab-party" style="${tabStyle("party")}">Party</div>
 		<div id="tab-bonds" style="${tabStyle("bonds")}">Bonds</div>
 	    <div id="tab-timers" style="${tabStyle("timers")}">Timers</div>
@@ -4126,7 +4130,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       </div>
 
       ${CLASSIC_ED_CSS}
-      <div data-scroll-key="c:body:${activeTab}" style="height: ${classicEditorOpen() ? 240 : 110}px; overflow-y: auto; font-size: 0.8em; padding:5px; background:${SYS ? "rgba(4,12,24,0.55); border:1px solid rgba(143,208,255,0.22)" : "rgba(0,0,0,0.3)"}; scrollbar-gutter:${activeTab === "log" ? "auto" : "stable"};">
+      <div data-scroll-key="c:body:${activeTab}" style="height: ${classicEditorOpen() ? 240 : 110}px; overflow-y: auto; font-size: 0.8em; padding:5px; background:${SYS ? "rgba(var(--t-4_12_24, 4,12,24),0.55); border:1px solid rgba(var(--t-143_208_255, 143,208,255),0.22)" : "rgba(0,0,0,0.3)"}; scrollbar-gutter:${activeTab === "log" ? "auto" : "stable"};">
         ${activeTab === "party" ? renderPartyTab() : ""}
         ${activeTab === "log" ? classicLogHtml() : ""}
 		${activeTab === "bonds" ? renderBondsTab() : ""}
@@ -4179,6 +4183,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         style="position:absolute; left:-8px; top:0; bottom:0; width:16px;
           cursor:ew-resize; z-index:200000; background:transparent; touch-action:none;"></div>
 
+      ${SYS && emblemEditOpen && !isSettingsOpen ? emblemEditorHtml() : ""}
       ${settingsPanelHtml}
       ${errorPanelHtml}
       ${classicInfoHtml()}
@@ -4321,6 +4326,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     classicBindLog();
     classicBindEditors();
     classicBindInfo();
+    if (SYS) { applyEmblem(container); if (emblemEditOpen) bindEmblemEditor(container); }
     container.querySelectorAll("[data-meter-edit]").forEach((el) => {
       el.onclick = (e) => {
         e.stopPropagation();
@@ -4860,11 +4866,16 @@ function buildTurnLog(chat) {
 // calls the same handlers the classic skin does.
 // =====================================================================
 
+// System and Gray Fog share one layout; Gray Fog is a theme over it
+function isSysSkin(name = uiSettings.skin) { return name === "system" || name === "fog"; }
+function isFogSkin(name = uiSettings.skin) { return name === "fog"; }
+
 function setSkin(name) {
   flushInlineEdits();
-  uiSettings.skin = name === "sao" || name === "system" ? name : "classic";
+  uiSettings.skin = ["sao", "system", "fog"].includes(name) ? name : "classic";
   saveUiSettings();
   isSettingsOpen = false;
+  emblemEditOpen = false;
   saoPanel = null;
   const c = document.getElementById("rpg-hud-container");
   if (c) { c.innerHTML = ""; c.style.cssText = ""; c.className = ""; c.onclick = null; }
@@ -7443,11 +7454,11 @@ function classicBindEditors() {
 
 const SYS_CSS = `
 .rpg-sys{--sc:#8fd0ff; --sg:rgba(90,180,255,.55); --st:rgba(50,120,210,.22);
-  --sys-bg:repeating-linear-gradient(115deg, rgba(140,200,255,.045) 0 1px, transparent 1px 13px),
+  --sys-bg:repeating-linear-gradient(115deg, rgba(var(--t-140_200_255, 140,200,255),.045) 0 1px, transparent 1px 13px),
     radial-gradient(120% 60% at 20% 0%, var(--st), transparent 60%),
-    radial-gradient(100% 50% at 90% 100%, rgba(40,90,180,.16), transparent 60%), rgba(4,9,18,.94);
-  --sys-shadow:0 0 0 1px rgba(0,0,0,.55), 0 0 16px var(--sg), inset 0 0 0 3px rgba(4,9,18,.85),
-    inset 0 0 0 4px rgba(143,208,255,.28), inset 0 0 26px rgba(60,140,230,.14)}
+    radial-gradient(100% 50% at 90% 100%, rgba(var(--t-40_90_180, 40,90,180),.16), transparent 60%), rgba(var(--t-4_9_18, 4,9,18),.94);
+  --sys-shadow:0 0 0 1px rgba(0,0,0,.55), 0 0 16px var(--sg), inset 0 0 0 3px rgba(var(--t-4_9_18, 4,9,18),.85),
+    inset 0 0 0 4px rgba(var(--t-143_208_255, 143,208,255),.28), inset 0 0 26px rgba(var(--t-60_140_230, 60,140,230),.14)}
 .rpg-sys-enemy{--sc:#ff8080; --sg:rgba(255,80,80,.5); --st:rgba(200,50,60,.24)}
 .rpg-sys-veh{--sc:#d6a2ff; --sg:rgba(190,120,255,.5); --st:rgba(140,70,210,.22)}
 .rpg-sys::before,.rpg-sys::after{content:""; position:absolute; width:14px; height:14px; pointer-events:none;
@@ -7456,21 +7467,21 @@ const SYS_CSS = `
 .rpg-sys::after{bottom:5px; right:5px; border-bottom-width:2px; border-right-width:2px}
 .rpg-sys .sys-svg{fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round;
   width:1.1em; height:1.1em; vertical-align:-0.18em; flex:0 0 auto}
-.rpg-sys .rpg-c-btns .sys-svg{width:16px; height:16px; color:#dff1ff; filter:drop-shadow(0 0 3px var(--sg))}
+.rpg-sys .rpg-c-btns .sys-svg{width:16px; height:16px; color:var(--t-dff1ff, #dff1ff); filter:drop-shadow(0 0 3px var(--sg))}
 .rpg-sys .sys-tabhead{display:flex; justify-content:space-between; align-items:center; gap:4px; margin-bottom:5px;
-  padding-bottom:3px; border-bottom:1px solid rgba(143,208,255,.25)}
+  padding-bottom:3px; border-bottom:1px solid rgba(var(--t-143_208_255, 143,208,255),.25)}
 .rpg-sys .sys-tabhead > span:first-child{display:flex; align-items:center; gap:6px; font-size:1.02em; letter-spacing:.18em;
   color:var(--sc); text-shadow:0 0 6px var(--sg)}
 .rpg-sys .sys-tabhead button{display:inline-flex; align-items:center; justify-content:center; min-width:24px;
-  background:rgba(10,26,48,.9) !important; border:1px solid rgba(143,208,255,.55) !important; color:#dff1ff !important}
-.rpg-sys .sys-unit-head .sys-dot{flex:0 0 auto; width:6px; height:6px; border-radius:50%; border:1px solid #6d8aa5}
+  background:rgba(var(--t-10_26_48, 10,26,48),.9) !important; border:1px solid rgba(var(--t-143_208_255, 143,208,255),.55) !important; color:var(--t-dff1ff, #dff1ff) !important}
+.rpg-sys .sys-unit-head .sys-dot{flex:0 0 auto; width:6px; height:6px; border-radius:50%; border:1px solid var(--t-6d8aa5, #6d8aa5)}
 .rpg-sys .sys-unit-head .sys-dot.on{border-color:#7ef0c0; background:#7ef0c0; box-shadow:0 0 6px rgba(126,240,192,.8)}
 .rpg-sys .sys-unit-val{margin-left:auto; flex:0 0 auto; white-space:nowrap; display:flex; align-items:center; gap:4px}
 .rpg-sys .sys-unit-val .d{font-size:.8em}
 .rpg-sys .sys-track{position:relative; height:100%}
 .rpg-sys .sys-track s{position:absolute; top:0; height:100%; opacity:.5; border-radius:3px; text-decoration:none}
 .rpg-sys .sys-unit.dim{opacity:.55}
-.rpg-sys .sys-unit-head .nm{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#d6e8f7}
+.rpg-sys .sys-unit-head .nm{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--t-d6e8f7, #d6e8f7)}
 .rpg-sys .sys-tkind{display:inline-grid; place-items:center; color:var(--tc); filter:drop-shadow(0 0 3px var(--tc))}
 .rpg-sys .sys-tkind .sys-svg{width:13px; height:13px}
 
@@ -7479,20 +7490,20 @@ const SYS_CSS = `
   color:var(--sc); opacity:.9; text-shadow:0 0 6px var(--sg)}
 .rpg-sys .sys-ctl{position:absolute; right:0; top:50%; transform:translateY(-50%); display:flex; align-items:center; gap:6px}
 .rpg-sys .sys-plate{border:1px solid var(--sc); padding:3px 18px 2px calc(18px + .22em); font-size:1.2em; font-weight:600;
-  letter-spacing:.22em; color:#f2faff; text-shadow:0 0 8px var(--sg),0 0 2px #fff; background:rgba(12,30,56,.55);
-  box-shadow:0 0 10px var(--sg), inset 0 0 10px rgba(90,170,255,.18)}
-.rpg-sys #rpg-min-btn{width:28px !important; height:20px !important; background:rgba(10,26,48,.9) !important;
-  border:1px solid rgba(143,208,255,.6) !important; color:#dff1ff !important}
+  letter-spacing:.22em; color:var(--t-f2faff, #f2faff); text-shadow:0 0 8px var(--sg),0 0 2px #fff; background:rgba(var(--t-12_30_56, 12,30,56),.55);
+  box-shadow:0 0 10px var(--sg), inset 0 0 10px rgba(var(--t-90_170_255, 90,170,255),.18)}
+.rpg-sys #rpg-min-btn{width:28px !important; height:20px !important; background:rgba(var(--t-10_26_48, 10,26,48),.9) !important;
+  border:1px solid rgba(var(--t-143_208_255, 143,208,255),.6) !important; color:var(--t-dff1ff, #dff1ff) !important}
 
 .rpg-sys .sys-hero{margin:2px 0 8px}
 .rpg-sys .sys-hero.name{text-align:center}
-.rpg-sys .sys-big{font-size:1.9em; font-weight:700; line-height:1.1; color:#f4fbff; letter-spacing:.02em;
+.rpg-sys .sys-big{font-size:1.9em; font-weight:700; line-height:1.1; color:var(--t-f4fbff, #f4fbff); letter-spacing:.02em;
   text-shadow:0 0 10px var(--sg), 0 0 2px rgba(255,255,255,.8); overflow-wrap:anywhere}
 .rpg-sys .sys-big.m{font-size:1.6em} .rpg-sys .sys-big.s{font-size:1.3em}
 .rpg-sys .sys-rule{height:1px; margin:6px 8%; background:linear-gradient(90deg,transparent,var(--sc),transparent); opacity:.6}
 .rpg-sys .sys-info{display:grid; grid-template-columns:auto minmax(0,1fr); gap:1px 8px; font-size:.8em; text-align:left; align-items:baseline}
-.rpg-sys .sys-info .k{color:#8fb6d8; letter-spacing:.08em; font-size:.82em; white-space:nowrap}
-.rpg-sys .sys-info .v{color:#eaf6ff; font-weight:600; overflow-wrap:anywhere; min-width:0}
+.rpg-sys .sys-info .k{color:var(--t-8fb6d8, #8fb6d8); letter-spacing:.08em; font-size:.82em; white-space:nowrap}
+.rpg-sys .sys-info .v{color:var(--t-eaf6ff, #eaf6ff); font-weight:600; overflow-wrap:anywhere; min-width:0}
 .rpg-sys .sys-info .v.bad{color:#ff9a9a; text-shadow:0 0 6px rgba(255,80,80,.5)}
 .rpg-sys .sys-info .v.ok{color:#a6ecd0}
 .rpg-sys .sys-hero.clock{display:flex; align-items:center; gap:12px}
@@ -7500,6 +7511,7 @@ const SYS_CSS = `
 .rpg-sys .sys-clock svg{display:block; width:100%; height:100%}
 .rpg-sys .sys-clock.hat{width:76px; height:84px; filter:drop-shadow(0 0 5px rgba(150,190,255,.45))}
 .rpg-sys .sys-clock.hat.system{filter:drop-shadow(0 0 4px var(--sg))}
+.rpg-sys .sys-clock.pocket{filter:drop-shadow(0 0 4px var(--sg)) drop-shadow(0 2px 3px rgba(0,0,0,.5))}
 .rpg-sys .sys-hero.clock .sys-info{flex:1; min-width:0}
 .rpg-sys .sys-pick{position:relative; display:inline-block; max-width:100%; cursor:pointer}
 .rpg-sys .sys-pick select{position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; font-size:16px;
@@ -7507,112 +7519,652 @@ const SYS_CSS = `
 .rpg-sys .sys-caret{font-size:.5em; opacity:.7; margin-left:.35em; vertical-align:middle; text-shadow:none}
 
 .rpg-sys .sys-panels{display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:8px; margin-bottom:8px}
-.rpg-sys .sys-box{border:1px solid rgba(143,208,255,.42); padding:7px 10px; background:rgba(8,20,38,.45);
-  box-shadow:inset 0 0 12px rgba(60,140,230,.10); min-width:0}
+.rpg-sys .sys-box{border:1px solid rgba(var(--t-143_208_255, 143,208,255),.42); padding:7px 10px; background:rgba(var(--t-8_20_38, 8,20,38),.45);
+  box-shadow:inset 0 0 12px rgba(var(--t-60_140_230, 60,140,230),.10); min-width:0}
 .rpg-sys .sys-bar + .sys-bar{margin-top:6px}
-.rpg-sys .sys-bar-lab{display:flex; align-items:center; gap:5px; font-size:.72em; letter-spacing:.08em; color:#a9cbe8}
-.rpg-sys .sys-bar-lab .sys-svg{width:12px; height:12px; color:#e6f5ff; flex:0 0 auto}
-.rpg-sys .sys-bar-num{margin-left:auto; color:#dff1ff; letter-spacing:0; font-size:1.05em; white-space:nowrap}
-.rpg-sys .sys-cap{height:8px; margin-top:3px; border:1px solid rgba(190,230,255,.75); border-radius:6px; padding:1px;
-  box-sizing:border-box; box-shadow:0 0 6px var(--sg), inset 0 0 4px rgba(90,170,255,.3)}
-.rpg-sys .sys-cap i{display:block; height:100%; border-radius:4px; background:linear-gradient(90deg,#a9dcff,#f4fbff);
-  box-shadow:0 0 6px rgba(190,230,255,.9)}
+.rpg-sys .sys-bar-lab{display:flex; align-items:center; gap:5px; font-size:.72em; letter-spacing:.08em; color:var(--t-a9cbe8, #a9cbe8)}
+.rpg-sys .sys-bar-lab .sys-svg{width:12px; height:12px; color:var(--t-e6f5ff, #e6f5ff); flex:0 0 auto}
+.rpg-sys .sys-bar-num{margin-left:auto; color:var(--t-dff1ff, #dff1ff); letter-spacing:0; font-size:1.05em; white-space:nowrap}
+.rpg-sys .sys-cap{height:8px; margin-top:3px; border:1px solid rgba(var(--t-190_230_255, 190,230,255),.75); border-radius:6px; padding:1px;
+  box-sizing:border-box; box-shadow:0 0 6px var(--sg), inset 0 0 4px rgba(var(--t-90_170_255, 90,170,255),.3)}
+.rpg-sys .sys-cap i{display:block; height:100%; border-radius:4px; background:linear-gradient(90deg,var(--t-a9dcff, #a9dcff),var(--t-f4fbff, #f4fbff));
+  box-shadow:0 0 6px rgba(var(--t-190_230_255, 190,230,255),.9)}
 .rpg-sys .sys-cap.low i{background:linear-gradient(90deg,#ff6b6b,#ffb3b3); box-shadow:0 0 6px rgba(255,90,90,.9)}
 .rpg-sys .sys-cap.tint i{background:var(--mc); box-shadow:0 0 6px var(--mc)}
 .rpg-sys .sys-stats{display:grid; grid-template-columns:1fr 1fr; gap:6px 12px; align-content:center}
-.rpg-sys .sys-stat{display:flex; align-items:center; gap:5px; font-size:.78em; color:#a9cbe8; letter-spacing:.06em; min-width:0}
-.rpg-sys .sys-stat .sys-svg{width:14px; height:14px; color:#e6f5ff; filter:drop-shadow(0 0 3px var(--sg)); flex:0 0 auto}
-.rpg-sys .sys-stat b{margin-left:auto; font-size:1.3em; color:#f4fbff; text-shadow:0 0 8px var(--sg); letter-spacing:0; font-weight:600;
+.rpg-sys .sys-stat{display:flex; align-items:center; gap:5px; font-size:.78em; color:var(--t-a9cbe8, #a9cbe8); letter-spacing:.06em; min-width:0}
+.rpg-sys .sys-stat .sys-svg{width:14px; height:14px; color:var(--t-e6f5ff, #e6f5ff); filter:drop-shadow(0 0 3px var(--sg)); flex:0 0 auto}
+.rpg-sys .sys-stat b{margin-left:auto; font-size:1.3em; color:var(--t-f4fbff, #f4fbff); text-shadow:0 0 8px var(--sg); letter-spacing:0; font-weight:600;
   white-space:nowrap}
 
 .rpg-sys .sys-units + .sys-units{margin-top:8px}
 .rpg-sys .sys-sec{font-size:.82em; letter-spacing:.18em; color:var(--sc); text-shadow:0 0 6px var(--sg); margin:1px 0 5px;
-  padding-bottom:3px; border-bottom:1px solid rgba(143,208,255,.25)}
+  padding-bottom:3px; border-bottom:1px solid rgba(var(--t-143_208_255, 143,208,255),.25)}
 .rpg-sys .sys-sec.foe{color:#ff9a9a; text-shadow:0 0 6px rgba(255,80,80,.5); border-bottom-color:rgba(255,128,128,.3)}
 .rpg-sys .sys-unit{padding:3px 0 6px}
-.rpg-sys .sys-unit + .sys-unit{border-top:1px solid rgba(143,208,255,.12); padding-top:5px}
+.rpg-sys .sys-unit + .sys-unit{border-top:1px solid rgba(var(--t-143_208_255, 143,208,255),.12); padding-top:5px}
 .rpg-sys .sys-unit-head{display:flex; align-items:center; gap:8px; margin-bottom:3px}
-.rpg-sys .sys-unit-head .rpg-jump{cursor:pointer; color:#eaf6ff; font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis;
+.rpg-sys .sys-unit-head .rpg-jump{cursor:pointer; color:var(--t-eaf6ff, #eaf6ff); font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; text-shadow:0 0 6px var(--sg)}
 .rpg-sys .sys-unit-tag{margin-left:auto; display:flex; align-items:center; gap:3px; color:#f7b3cc; font-size:.9em; white-space:nowrap}
 .rpg-sys .sys-unit-tag .sys-svg{width:11px; height:11px}
 .rpg-sys .sys-mini{display:grid; grid-template-columns:30px minmax(0,1fr) auto; align-items:center; gap:6px; margin-top:2px}
-.rpg-sys .sys-mini .l{font-size:.78em; letter-spacing:.08em; color:#a9cbe8}
-.rpg-sys .sys-mini .n{font-size:.85em; color:#dff1ff; white-space:nowrap; min-width:58px; text-align:right}
+.rpg-sys .sys-mini .l{font-size:.78em; letter-spacing:.08em; color:var(--t-a9cbe8, #a9cbe8)}
+.rpg-sys .sys-mini .n{font-size:.85em; color:var(--t-dff1ff, #dff1ff); white-space:nowrap; min-width:58px; text-align:right}
 .rpg-sys .sys-cap.sm{height:7px; margin-top:0}
 .rpg-sys .sys-cap.foe{border-color:rgba(255,170,170,.75); box-shadow:0 0 6px rgba(255,80,80,.45)}
 .rpg-sys .sys-cap.foe i{background:linear-gradient(90deg,#ff6b6b,#ffc2c2); box-shadow:0 0 6px rgba(255,90,90,.85)}
 .rpg-sys .sys-foes{margin-top:6px; padding:6px 8px 2px; font-size:.8em; border:1px solid rgba(255,128,128,.35);
   background:rgba(40,8,14,.35); max-height:96px; overflow-y:auto}
-.rpg-sys .rpg-c-btns button{background:rgba(10,26,48,.9) !important; border:1px solid rgba(143,208,255,.55) !important;
-  color:#dff1ff !important; box-shadow:0 0 6px rgba(90,170,255,.2)}
-.rpg-sys #rpg-settings-overlay,.rpg-sys #rpg-info-overlay{background:#04090f !important; border-color:var(--sc) !important}
-.rpg-sys .rpg-c-li{border-bottom-color:rgba(143,208,255,.15)}
-.rpg-sys .rpg-c-ed .rpg-sao-ico{border-color:rgba(143,208,255,.45); background:rgba(10,26,48,.85); color:#dff1ff;
-  box-shadow:0 0 5px rgba(90,170,255,.18)}
+.rpg-sys .rpg-c-btns button{background:rgba(var(--t-10_26_48, 10,26,48),.9) !important; border:1px solid rgba(var(--t-143_208_255, 143,208,255),.55) !important;
+  color:var(--t-dff1ff, #dff1ff) !important; box-shadow:0 0 6px rgba(var(--t-90_170_255, 90,170,255),.2)}
+.rpg-sys #rpg-settings-overlay,.rpg-sys #rpg-info-overlay{background:var(--t-04090f, #04090f) !important; border-color:var(--sc) !important}
+.rpg-sys .rpg-c-li{border-bottom-color:rgba(var(--t-143_208_255, 143,208,255),.15)}
+.rpg-sys .rpg-c-ed .rpg-sao-ico{border-color:rgba(var(--t-143_208_255, 143,208,255),.45); background:rgba(var(--t-10_26_48, 10,26,48),.85); color:var(--t-dff1ff, #dff1ff);
+  box-shadow:0 0 5px rgba(var(--t-90_170_255, 90,170,255),.18)}
 .rpg-sys .rpg-c-ed button.rpg-sao-ico:hover{border-color:var(--sc); color:#fff}
-.rpg-sys .rpg-c-ed .rpg-sao-icopick{border-color:rgba(143,208,255,.35)}
+.rpg-sys .rpg-c-ed .rpg-sao-icopick{border-color:rgba(var(--t-143_208_255, 143,208,255),.35)}
 .rpg-sys .rpg-c-ed .rpg-sao-icopick .on,.rpg-sys .rpg-c-ed .rpg-sao-ledit-ico.picking{border-color:var(--sc); color:#fff;
   box-shadow:inset 0 0 0 1px var(--sc), 0 0 6px var(--sg)}
-.rpg-sys .rpg-c-ed .rpg-sao-ledit-ico.custom::after{background:var(--sc); box-shadow:0 0 0 1.5px #04090f, 0 0 5px var(--sg)}
-.rpg-sys .rpg-c-ed .rpg-sao-mini{background:rgba(10,26,48,.9); border-color:rgba(143,208,255,.5); color:#dff1ff}
+.rpg-sys .rpg-c-ed .rpg-sao-ledit-ico.custom::after{background:var(--sc); box-shadow:0 0 0 1.5px var(--t-04090f, #04090f), 0 0 5px var(--sg)}
+.rpg-sys .rpg-c-ed .rpg-sao-mini{background:rgba(var(--t-10_26_48, 10,26,48),.9); border-color:rgba(var(--t-143_208_255, 143,208,255),.5); color:var(--t-dff1ff, #dff1ff)}
 .rpg-sys .sys-ibtn{display:inline-grid; place-items:center; padding:0; margin:0; border:0; background:none; color:inherit;
   cursor:pointer; -webkit-tap-highlight-color:transparent; font:inherit; line-height:0}
 .rpg-sys .sys-ibtn:hover .sys-svg{color:#fff; filter:drop-shadow(0 0 4px var(--sg))}
 .rpg-sys .sys-medit{margin:-2px 0 8px}
 .rpg-sys .sys-addmeter-row{display:flex; justify-content:flex-end; margin-top:5px}
 .rpg-sys .sys-addmeter{padding:0; border:0; background:none; cursor:pointer; font:inherit; font-size:.62em; letter-spacing:.12em;
-  color:#6f93b5; -webkit-tap-highlight-color:transparent}
+  color:var(--t-6f93b5, #6f93b5); -webkit-tap-highlight-color:transparent}
 .rpg-sys .sys-addmeter:hover{color:var(--sc); text-shadow:0 0 6px var(--sg)}
-.rpg-sys .rpg-c-ed .rpg-sao-mini.primary{background:rgba(40,110,190,.55); border-color:var(--sc); color:#fff; box-shadow:0 0 6px var(--sg)}
+.rpg-sys .rpg-c-ed .rpg-sao-mini.primary{background:rgba(var(--t-40_110_190, 40,110,190),.55); border-color:var(--sc); color:#fff; box-shadow:0 0 6px var(--sg)}
 .rpg-sys .sys-medit .rpg-c-medit{margin:0; padding:0; border:0; font-size:.8em}
-.rpg-sys .rpg-c-ed .rpg-sao-mrow-edit{border-bottom-color:rgba(143,208,255,.15)}
-.rpg-sys .rpg-c-ed .rpg-sao-mrow-edit input[type=text]{background:rgba(6,16,30,.9); border-color:rgba(143,208,255,.35); color:#eaf6ff}
-.rpg-sys .rpg-c-ed .rpg-sao-m-auto,.rpg-sys .rpg-c-ed .rpg-sao-m-del,.rpg-sys .rpg-c-ed .rpg-sao-m-color{background:rgba(10,26,48,.9);
-  border-color:rgba(143,208,255,.4); color:#cfe6f8}
-.rpg-sys .rpg-c-ed .rpg-sao-ledit-text,.rpg-sys .rpg-c-ed .rpg-sao-mast-edit input[type=text]{background:rgba(6,16,30,.9);
-  border-color:rgba(143,208,255,.35); color:#eaf6ff}
+.rpg-sys .rpg-c-ed .rpg-sao-mrow-edit{border-bottom-color:rgba(var(--t-143_208_255, 143,208,255),.15)}
+.rpg-sys .rpg-c-ed .rpg-sao-mrow-edit input[type=text]{background:rgba(var(--t-6_16_30, 6,16,30),.9); border-color:rgba(var(--t-143_208_255, 143,208,255),.35); color:var(--t-eaf6ff, #eaf6ff)}
+.rpg-sys .rpg-c-ed .rpg-sao-m-auto,.rpg-sys .rpg-c-ed .rpg-sao-m-del,.rpg-sys .rpg-c-ed .rpg-sao-m-color{background:rgba(var(--t-10_26_48, 10,26,48),.9);
+  border-color:rgba(var(--t-143_208_255, 143,208,255),.4); color:var(--t-cfe6f8, #cfe6f8)}
+.rpg-sys .rpg-c-ed .rpg-sao-ledit-text,.rpg-sys .rpg-c-ed .rpg-sao-mast-edit input[type=text]{background:rgba(var(--t-6_16_30, 6,16,30),.9);
+  border-color:rgba(var(--t-143_208_255, 143,208,255),.35); color:var(--t-eaf6ff, #eaf6ff)}
 .rpg-sys .rpg-c-ed .rpg-sao-ledit-del,.rpg-sys .rpg-c-ed .rpg-sao-ms-del,.rpg-sys .rpg-c-ed .rpg-sao-ledit-lock,
-.rpg-sys .rpg-c-ed .rpg-sao-mv{background:rgba(10,26,48,.9); border-color:rgba(143,208,255,.4); color:#cfe6f8}
+.rpg-sys .rpg-c-ed .rpg-sao-mv{background:rgba(var(--t-10_26_48, 10,26,48),.9); border-color:rgba(var(--t-143_208_255, 143,208,255),.4); color:var(--t-cfe6f8, #cfe6f8)}
 
 #rpg-sys-notices{position:fixed; top:calc(env(safe-area-inset-top, 0px) + 14px); left:50%; transform:translateX(-50%);
   z-index:100003; display:flex; flex-direction:column; gap:8px; width:min(330px, calc(100vw - 24px)); pointer-events:none;
   font-size:15px}
 .rpg-sys-note{--sc:#8fd0ff; --sg:rgba(90,180,255,.55); pointer-events:auto; position:relative; cursor:pointer;
-  padding:10px 14px 12px; text-align:center; color:#e4f3ff; border:1px solid var(--sc);
-  background:repeating-linear-gradient(115deg, rgba(140,200,255,.05) 0 1px, transparent 1px 13px),
-    radial-gradient(120% 70% at 50% 0%, rgba(50,120,210,.28), transparent 65%), rgba(4,9,18,.95);
-  box-shadow:0 0 0 1px rgba(0,0,0,.5), 0 0 18px var(--sg), inset 0 0 0 3px rgba(4,9,18,.85), inset 0 0 0 4px rgba(143,208,255,.28);
+  padding:10px 14px 12px; text-align:center; color:var(--t-e4f3ff, #e4f3ff); border:1px solid var(--sc);
+  background:repeating-linear-gradient(115deg, rgba(var(--t-140_200_255, 140,200,255),.05) 0 1px, transparent 1px 13px),
+    radial-gradient(120% 70% at 50% 0%, rgba(50,120,210,.28), transparent 65%), rgba(var(--t-4_9_18, 4,9,18),.95);
+  box-shadow:0 0 0 1px rgba(0,0,0,.5), 0 0 18px var(--sg), inset 0 0 0 3px rgba(var(--t-4_9_18, 4,9,18),.85), inset 0 0 0 4px rgba(var(--t-143_208_255, 143,208,255),.28);
   transform-origin:50% 50%; animation:rpgSysIn .38s ease-out}
 .rpg-sys-note.warn{--sc:#ff8080; --sg:rgba(255,80,80,.5)}
 .rpg-sys-note .plate{display:inline-block; border:1px solid var(--sc); padding:2px 14px 1px calc(14px + .2em); margin-bottom:7px;
-  font-size:.78em; font-weight:600; letter-spacing:.2em; color:#f2faff; text-shadow:0 0 6px var(--sg); box-shadow:0 0 8px var(--sg)}
+  font-size:.78em; font-weight:600; letter-spacing:.2em; color:var(--t-f2faff, #f2faff); text-shadow:0 0 6px var(--sg); box-shadow:0 0 8px var(--sg)}
 .rpg-sys-note .msg{font-size:.92em; line-height:1.4; overflow-wrap:anywhere}
-.rpg-sys-note .msg b{color:#cfeaff; text-shadow:0 0 6px var(--sg); font-weight:600}
+.rpg-sys-note .msg b{color:var(--t-cfeaff, #cfeaff); text-shadow:0 0 6px var(--sg); font-weight:600}
 .rpg-sys-note.out{animation:rpgSysOut .3s ease-in forwards}
 @keyframes rpgSysIn{0%{opacity:0; transform:scale(.6,.05)} 55%{opacity:1; transform:scale(1.02,1.04)} 100%{transform:none}}
 @keyframes rpgSysOut{to{opacity:0; transform:scale(.9,.05)}}
 @media (prefers-reduced-motion: reduce){ .rpg-sys-note,.rpg-sys-note.out{animation-duration:.01s} }
 `;
 
+
+// ---- Gray Fog: a theme over the System layout ----------------------------
+// Charcoal fog, a pewter double frame with small flourishes at the corners,
+// a faint sigil behind the title and a scatter of stars. The sigil is our own
+// (rings, a long eight-point star and clock ticks), not any book's emblem.
+const FOG_FONT = "'EB Garamond','Cormorant Garamond',Georgia,'Times New Roman',serif";
+const FOG_WEBFONTS = "family=Cinzel:wght@500;600&family=EB+Garamond:wght@400;500;600&family=Grenze+Gotisch:wght@500;600";
+const fogSvgUrl = (svg) => `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+// The star, from your tracing (pixel units of that tracing, mirrored so both
+// sides match):
+//   K1     a wide kite: the upper diagonal points, meeting low in the middle
+//   H      a long level diamond: the left and right points
+//   K2     the lower diagonal points, rising towards the middle and dropping
+//          into the long bottom spike
+//   spike  the top spike, standing on the circle, with a second, inner spike
+//          nested in it that runs down to the empty ring in the middle
+// Every crossing is woven: one line goes over and the other breaks. By default
+// K1 lies over H, and H over K2, but K2's rising edges go over K1's long ones,
+// so the three interlace. The circle goes over or under each edge as traced.
+// Everything is drawn at full strength inside one faded group, so where lines
+// meet they don't add up to a brighter spot.
+const FOG_STAR_AXIS = 603;
+const FOG_STAR = {
+  K1: { pts: [[185, 410], [603, 530], [1021, 410], [603, 877]], closed: true, rank: 4 },
+  H: { pts: [[95, 635], [603, 475], [1111, 635], [603, 807]], closed: true, rank: 3 },
+  K2: { pts: [[358, 880], [603, 444], [848, 880], [728, 848], [603, 1140], [478, 848]], closed: true, rank: 2 },
+  spike: { pts: [[525, 258], [603, 32], [681, 258]], closed: false, rank: 6 },
+  inner: { pts: [[465, 488], [603, 98], [741, 488]], closed: false, rank: 5 },
+};
+const FOG_STAR_CIRCLE = { x: 603, y: 580, r: 340 };
+const FOG_STAR_HUB = { x: 603, y: 565, r: 112 };
+// edges the circle passes OVER, named by their left-hand end (mirrored edges share it)
+const FOG_CIRCLE_OVER = new Set(["95,635>603,807", "358,880>603,444"]);
+// the circle meets the side kites' upper wings edge-on (joined, not woven) and stops inside them
+const FOG_CIRCLE_JOIN = new Set(["185,410>603,530", "185,410>603,877"]);
+// crossings that break the default order: [upper edge, lower edge], same naming
+const FOG_OVER = [["358,880>603,444", "185,410>603,877"]];
+const FOG_STAR_K = 190 / 1108, fogSX = (x) => 100 + (x - FOG_STAR_AXIS) * FOG_STAR_K, fogSY = (y) => 100 + (y - 586) * FOG_STAR_K;
+
+function fogStarSvgBody() {
+  const f = (v) => v.toFixed(2);
+  const P = (pts, close) => `M${pts.map(([x, y]) => `${f(fogSX(x))} ${f(fogSY(y))}`).join(" L")}${close ? " Z" : ""}`;
+  const mirX = (x) => Math.min(x, 2 * FOG_STAR_AXIS - x);
+  const edgeName = (p, q) => { const [l, m] = p[0] <= q[0] ? [p, q] : [q, p]; return [`${mirX(l[0])},${l[1]}>${mirX(m[0])},${m[1]}`, `${mirX(m[0])},${m[1]}>${mirX(l[0])},${l[1]}`]; };
+  const named = (names, set) => names.some((n) => (set.has ? set.has(n) : set.includes(n)));
+  const unit = (dx, dy) => { const n = Math.hypot(dx, dy) || 1; return [dx / n, dy / n]; };
+  const { x: cx, y: cy, r } = FOG_STAR_CIRCLE;
+
+  // where lines end on other lines, they end exactly on them
+  const shapes = JSON.parse(JSON.stringify(FOG_STAR));
+  const meet = (p, q, a, b) => {                       // where line p-q meets line a-b
+    const r1 = [q[0] - p[0], q[1] - p[1]], r2 = [b[0] - a[0], b[1] - a[1]], den = r1[0] * r2[1] - r1[1] * r2[0];
+    const t = ((a[0] - p[0]) * r2[1] - (a[1] - p[1]) * r2[0]) / den;
+    return [p[0] + r1[0] * t, p[1] + r1[1] * t];
+  };
+  const K1 = shapes.K1.pts, apex = shapes.inner.pts[1];
+  shapes.inner.pts[0] = meet(apex, shapes.inner.pts[0], K1[0], K1[1]);
+  shapes.inner.pts[2] = meet(apex, shapes.inner.pts[2], K1[2], K1[1]);
+  const top = shapes.spike.pts[1];
+  [0, 2].forEach((i) => {                               // the top spike's feet land on the circle
+    const [ux, uy] = unit(shapes.spike.pts[i][0] - top[0], shapes.spike.pts[i][1] - top[1]);
+    const fx = top[0] - cx, fy = top[1] - cy, B = 2 * (fx * ux + fy * uy), C = fx * fx + fy * fy - r * r;
+    const t0 = (-B - Math.sqrt(B * B - 4 * C)) / 2, t = t0 + 2 / FOG_STAR_K;    // a little past it; trimmed below
+    shapes.spike.pts[i] = [top[0] + ux * t, top[1] + uy * t];
+  });
+
+  const edges = [];
+  Object.entries(shapes).forEach(([shape, { pts, closed, rank }]) => {
+    const n = closed ? pts.length : pts.length - 1;
+    for (let i = 0; i < n; i++) {
+      const p = pts[i], q = pts[(i + 1) % pts.length];
+      edges.push({ shape, rank, p, q, names: edgeName(p, q), dir: unit(q[0] - p[0], q[1] - p[1]) });
+    }
+  });
+  // A break is cut along the line that passes over, so the broken ends run
+  // parallel to it instead of ending square. { at, along, sin } per break.
+  const cuts = { circle: [] };
+  Object.keys(shapes).forEach((k) => { cuts[k] = []; });
+  const segX = (a, b) => {
+    const r1 = [a.q[0] - a.p[0], a.q[1] - a.p[1]], r2 = [b.q[0] - b.p[0], b.q[1] - b.p[1]];
+    const den = r1[0] * r2[1] - r1[1] * r2[0];
+    if (Math.abs(den) < 1e-9) return null;
+    const t = ((b.p[0] - a.p[0]) * r2[1] - (b.p[1] - a.p[1]) * r2[0]) / den;
+    const u = ((b.p[0] - a.p[0]) * r1[1] - (b.p[1] - a.p[1]) * r1[0]) / den;
+    if (t <= .01 || t >= .99 || u <= .01 || u >= .99) return null;     // shared corners and end-on meetings aren't crossings
+    return [a.p[0] + r1[0] * t, a.p[1] + r1[1] * t];
+  };
+  const sinOf = (d1, d2) => Math.abs(d1[0] * d2[1] - d1[1] * d2[0]);
+  for (let i = 0; i < edges.length; i++) for (let j = i + 1; j < edges.length; j++) {
+    const a = edges[i], b = edges[j];
+    if (a.shape === b.shape) continue;
+    const x = segX(a, b);
+    if (!x) continue;
+    const aOver = FOG_OVER.some(([o, u]) => named(a.names, [o]) && named(b.names, [u]))
+      || (!FOG_OVER.some(([o, u]) => named(b.names, [o]) && named(a.names, [u])) && a.rank > b.rank);
+    const [over, under] = aOver ? [a, b] : [b, a];
+    cuts[under.shape].push({ at: x, along: over.dir, under: under.dir });
+  }
+  edges.forEach((e) => {
+    if (e.shape === "spike" || e.shape === "inner") return;      // those sit on, or inside, the circle
+    const dx = e.q[0] - e.p[0], dy = e.q[1] - e.p[1], fx = e.p[0] - cx, fy = e.p[1] - cy;
+    const A = dx * dx + dy * dy, B = 2 * (fx * dx + fy * dy), C = fx * fx + fy * fy - r * r, D = B * B - 4 * A * C;
+    if (D <= 0) return;
+    [(-B - Math.sqrt(D)) / (2 * A), (-B + Math.sqrt(D)) / (2 * A)].forEach((t) => {
+      if (t < 0 || t > 1) return;
+      const pt = [e.p[0] + dx * t, e.p[1] + dy * t], tan = [-(pt[1] - cy) / r, (pt[0] - cx) / r];
+      if (named(e.names, FOG_CIRCLE_JOIN)) return;
+      if (named(e.names, FOG_CIRCLE_OVER)) cuts[e.shape].push({ at: pt, along: tan, under: e.dir });
+      else cuts.circle.push({ at: pt, along: e.dir, under: tan, curved: true });
+    });
+  });
+  // two breaks in the circle close together leave a sliver: clear the arc between them
+  const arcs = [];
+  cuts.circle.forEach((a, i) => cuts.circle.slice(i + 1).forEach((b) => {
+    if (Math.hypot(a.at[0] - b.at[0], a.at[1] - b.at[1]) * FOG_STAR_K >= 17 || a.at[1] > cy + 40 || b.at[1] > cy + 40) return;
+    let a1 = Math.atan2(a.at[1] - cy, a.at[0] - cx), a2 = Math.atan2(b.at[1] - cy, b.at[0] - cx);
+    if (Math.abs(a2 - a1) > Math.PI) a2 += a2 < a1 ? 2 * Math.PI : -2 * Math.PI;
+    arcs.push([Math.min(a1, a2), Math.max(a1, a2)]);
+  }));
+
+  const GAP = 5.4;                                      // width of a break, in the 200-unit drawing
+  const R = r * FOG_STAR_K, CX = fogSX(cx), CY = fogSY(cy);
+  // The cut is a parallelogram: its sides run along the line passing over (so the
+  // broken ends are slanted to match it) and along the broken line itself (so it
+  // never nicks a neighbouring line, however shallow the crossing).
+  const cutEl = ({ at, along: o, under: u, curved }) => {
+    const c = Math.max(.12, Math.abs(o[0] * u[1] - o[1] * u[0])), t = GAP / 2 / c;
+    const w = 1.15 + .7 + (curved ? t * t / (2 * R) : 0), sI = w / c;
+    const x = fogSX(at[0]), y = fogSY(at[1]);
+    const pt = (a, b) => `${f(x + o[0] * a + u[0] * b)} ${f(y + o[1] * a + u[1] * b)}`;
+    return `<path d="M${pt(sI, t)} L${pt(sI, -t)} L${pt(-sI, -t)} L${pt(-sI, t)} Z" fill="#000" stroke="none"/>`;
+  };
+  const arcEl = ([a1, a2]) => `<path d="M${f(CX + R * Math.cos(a1))} ${f(CY + R * Math.sin(a1))} A${f(R)} ${f(R)} 0 0 1 ${f(CX + R * Math.cos(a2))} ${f(CY + R * Math.sin(a2))}"
+      stroke="#000" stroke-width="${GAP}" stroke-linecap="butt" fill="none"/>`;
+  const hub = FOG_STAR_HUB, hubR = hub.r * FOG_STAR_K;
+  const clearHub = `<circle cx="${f(fogSX(hub.x))}" cy="${f(fogSY(hub.y))}" r="${f(hubR + 4.4)}" fill="#000" stroke="none"/>`;
+  // the inner spike stops along the far side of the kite's edge it lands on
+  const off = 1.15 / FOG_STAR_K, k1 = shapes.K1.pts;
+  const belowK1 = `<path d="${P([[k1[0][0], k1[0][1] + off], [k1[1][0], k1[1][1] + off], [k1[2][0], k1[2][1] + off], [k1[2][0] + 400, 2000], [k1[0][0] - 400, 2000]], true)}" fill="#000" stroke="none"/>`;
+  const mask = (id, inner) => `<mask id="${id}" maskUnits="userSpaceOnUse" x="0" y="0" width="200" height="200"><rect width="200" height="200" fill="#fff" stroke="none"/>${inner}</mask>`;
+  const area = (pts) => `<path d="${P(pts, true)}" fill="#000" stroke="none"/>`;
+  // the circle stops at the outside of a spike's edge, so the two meet cleanly
+  const areaAndEdge = (pts) => `<path d="${P(pts, true)}" fill="#000" stroke="#000" stroke-width="2.3" stroke-linejoin="miter"/>`;
+  // the top spike's feet end along the inside of the circle's line, following its curve
+  const insideCircle = `<circle cx="${f(fogSX(cx))}" cy="${f(fogSY(cy))}" r="${f(r * FOG_STAR_K - 1.15)}" fill="#000" stroke="none"/>`;
+  const masks = Object.keys(shapes).map((k) => mask(`m-${k}`,
+      cuts[k].map(cutEl).join("") + (k === "spike" ? insideCircle : clearHub) + (k === "inner" ? belowK1 : ""))).join("")
+    // the circle doesn't show inside either spike
+    + mask("m-circle", cuts.circle.map(cutEl).join("") + arcs.map(arcEl).join("")
+      + area(shapes.spike.pts) + area(shapes.K1.pts) + areaAndEdge([[478, 848], [603, 1140], [728, 848]]));
+  const lines = Object.entries(shapes).map(([k, { pts, closed }]) => `<path d="${P(pts, closed)}" mask="url(#m-${k})"/>`).join("");
+  return `<defs>${masks}</defs>
+    <g opacity=".27" stroke-width="2.3">
+      <circle cx="${f(CX)}" cy="${f(CY)}" r="${f(R)}" mask="url(#m-circle)"/>
+      ${lines}
+      <circle cx="${f(fogSX(hub.x))}" cy="${f(fogSY(hub.y))}" r="${f(hubR)}" stroke-width="2.1"/>
+    </g>`;
+}
+const FOG_SIGIL = fogSvgUrl(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" fill="none" stroke="#e6e8ef" stroke-linejoin="miter" stroke-miterlimit="20">
+  ${fogStarSvgBody()}
+</svg>`);
+const fogStar = (x, y, r, o) => `<path d="M${x} ${y - r} L${x + r * .22} ${y - r * .22} L${x + r} ${y} L${x + r * .22} ${y + r * .22} L${x} ${y + r} L${x - r * .22} ${y + r * .22} L${x - r} ${y} L${x - r * .22} ${y - r * .22} Z" fill="#fff" fill-opacity="${o}"/>`;
+const FOG_STARS = fogSvgUrl(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 600" preserveAspectRatio="none">
+  ${fogStar(38, 70, 5, .55)}${fogStar(262, 46, 4, .5)}${fogStar(214, 132, 3, .45)}${fogStar(70, 188, 2.5, .35)}
+  ${fogStar(280, 250, 3.5, .35)}${fogStar(22, 330, 3, .3)}${fogStar(246, 420, 2.5, .3)}${fogStar(120, 22, 2.5, .4)}
+  <circle cx="160" cy="92" r="1" fill="#fff" fill-opacity=".5"/><circle cx="96" cy="120" r=".8" fill="#fff" fill-opacity=".4"/>
+  <circle cx="232" cy="208" r=".9" fill="#fff" fill-opacity=".35"/><circle cx="48" cy="262" r=".8" fill="#fff" fill-opacity=".3"/>
+</svg>`);
+// one corner, drawn top-left; the others are this flipped
+const fogCorner = (t) => fogSvgUrl(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 30" fill="none" stroke="#d3d5de" stroke-linecap="round">
+  <g transform="${t}">
+    <path d="M3 22 V3 H22" stroke-opacity=".55" stroke-width="1"/>
+    <path d="M7 15 V7 H15" stroke-opacity=".45" stroke-width=".9"/>
+    <path d="M7 7 L11 11" stroke-opacity=".6" stroke-width=".9"/>
+    <path d="M3 3 L6 6" stroke-opacity=".6" stroke-width=".9"/>
+    <path d="M11 11 l2.2 -2.2 l2.2 2.2 l-2.2 2.2 Z" fill="#d3d5de" fill-opacity=".55" stroke-opacity=".7" stroke-width=".7" transform="translate(-1 1)"/>
+    <path d="M3 22 q0 4 3 5" stroke-opacity=".45" stroke-width=".9"/><path d="M22 3 q4 0 5 3" stroke-opacity=".45" stroke-width=".9"/>
+  </g></svg>`);
+const FOG_CORNERS = {
+  tl: fogCorner(""), tr: fogCorner("translate(30 0) scale(-1 1)"),
+  bl: fogCorner("translate(0 30) scale(1 -1)"), br: fogCorner("translate(30 30) scale(-1 -1)"),
+};
+
+const FOG_VARS = `
+  --sc:#cfd2dc; --sg:rgba(200,205,225,.28); --st:rgba(190,195,215,.14);
+  --t-143_208_255:200,204,214; --t-10_26_48:30,30,37; --t-4_9_18:16,16,20; --t-90_170_255:168,156,205;
+  --t-140_200_255:210,214,225; --t-60_140_230:120,112,150; --t-190_230_255:222,224,232; --t-6_16_30:20,20,26;
+  --t-40_90_180:80,74,108; --t-12_30_56:34,34,42; --t-8_20_38:26,26,32; --t-40_110_190:104,88,146; --t-4_12_24:18,18,23;
+  --t-dff1ff:#e9e8ee; --t-eaf6ff:#efeef3; --t-f4fbff:#f6f5f8; --t-a9cbe8:#b3b1bf; --t-f2faff:#f3f2f6; --t-e6f5ff:#e7e6ec;
+  --t-04090f:#0e0e12; --t-cfe6f8:#d4d3dc; --t-6d8aa5:#7d7b88; --t-d6e8f7:#dbdae2; --t-8fb6d8:#a4a2b0; --t-a9dcff:#a9a7b6;
+  --t-6f93b5:#8a8898; --t-e4f3ff:#e7e6ec; --t-cfeaff:#dcdae5; --t-8aa3b8:#8f8d9b;
+  --t-0d1a2c:#1d1d24; --t-3d6a94:#5c5a6a; --t-9fc6e6:#aeacba;`;
+
+const FOG_CSS = `
+.rpg-sys.rpg-fog, .rpg-sys-note.fog {${FOG_VARS}}
+.rpg-sys.rpg-fog.rpg-sys-enemy{--sc:#d0767c; --sg:rgba(200,60,70,.32)}
+.rpg-sys.rpg-fog.rpg-sys-veh{--sc:#b9a3dc; --sg:rgba(160,130,210,.32)}
+.rpg-sys.rpg-fog{
+  --sys-bg:${FOG_STARS} 0 0 / 100% 600px no-repeat,
+    radial-gradient(55% 30% at 50% 10%, rgba(214,218,232,.17), transparent 72%),
+    radial-gradient(75% 35% at 12% 88%, rgba(150,150,166,.13), transparent 70%),
+    radial-gradient(60% 40% at 92% 58%, rgba(112,92,152,.14), transparent 70%),
+    linear-gradient(180deg, #2c2e35 0%, #1f2026 42%, #141418 100%);
+  --sys-shadow:0 0 0 1px rgba(0,0,0,.6), 0 4px 22px rgba(0,0,0,.55), 0 0 12px var(--sg),
+    inset 0 0 0 4px rgba(20,20,25,.85), inset 0 0 0 5px rgba(205,208,218,.30), inset 0 0 40px rgba(0,0,0,.35);
+  font-family:${FOG_FONT}}
+.rpg-sys.rpg-fog::before,.rpg-sys.rpg-fog::after{border:0; filter:none; width:auto; height:30px; left:3px; right:3px; z-index:-1;
+  background-repeat:no-repeat; background-size:30px 30px}
+.rpg-sys.rpg-fog::before{top:3px; bottom:auto; background-image:${FOG_CORNERS.tl},${FOG_CORNERS.tr}; background-position:left top, right top}
+.rpg-sys.rpg-fog::after{bottom:3px; top:auto; background-image:${FOG_CORNERS.bl},${FOG_CORNERS.br}; background-position:left bottom, right bottom}
+
+.rpg-fog .sys-plate{font-family:Cinzel,${FOG_FONT}; font-weight:600; font-size:1.05em; letter-spacing:.32em;
+  padding:4px 16px 3px calc(16px + .32em); background:rgba(18,18,23,.6); border-color:rgba(214,217,226,.7);
+  box-shadow:0 0 0 3px rgba(18,18,23,.75), 0 0 0 4px rgba(214,217,226,.25), 0 0 14px var(--sg); text-shadow:0 0 8px var(--sg)}
+.rpg-fog .sys-plate::before,.rpg-fog .sys-plate::after{content:"\\2726"; font-size:.6em; opacity:.75; letter-spacing:0; vertical-align:.15em}
+.rpg-fog .sys-plate::before{margin-right:.6em} .rpg-fog .sys-plate::after{margin-left:.3em}
+.rpg-fog .sys-kind{font-family:Cinzel,${FOG_FONT}; letter-spacing:.2em}
+.rpg-fog .fog-num{font-family:Cinzel,${FOG_FONT}; font-weight:600; text-align:center; font-size:.86em; letter-spacing:.3em; color:#d6d4de;
+  margin:-2px 0 2px; text-shadow:0 0 4px #000, 0 0 10px rgba(0,0,0,.8), 0 0 8px var(--sg)}
+.rpg-fog .sys-big{font-family:'Grenze Gotisch','UnifrakturMaguntia',Cinzel,${FOG_FONT}; font-weight:500; letter-spacing:.03em;
+  text-shadow:0 0 6px rgba(0,0,0,.9), 0 0 14px rgba(0,0,0,.6), 0 0 12px var(--sg)}
+.rpg-fog .sys-rule{background:linear-gradient(90deg,transparent,var(--sc) 30%,var(--sc) 70%,transparent); opacity:.45; position:relative}
+.rpg-fog .sys-info .k,.rpg-fog .sys-bar-lab,.rpg-fog .sys-stat,.rpg-fog .sys-sec,.rpg-fog .sys-tabhead > span:first-child,
+.rpg-fog .sys-mini .l{font-family:Cinzel,${FOG_FONT}}
+.rpg-fog .sys-info{font-size:.86em}
+.rpg-fog .sys-info .v{font-weight:500}
+.rpg-fog .sys-info .v.ok{color:#b9d6c4}
+.rpg-fog .sys-box{border-color:rgba(205,208,218,.32); background:rgba(14,14,18,.38);
+  box-shadow:inset 0 0 0 2px rgba(14,14,18,.6), inset 0 0 0 3px rgba(205,208,218,.12)}
+.rpg-fog .sys-stat b{font-family:${FOG_FONT}; font-weight:600}
+.rpg-fog .sys-cap{border-radius:1px; border-color:rgba(214,217,226,.6); box-shadow:0 0 4px var(--sg)}
+.rpg-fog .sys-cap i{border-radius:0; background:linear-gradient(90deg,#8d8a9a,#eceaf2); box-shadow:0 0 5px rgba(225,225,235,.55)}
+.rpg-fog .sys-cap.mp i{background:linear-gradient(90deg,#5d4a8c,#b6a3dc); box-shadow:0 0 6px rgba(150,120,210,.6)}
+.rpg-fog .sys-cap.low i{background:linear-gradient(90deg,#7c1d29,#d4636c); box-shadow:0 0 6px rgba(190,50,60,.7)}
+.rpg-fog .sys-cap.foe i{background:linear-gradient(90deg,#7c1d29,#d4636c); box-shadow:0 0 6px rgba(190,50,60,.7)}
+.rpg-fog .sys-cap.foe{border-color:rgba(220,140,145,.65)}
+.rpg-fog .sys-foes{border-color:rgba(200,110,115,.35); background:rgba(40,12,16,.35)}
+.rpg-fog .sys-svg{stroke-width:1.4}
+.rpg-fog .sys-clock{filter:drop-shadow(0 0 4px var(--sg))}
+
+#rpg-sys-notices .rpg-sys-note.fog{font-family:${FOG_FONT}; border-color:rgba(214,217,226,.75); border-radius:0;
+  background:radial-gradient(90% 70% at 50% 0%, rgba(214,218,232,.16), transparent 70%), linear-gradient(180deg,#2a2b31,#18181c);
+  box-shadow:0 0 0 1px rgba(0,0,0,.5), 0 6px 22px rgba(0,0,0,.5), inset 0 0 0 3px rgba(20,20,25,.85), inset 0 0 0 4px rgba(205,208,218,.28)}
+#rpg-sys-notices .rpg-sys-note.fog.warn{--sc:#d0767c; --sg:rgba(200,60,70,.35); border-color:rgba(208,118,124,.8)}
+.rpg-sys-note.fog .plate{font-family:Cinzel,${FOG_FONT}; letter-spacing:.28em; border-color:rgba(214,217,226,.6); box-shadow:0 0 10px var(--sg)}
+.rpg-sys-note.fog .msg{font-size:1em}
+.rpg-sys-note.fog .msg b{color:#f1eff6; font-weight:600}
+`;
+
+// ---- the tarot number under the title ----
+function toRoman(n) {
+  n = Math.floor(Number(n));
+  if (!Number.isFinite(n) || n < 0 || n > 3999) return "";
+  if (n === 0) return "0";                     // the Fool's card is 0, there's no Roman zero
+  const map = [[1000, "M"], [900, "CM"], [500, "D"], [400, "CD"], [100, "C"], [90, "XC"], [50, "L"], [40, "XL"], [10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"]];
+  let out = "";
+  for (const [v, r] of map) while (n >= v) { out += r; n -= v; }
+  return out;
+}
+// a Sequence the card tracks: a meter or a stat called Sequence (or Seq)
+function fogSequenceOf(display) {
+  const m = (Array.isArray(display?.meters) ? display.meters : []).find((x) => /^seq(uence)?$/i.test(String(x?.name || "").trim()));
+  if (m) return tNum(m.curr);
+  const st = display?.stats || {};
+  const k = Object.keys(st).find((x) => /^seq(uence)?$/i.test(x));
+  return k ? tNum(st[k]) : null;
+}
+function fogNumberHtml(display, time) {
+  const mode = uiSettings.fogNumber || "auto";
+  if (mode === "none") return "";
+  const seq = mode === "day" ? null : fogSequenceOf(display);
+  let n = seq;
+  let title = seq !== null ? `Sequence ${seq}` : "";
+  if (n === null && mode !== "sequence") { n = parseInt(time?.day, 10); title = `Day ${n} of the month`; }
+  const r = n === null || !Number.isFinite(n) ? "" : toRoman(n);
+  return r ? `<div class="fog-num" title="${escAttr(title)}">\u2014 ${r} \u2014</div>` : "";
+}
+
+function fogEnsureWebFont() {
+  const href = `https://fonts.googleapis.com/css2?${FOG_WEBFONTS}&display=swap`;
+  let link = document.getElementById("rpg-fog-webfont");
+  if (link && link.getAttribute("href") === href) return;
+  if (!link) {
+    link = document.createElement("link");
+    link.id = "rpg-fog-webfont";
+    link.rel = "stylesheet";
+    document.head.appendChild(link);
+  }
+  link.href = href;
+}
+
+
+// ---- background images (System and Gray Fog) -----------------------------
+// Up to six pictures stacked behind the top of the panel, bottom to top: Gray
+// Fog's built-in star, images from links, images you upload. Each layer
+// has its own size, position, angle, opacity, shape, soft edges, colour and
+// blend, adjusted live from a small editor at the bottom of the panel so the
+// top stays in view. Layers are per skin. An uploaded picture is shrunk and
+// kept on this device (a link works on every device you paste it into).
+const EMBLEM_MAX = 6;
+const EMBLEM_LAYER_DEFAULT = { src: "upload", url: "", size: 55, x: 0, y: 0, rot: 0, op: 60, shape: "none", soft: false, tone: "original", blend: "normal" };
+const EMBLEM_BUILTIN_DEFAULT = { src: "builtin", url: "", size: 77, x: 0, y: -13, rot: 0, op: 100, shape: "none", soft: false, tone: "original", blend: "normal" };
+const emblemImgKey = (skin, id) => id === "legacy" ? `rpgHud:emblemImg:${skin}` : `rpgHud:emblemImg:${skin}:${id}`;
+const emblemImgCache = {};
+let emblemEditOpen = false;
+let emblemSel = 0;
+
+// the layer list for a skin; older single-image settings are read as one layer
+function emblemLayers(skin = uiSettings.skin) {
+  const saved = uiSettings.emblemLayers?.[skin];
+  if (Array.isArray(saved)) return saved.map((l) => ({ ...EMBLEM_LAYER_DEFAULT, ...l }));
+  const old = uiSettings.emblems?.[skin];
+  if (old) {
+    const base = skin === "fog" ? EMBLEM_BUILTIN_DEFAULT : { ...EMBLEM_LAYER_DEFAULT, src: "none", size: 70, y: -8, op: 30, soft: true };
+    const l = { ...base, ...old, id: "legacy" };
+    return l.src === "none" ? [] : [l];
+  }
+  return skin === "fog" ? [{ ...EMBLEM_BUILTIN_DEFAULT, id: "builtin" }] : [];
+}
+function saveEmblemLayers(layers, save = true, skin = uiSettings.skin) {
+  uiSettings.emblemLayers = { ...(uiSettings.emblemLayers || {}), [skin]: layers };
+  if (uiSettings.emblems?.[skin]) { uiSettings.emblems = { ...uiSettings.emblems }; delete uiSettings.emblems[skin]; }
+  if (save) saveUiSettings();
+}
+function setEmblemLayer(i, patch, save = true, skin = uiSettings.skin) {
+  const layers = emblemLayers(skin);
+  if (!layers[i]) return;
+  layers[i] = { ...layers[i], ...patch };
+  saveEmblemLayers(layers, save, skin);
+}
+function emblemUpload(skin, id) {
+  const k = emblemImgKey(skin, id);
+  if (!(k in emblemImgCache)) {
+    try { emblemImgCache[k] = localStorage.getItem(k) || ""; } catch { emblemImgCache[k] = ""; }
+  }
+  return emblemImgCache[k];
+}
+// a CSS url() that can't be broken out of, whatever the link contains
+const cssUrl = (u) => `url("${String(u).replace(/["\\\n\r]/g, (c) => "\\" + c.charCodeAt(0).toString(16) + " ")}")`;
+function emblemBackground(l, skin) {
+  if (l.src === "builtin") return FOG_SIGIL;
+  if (l.src === "url") return /^https?:\/\/\S+$/i.test(String(l.url).trim()) ? cssUrl(l.url.trim()) : "";
+  if (l.src === "upload") { const d = emblemUpload(skin, l.id); return d ? cssUrl(d) : ""; }
+  return "";
+}
+const EMBLEM_SHAPES = {
+  circle: "circle(50%)", rounded: "inset(0 round 16%)",
+  diamond: "polygon(50% 0, 100% 50%, 50% 100%, 0 50%)",
+  hexagon: "polygon(25% 4%, 75% 4%, 100% 50%, 75% 96%, 25% 96%, 0 50%)",
+};
+function emblemLayersHtml() {
+  return emblemLayers().map((_, i) => `<div class="sys-emblem" data-layer="${i}"></div>`).join("");
+}
+function applyEmblem(container) {
+  if (!container) return;
+  const skin = uiSettings.skin, layers = emblemLayers(skin);
+  const W = container.clientWidth || 300;
+  container.querySelectorAll(".sys-emblem[data-layer]").forEach((el) => {
+    const l = layers[+el.dataset.layer];
+    const bg = l ? emblemBackground(l, skin) : "";
+    if (!bg) { el.style.display = "none"; return; }
+    const size = W * l.size / 100, clip = EMBLEM_SHAPES[l.shape] || "none";
+    const mask = l.soft ? "radial-gradient(closest-side, #000 55%, transparent 100%)" : "none";
+    Object.assign(el.style, {
+      display: "block", width: `${size}px`, height: `${size}px`, top: `${(W * l.y / 100).toFixed(1)}px`,
+      left: `calc(50% + ${(W * l.x / 100).toFixed(1)}px)`, transform: `translateX(-50%) rotate(${l.rot}deg)`,
+      backgroundImage: bg, backgroundSize: l.shape === "none" ? "contain" : "cover",
+      opacity: String(l.op / 100), clipPath: clip, webkitClipPath: clip, maskImage: mask, webkitMaskImage: mask,
+      filter: l.tone === "silver" ? "grayscale(1) brightness(1.05) contrast(.95)" : l.tone === "dim" ? "grayscale(.5) brightness(.75)" : "none",
+      mixBlendMode: l.blend === "screen" ? "screen" : l.blend === "soft" ? "soft-light" : "normal",
+    });
+  });
+}
+
+const EMBLEM_SLIDERS = [
+  ["size", "Size", 10, 200, "%"], ["x", "Left / right", -60, 60, ""], ["y", "Up / down", -60, 140, ""],
+  ["rot", "Rotate", -180, 180, "°"], ["op", "Opacity", 5, 100, "%"],
+];
+const EMBLEM_SRC_LABEL = { builtin: "Star", url: "Link", upload: "Upload" };
+function emblemEditorHtml() {
+  const skin = uiSettings.skin, layers = emblemLayers(skin);
+  if (emblemSel >= layers.length) emblemSel = Math.max(0, layers.length - 1);
+  const l = layers[emblemSel];
+  const opt = (v, t, cur) => `<option value="${v}"${cur === v ? " selected" : ""}>${t}</option>`;
+  const sel = (id, label, cur, opts) => `<label class="em-row"><span>${label}</span><select id="${id}">${opts.map(([v, t]) => opt(v, t, cur)).join("")}</select></label>`;
+  const chips = layers.map((x, i) => `<button class="em-chip${i === emblemSel ? " on" : ""}" data-i="${i}" title="Layer ${i + 1}">${i + 1} · ${EMBLEM_SRC_LABEL[x.src] || x.src}</button>`).join("");
+  const tools = `<div class="em-row em-layers">${chips || `<span class="em-none">No images.</span>`}
+      ${layers.length < EMBLEM_MAX ? `<button id="em-add" title="Add a layer on top">+ Add</button>` : ""}</div>`;
+  if (!l) return `<div id="rpg-emblem-ed" class="rpg-emblem-ed">
+      <div class="em-head"><span>BACKGROUND IMAGES</span><button id="em-done">Done</button></div>${tools}
+      <p class="em-hint">Add a layer to use the star, a picture from a link, or one from this device. Layers stack bottom to top.</p></div>`;
+  return `<div id="rpg-emblem-ed" class="rpg-emblem-ed">
+      <div class="em-head"><span>BACKGROUND IMAGES</span><button id="em-done">Done</button></div>
+      ${tools}
+      <div class="em-row em-btns">
+        <button id="em-down" ${emblemSel === 0 ? "disabled" : ""} title="Move this layer down">◀ Lower</button>
+        <button id="em-up" ${emblemSel >= layers.length - 1 ? "disabled" : ""} title="Move this layer up">Raise ▶</button>
+        <button id="em-remove" title="Remove this layer">✕ Remove</button>
+      </div>
+      ${sel("em-src", "Image", l.src, [["builtin", "Star (built in)"], ["url", "From a link"], ["upload", "Upload from this device"]])}
+      ${l.src === "url" ? `<div class="em-row"><input id="em-url" type="url" inputmode="url" placeholder="https://example.com/image.png" value="${escAttr(l.url)}"><button id="em-url-go">Use</button></div>` : ""}
+      ${l.src === "upload" ? `<div class="em-row"><button id="em-pick">${emblemUpload(skin, l.id) ? "Replace image…" : "Choose image…"}</button>
+        <input id="em-file" type="file" accept="image/*" style="display:none"></div>` : ""}
+      ${EMBLEM_SLIDERS.map(([k, label, min, max, unit]) => `<label class="em-row"><span>${label}</span>
+        <input type="range" class="em-slide" data-k="${k}" data-unit="${unit}" min="${min}" max="${max}" step="1" value="${l[k]}"><b>${l[k]}${unit}</b></label>`).join("")}
+      ${sel("em-shape", "Shape", l.shape, [["none", "As it is"], ["circle", "Circle"], ["rounded", "Rounded square"], ["diamond", "Diamond"], ["hexagon", "Hexagon"]])}
+      ${sel("em-soft", "Edges", l.soft ? "soft" : "hard", [["hard", "Sharp"], ["soft", "Fade out"]])}
+      ${sel("em-tone", "Colour", l.tone, [["original", "Original"], ["silver", "Silver (greyscale)"], ["dim", "Dimmed"]])}
+      ${sel("em-blend", "Blend", l.blend, [["normal", "Normal"], ["screen", "Glow (dark parts vanish)"], ["soft", "Soft light"]])}
+      <div class="em-row em-btns"><button id="em-reset">Reset this layer's position and look</button></div>
+      <p class="em-hint">Layers stack bottom to top. ${l.src === "url" ? "Any public image link; some sites block showing their images elsewhere, and if yours stays blank, save it and use Upload. "
+        : l.src === "upload" ? "Kept on this device only, shrunk to keep it light. For every device, use a link instead. " : ""}Glow suits a light picture on a black background.</p>
+    </div>`;
+}
+
+function bindEmblemEditor(container) {
+  const box = container.querySelector("#rpg-emblem-ed");
+  if (!box) return;
+  box.onclick = (e) => e.stopPropagation();
+  box.onkeydown = (e) => e.stopPropagation();
+  const skin = uiSettings.skin, i = emblemSel;
+  const layer = () => emblemLayers(skin)[emblemSel];
+  box.querySelectorAll(".em-slide").forEach((el) => {
+    el.oninput = () => {
+      setEmblemLayer(i, { [el.dataset.k]: Number(el.value) }, false);
+      el.nextElementSibling.textContent = el.value + el.dataset.unit;
+      applyEmblem(container);
+    };
+    el.onchange = () => saveUiSettings();
+  });
+  const onSel = (id, fn) => { const el = box.querySelector("#" + id); if (el) el.onchange = () => fn(el.value); };
+  onSel("em-src", (v) => { setEmblemLayer(i, { src: v }); renderRPG(); });
+  onSel("em-shape", (v) => { setEmblemLayer(i, { shape: v }); applyEmblem(container); });
+  onSel("em-soft", (v) => { setEmblemLayer(i, { soft: v === "soft" }); applyEmblem(container); });
+  onSel("em-tone", (v) => { setEmblemLayer(i, { tone: v }); applyEmblem(container); });
+  onSel("em-blend", (v) => { setEmblemLayer(i, { blend: v }); applyEmblem(container); });
+  const btn = (id, fn) => { const el = box.querySelector("#" + id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
+  box.querySelectorAll(".em-chip").forEach((el) => { el.onclick = (e) => { e.stopPropagation(); emblemSel = +el.dataset.i; renderRPG(); }; });
+  btn("em-done", () => { emblemEditOpen = false; renderRPG(); });
+  btn("em-add", () => {
+    const layers = emblemLayers(skin);
+    if (layers.length >= EMBLEM_MAX) return;
+    layers.push({ ...EMBLEM_LAYER_DEFAULT, id: `l${Date.now().toString(36)}` });
+    saveEmblemLayers(layers);
+    emblemSel = layers.length - 1;
+    renderRPG();
+  });
+  btn("em-remove", () => {
+    const layers = emblemLayers(skin), gone = layers.splice(i, 1)[0];
+    if (gone?.src === "upload" || gone?.id) {
+      try { localStorage.removeItem(emblemImgKey(skin, gone.id)); } catch {}
+      delete emblemImgCache[emblemImgKey(skin, gone.id)];
+    }
+    saveEmblemLayers(layers);
+    emblemSel = Math.max(0, Math.min(i, layers.length - 1));
+    renderRPG();
+  });
+  const move = (d) => {
+    const layers = emblemLayers(skin), j = i + d;
+    if (j < 0 || j >= layers.length) return;
+    [layers[i], layers[j]] = [layers[j], layers[i]];
+    saveEmblemLayers(layers);
+    emblemSel = j;
+    renderRPG();
+  };
+  btn("em-down", () => move(-1));
+  btn("em-up", () => move(1));
+  btn("em-reset", () => {
+    const l = layer();
+    const base = l.src === "builtin" ? EMBLEM_BUILTIN_DEFAULT : EMBLEM_LAYER_DEFAULT;
+    setEmblemLayer(i, { ...base, src: l.src, url: l.url, id: l.id });
+    renderRPG();
+  });
+  btn("em-url-go", () => {
+    const url = String(box.querySelector("#em-url")?.value || "").trim();
+    if (!/^https?:\/\/\S+$/i.test(url)) { hudToast.warning("That doesn't look like a web link (it should start with https://)."); return; }
+    setEmblemLayer(i, { url });
+    applyEmblem(container);
+    const probe = new Image();
+    probe.onerror = () => hudToast.warning("That link didn't give an image. The site may block showing it elsewhere; try saving it and using Upload.");
+    probe.src = url;
+  });
+  const file = box.querySelector("#em-file");
+  btn("em-pick", () => file?.click());
+  if (file) file.onchange = () => {
+    const f = file.files?.[0], l = layer();
+    if (!f || !l) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        // shrink to at most 640px on the long side, so it fits in browser storage
+        const k = Math.min(1, 640 / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(img.naturalWidth * k));
+        c.height = Math.max(1, Math.round(img.naturalHeight * k));
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        let data = c.toDataURL("image/webp", 0.9);
+        if (!data.startsWith("data:image/webp")) data = c.toDataURL("image/png");
+        const key = emblemImgKey(skin, l.id);
+        try { localStorage.setItem(key, data); }
+        catch { hudToast.warning("That image is too big to keep on this device. Try a smaller one, or use a link."); return; }
+        emblemImgCache[key] = data;
+        renderRPG();
+      };
+      img.onerror = () => hudToast.warning("Couldn't read that file as an image.");
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(f);
+  };
+}
+
+const EMBLEM_CSS = `
+.rpg-sys .sys-emblem{position:absolute; z-index:-1; pointer-events:none; display:none;
+  background-position:center; background-repeat:no-repeat}
+.rpg-emblem-ed{position:absolute; left:8px; right:8px; bottom:8px; max-height:60%; overflow:auto; z-index:100000; box-sizing:border-box;
+  padding:8px 10px; font-size:.8em; color:var(--t-dff1ff, #dff1ff);
+  background:rgba(var(--t-4_9_18, 4,9,18),.96); border:1px solid var(--sc); box-shadow:0 0 12px var(--sg)}
+.rpg-emblem-ed .em-head{display:flex; justify-content:space-between; align-items:center; letter-spacing:.18em; color:var(--sc);
+  margin-bottom:6px; text-shadow:0 0 6px var(--sg)}
+.rpg-emblem-ed .em-row{display:flex; align-items:center; gap:8px; margin:5px 0}
+.rpg-emblem-ed .em-row > span{flex:0 0 78px; color:var(--t-8fb6d8, #8fb6d8)}
+.rpg-emblem-ed .em-row input[type=range]{flex:1; min-width:0; accent-color:var(--sc)}
+.rpg-emblem-ed .em-row b{flex:0 0 38px; text-align:right; font-weight:500}
+.rpg-emblem-ed select, .rpg-emblem-ed input[type=url]{flex:1; min-width:0; box-sizing:border-box; font:inherit; font-size:16px; padding:3px 5px;
+  color:inherit; background:var(--t-0d1a2c, #0d1a2c); border:1px solid var(--t-3d6a94, #3d6a94)}
+@media (pointer:fine){ .rpg-emblem-ed select, .rpg-emblem-ed input[type=url]{font-size:inherit} }
+.rpg-emblem-ed button{font:inherit; padding:3px 10px; cursor:pointer; color:inherit;
+  background:rgba(var(--t-10_26_48, 10,26,48),.9); border:1px solid rgba(var(--t-143_208_255, 143,208,255),.55)}
+.rpg-emblem-ed .em-btns{justify-content:flex-end; flex-wrap:wrap}
+.rpg-emblem-ed .em-layers{flex-wrap:wrap; gap:5px}
+.rpg-emblem-ed .em-chip.on{border-color:var(--sc); box-shadow:inset 0 0 6px var(--sg); color:#fff}
+.rpg-emblem-ed button:disabled{opacity:.35; cursor:default}
+.rpg-emblem-ed .em-none{color:var(--t-8fb6d8, #8fb6d8); flex:1}
+.rpg-emblem-ed .em-hint{margin:6px 0 0; color:var(--t-8fb6d8, #8fb6d8); font-size:.92em; line-height:1.35}
+`;
+
 function sysEnsureCss() {
+  const css = SYS_CSS + FOG_CSS + EMBLEM_CSS;
   let el = document.getElementById("rpg-sys-css");
-  if (el && el.textContent === SYS_CSS) return;
+  if (el && el.textContent === css) return;
   if (!el) {
     el = document.createElement("style");
     el.id = "rpg-sys-css";
     document.head.appendChild(el);
   }
-  el.textContent = SYS_CSS;
+  el.textContent = css;
 }
 
 function sysFontStack() {
+  if (isFogSkin()) return FOG_FONT;
   const k = uiSettings.sysFont || "exo";
   if (k === "preset") return uiSettings.fontFamily || SAO_FONTS.sans;
   return SAO_FONTS[k] || SAO_FONTS.exo;
 }
 
 function sysEnsureWebFont() {
+  if (isFogSkin()) { fogEnsureWebFont(); return; }
   const family = SAO_WEBFONTS[uiSettings.sysFont || "exo"];
   if (!family) return;
   const href = `https://fonts.googleapis.com/css2?family=${family}&display=swap`;
@@ -7654,7 +8206,17 @@ const SYS_ICON_PATHS = {
 };
 // timer kinds, matching timerKindStyle's emoji
 const SYS_TIMER_ICON = { DOOM: "skull", EVENT: "calendar", DEBUFF: "warn", BUFF: "sparkle" };
-const sysIcon = (k) => `<svg class="sys-svg" viewBox="0 0 16 16" aria-hidden="true">${SYS_ICON_PATHS[k] || ""}</svg>`;
+// Gray Fog swaps a few for tarot-flavoured ones: a cup for health, a star for
+// spirituality, a crescent for SDEF and a pentacle for coin
+const FOG_ICON_PATHS = {
+  hp: '<path d="M4.3 2.5h7.4c0 3.8-1.5 5.8-3.7 5.8S4.3 6.3 4.3 2.5z"/><path d="M8 8.3v4M5.4 13.6h5.2"/>',
+  mp: '<path d="M8 1.6l1.35 5.05L14.4 8l-5.05 1.35L8 14.4l-1.35-5.05L1.6 8l5.05-1.35z"/>',
+  sdef: '<path d="M11.2 2.2a6 6 0 1 0 2.7 11A4.1 4.1 0 0 1 11.2 2.2z" fill="currentColor" fill-opacity=".3" stroke-width="1.5"/>',
+  atk: '<path d="M8 .8l1.3 2.1v7.6H6.7V2.9z" fill="currentColor" fill-opacity=".18"/><path d="M8 3.4v6.4" stroke-width=".8"/><path d="M3.9 10.6h8.2M3.9 10.6l-.6-.9M12.1 10.6l.6-.9" stroke-width="1.4"/><path d="M8 11v2.4"/><path d="M8 13.3l1 1-1 1-1-1z" fill="currentColor"/>',
+  matk: '<path d="M2.3 13.1L9 6.4l1.1 1.1-6.7 6.7z" fill="currentColor" fill-opacity=".18"/><path d="M4.3 10.1l1.1 1.1M6.3 8.1l1.1 1.1" stroke-width=".9"/><path d="M12.2 1.4l.8 2.6 2.6.8-2.6.8-.8 2.6-.8-2.6-2.6-.8 2.6-.8z" fill="currentColor" fill-opacity=".35"/><path d="M14.4 8.6v1.6M13.6 9.4h1.6M8.6 1.6v1.2M8 2.2h1.2" stroke-width=".8"/>',
+  coin: '<circle cx="8" cy="8" r="6"/><path d="M8 3.4 L10.7 11.72 L3.63 6.58 L12.37 6.58 L5.3 11.72 Z" stroke-width="1"/>',
+};
+const sysIcon = (k) => `<svg class="sys-svg" viewBox="0 0 16 16" aria-hidden="true">${(isFogSkin() && FOG_ICON_PATHS[k]) || SYS_ICON_PATHS[k] || ""}</svg>`;
 
 // An analog face for the in-world time. "14:30", "2:30 PM", "02.30pm" all read.
 function sysClockSvg(clock) {
@@ -7672,15 +8234,15 @@ function sysClockSvg(clock) {
     ticks += `<line x1="50" y1="${major ? 9 : 11}" x2="50" y2="${major ? 17 : 15}" stroke="currentColor" stroke-width="${major ? 3 : 1.6}"
       stroke-linecap="round" transform="rotate(${i * 30} 50 50)"/>`;
   }
-  const hand = "#f4fbff";
+  const hand = "var(--t-f4fbff, #f4fbff)";
   return `<svg viewBox="0 0 100 100" aria-label="${escAttr(ok ? `Time ${clock}` : "Time unknown")}" role="img">
-    <circle cx="50" cy="50" r="47" fill="rgba(8,20,38,.6)" stroke="currentColor" stroke-width="2"/>
+    <circle cx="50" cy="50" r="47" style="fill:rgba(var(--t-8_20_38, 8,20,38),.6)" stroke="currentColor" stroke-width="2"/>
     <circle cx="50" cy="50" r="41" fill="none" stroke="currentColor" stroke-opacity=".35" stroke-width="1"/>
     ${ticks}
-    <text x="50" y="74" text-anchor="middle" font-size="11" letter-spacing="1" fill="#a9cbe8" style="font-family:inherit">${ok ? (h >= 12 ? "PM" : "AM") : "?"}</text>
-    ${ok ? `<line x1="50" y1="53" x2="50" y2="28" stroke="${hand}" stroke-width="4.5" stroke-linecap="round" transform="rotate(${ha.toFixed(1)} 50 50)"/>
-    <line x1="50" y1="56" x2="50" y2="16" stroke="${hand}" stroke-width="2.6" stroke-linecap="round" transform="rotate(${ma} 50 50)"/>` : ""}
-    <circle cx="50" cy="50" r="3.6" fill="${hand}"/>
+    <text x="50" y="74" text-anchor="middle" font-size="11" letter-spacing="1" style="font-family:inherit; fill:var(--t-a9cbe8, #a9cbe8)">${ok ? (h >= 12 ? "PM" : "AM") : "?"}</text>
+    ${ok ? `<line x1="50" y1="53" x2="50" y2="28" style="stroke:${hand}" stroke-width="4.5" stroke-linecap="round" transform="rotate(${ha.toFixed(1)} 50 50)"/>
+    <line x1="50" y1="56" x2="50" y2="16" style="stroke:${hand}" stroke-width="2.6" stroke-linecap="round" transform="rotate(${ma} 50 50)"/>` : ""}
+    <circle cx="50" cy="50" r="3.6" style="fill:${hand}"/>
   </svg>`;
 }
 
@@ -7689,6 +8251,9 @@ function sysClockSvg(clock) {
 // "storybook" is pale blue, white and navy; "system" is the same drawing in
 // the window's own glow, so it follows the frame (red for enemies and so on).
 const HAT_CLOCK_LOOKS = {
+  fog: { case_: "#1d1d23", edge: "currentColor", stitch: "currentColor", stitchOp: .42, face: "#111115", faceEdge: "currentColor",
+    dots: "#9c99a8", nums: "#ecebf0", hands: "#f3f2f6", hub: "#0e0e12", ampm: "#9c99a8",
+    bow: "rgba(140,115,190,.35)", bowDk: "rgba(140,115,190,.55)", bowEdge: "currentColor", hat: "#000", brim: "#000", hatEdge: "currentColor", shine: "rgba(220,220,230,.3)" },
   storybook: { case_: "#b7cdee", edge: "#7f9ccc", stitch: "#8eaad6", stitchOp: 1, face: "#fbfcff", faceEdge: "#8eaad6",
     dots: "#444", nums: "#2f2f2f", hands: "#2b2b2b", hub: "#fff", ampm: "#8a96a8",
     bow: "#1f3a9e", bowDk: "#152a78", bowEdge: "#152a78", hat: "#0b0b0e", brim: "#0b0b0e", hatEdge: "#000", shine: "#3a3a44" },
@@ -7748,6 +8313,58 @@ function sysHatClockSvg(clock, look = "storybook") {
   </svg>`;
 }
 
+// A Victorian pocket watch: bow ring and crown on top, a short chain, a
+// small-seconds dial at six and Breguet hands (the open ring near the tip).
+const POCKET_WATCH_LOOKS = {
+  fog: { caseA: "#eceef3", caseB: "#8b8e9a", edge: "#55575f", rim: "#c9ccd6", face: "#efe9da", faceEdge: "#a39d8c",
+    nums: "#2a2620", ticks: "#5a554a", hands: "#28324d", sub: "#8f897a", chain: "#c9ccd6", ampm: "#7a7466" },
+  system: { caseA: "#14304f", caseB: "#081426", edge: "currentColor", rim: "currentColor", face: "#050c18", faceEdge: "currentColor",
+    nums: "#e6f5ff", ticks: "#8fb6d8", hands: "#f4fbff", sub: "#6f93b5", chain: "currentColor", ampm: "#8fb6d8" },
+};
+function sysPocketWatchSvg(clock, look = "fog") {
+  const L = POCKET_WATCH_LOOKS[look] || POCKET_WATCH_LOOKS.fog;
+  const p = parseClock(clock);
+  const cx = 64, cy = 76, R = 42;
+  const h = p ? Math.floor(p.mins / 60) : 0, mi = p ? p.mins % 60 : 0;
+  const ha = ((h % 12) + mi / 60) * 30, ma = mi * 6;
+  const ROMAN = ["XII", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI"];
+  let ticks = "";
+  for (let i = 0; i < 60; i++) {
+    const big = i % 5 === 0;
+    ticks += `<line x1="${cx}" y1="${cy - R + 7}" x2="${cx}" y2="${cy - R + (big ? 11 : 9)}" stroke="${L.ticks}" stroke-width="${big ? 1.4 : .6}" transform="rotate(${i * 6} ${cx} ${cy})"/>`;
+  }
+  const nums = ROMAN.map((r, i) => {
+    if (i === 6) return "";                                  // the small-seconds dial sits there
+    const t = (i * 30 - 90) * Math.PI / 180, rr = R - 19.5;
+    return `<text x="${(cx + rr * Math.cos(t)).toFixed(1)}" y="${(cy + rr * Math.sin(t) + 2.3).toFixed(1)}" text-anchor="middle" font-size="${r.length > 3 ? 5.4 : 6.4}">${r}</text>`;
+  }).join("");
+  // Breguet hand: a slim taper with an open ring a little before the tip
+  const hand = (len, ring, w, ang) => `<g transform="rotate(${ang.toFixed(1)} ${cx} ${cy})">
+      <path d="M${cx - w} ${cy + 5} L${cx} ${cy - len} L${cx + w} ${cy + 5} Z" fill="${L.hands}"/>
+      <circle cx="${cx}" cy="${cy - ring}" r="${(w * 1.6).toFixed(1)}" fill="${L.face}" stroke="${L.hands}" stroke-width="1"/></g>`;
+  const links = [[51, 21, -35], [45, 26, -50], [40, 32, -65], [37, 39, -80], [36, 47, -95]]
+    .map(([x, y, r]) => `<ellipse cx="${x}" cy="${y}" rx="3.6" ry="2.2" transform="rotate(${r} ${x} ${y})"/>`).join("");
+  return `<svg viewBox="0 0 120 132" role="img" aria-label="${escAttr(p ? `Time ${clock}` : "Time unknown")}">
+    <defs><linearGradient id="rpg-pw-case" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${L.caseA}"/><stop offset="1" stop-color="${L.caseB}"/></linearGradient></defs>
+    <g fill="none" stroke="${L.chain}" stroke-width="1.3" opacity=".9">${links}</g>
+    <ellipse cx="${cx}" cy="17" rx="10" ry="8" fill="none" stroke="url(#rpg-pw-case)" stroke-width="3.2"/>
+    <ellipse cx="${cx}" cy="17" rx="10" ry="8" fill="none" stroke="${L.edge}" stroke-width=".6"/>
+    <rect x="${cx - 4}" y="22" width="8" height="5" rx="1" fill="url(#rpg-pw-case)" stroke="${L.edge}" stroke-width=".7"/>
+    <rect x="${cx - 6.5}" y="26.5" width="13" height="6" rx="2" fill="url(#rpg-pw-case)" stroke="${L.edge}" stroke-width=".7"/>
+    <path d="M${cx - 4} 27.5v4M${cx - 1.3} 27.5v4M${cx + 1.3} 27.5v4M${cx + 4} 27.5v4" stroke="${L.edge}" stroke-width=".5"/>
+    <circle cx="${cx}" cy="${cy}" r="${R + 3}" fill="url(#rpg-pw-case)" stroke="${L.edge}" stroke-width="1"/>
+    <circle cx="${cx}" cy="${cy}" r="${R - .5}" fill="none" stroke="${L.rim}" stroke-width="1.2" opacity=".8"/>
+    <circle cx="${cx}" cy="${cy}" r="${R - 2.5}" fill="${L.face}" stroke="${L.faceEdge}" stroke-width=".8"/>
+    ${ticks}
+    <g fill="${L.nums}" font-family="'Times New Roman',Georgia,serif">${nums}</g>
+    <circle cx="${cx}" cy="${cy + 19}" r="7.5" fill="none" stroke="${L.sub}" stroke-width=".8"/>
+    ${p ? `<line x1="${cx}" y1="${cy + 19}" x2="${cx}" y2="${cy + 13}" stroke="${L.sub}" stroke-width=".9" transform="rotate(${(mi * 37) % 360} ${cx} ${cy + 19})"/>` : ""}
+    ${p ? `<text x="${cx}" y="${cy - 8.5}" text-anchor="middle" font-size="5.2" letter-spacing=".5" fill="${L.ampm}" font-family="inherit">${h >= 12 ? "PM" : "AM"}</text>` : `<text x="${cx}" y="${cy - 10}" text-anchor="middle" font-size="9" fill="${L.ampm}">?</text>`}
+    ${p ? hand(17, 11, 1.8, ha) + hand(34, 28, 1.3, ma) : ""}
+    <circle cx="${cx}" cy="${cy}" r="2.6" fill="${L.hands}"/>
+  </svg>`;
+}
+
 function sysBar(icon, label, curr, max, extra = {}) {
   const iconHtml = extra.editMeters
     ? `<button class="sys-ibtn" data-meter-edit title="Edit meters" aria-label="Edit meters">${sysIcon(icon)}</button>`
@@ -7755,7 +8372,7 @@ function sysBar(icon, label, curr, max, extra = {}) {
   const maxNum = safeParseFloatOrInf(max, 0);
   if (extra.skipEmpty && Number.isFinite(maxNum) && maxNum <= 0) return "";
   const pct = extra.pct ?? percentFrom(curr, max);
-  const cls = extra.tint ? "tint" : (extra.lowWarn && pct <= 25 ? "low" : "");
+  const cls = (extra.tint ? "tint" : (extra.lowWarn && pct <= 25 ? "low" : "")) + (extra.cls ? " " + extra.cls : "");
   return `<div class="sys-bar">
       <div class="sys-bar-lab">${iconHtml}<span>${escHtml(label)}</span>
         <span class="sys-bar-num">${extra.numHtml ?? `${renderInlineValue(curr)} / ${renderInlineValue(max)}`}</span></div>
@@ -7769,9 +8386,10 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
     : type === "player" ? playerDisplayName() : displayName(display.name, "Unit");
   const pick = (inner) => `<span class="sys-pick">${inner}<span class="sys-caret">▾</span>` +
     `<select id="rpg-char-select" title="Switch character">${getCharOptions().replace(/>\s*\p{Extended_Pictographic}\uFE0F?\s*/gu, ">")}</select></span>`;
-  const clockMode = ["clock", "hatclock", "hatclock2"].includes(uiSettings.sysBigSlot);
+  const clockMode = ["clock", "hatclock", "hatclock2", "pocketwatch"].includes(uiSettings.sysBigSlot);
+  const pocketWatch = uiSettings.sysBigSlot === "pocketwatch";
   const hatClock = uiSettings.sysBigSlot === "hatclock" || uiSettings.sysBigSlot === "hatclock2";
-  const hatLook = uiSettings.sysBigSlot === "hatclock2" ? "system" : "storybook";
+  const hatLook = uiSettings.sysBigSlot === "hatclock2" ? (isFogSkin() ? "fog" : "system") : "storybook";
 
   const wd = worldWeekday(time);
   const dateText = `${wd ? wd + ", " : ""}${time.month ?? "???"} ${time.day ?? ""}${time.year ? ", " + time.year : ""}`;
@@ -7788,13 +8406,14 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
 
   const size = name.length > 18 ? " s" : name.length > 11 ? " m" : "";
   const hero = clockMode
-    ? `<div class="sys-hero clock"><div class="sys-clock${hatClock ? ` hat ${hatLook}` : ""}">${hatClock ? sysHatClockSvg(time.clock, hatLook) : sysClockSvg(time.clock)}</div>${info}</div>`
+    ? `<div class="sys-hero clock"><div class="sys-clock${hatClock ? ` hat ${hatLook}` : pocketWatch ? " hat pocket" : ""}">${pocketWatch ? sysPocketWatchSvg(time.clock, isFogSkin() ? "fog" : "system")
+      : hatClock ? sysHatClockSvg(time.clock, hatLook) : sysClockSvg(time.clock)}</div>${info}</div>`
     : `<div class="sys-hero name"><div class="sys-big${size}">${pick(escHtml(name))}</div><div class="sys-rule"></div>${info}</div>`;
 
   // bars: HP, MP/EN, bond for party and NPCs, then any meters
   const { curr: eCurr, max: eMax, label: eLabel } = getEnergy(display, isVehicle);
   let bars = sysBar("hp", hpLabel, display.hp_curr, display.hp_max, { lowWarn: true })
-    + sysBar("mp", eLabel, eCurr, eMax, { skipEmpty: true });
+    + sysBar("mp", isFogSkin() && eLabel === "MP" ? "SPIRITUALITY" : eLabel, eCurr, eMax, { skipEmpty: true, cls: "mp" });
   if ((type === "party" || type === "npc") && !isVehicle) {
     const bond = clamp(parseBondValue(root.bond), Number.NEGATIVE_INFINITY, 101);
     bars += sysBar("bond", "BOND", 0, 0, {
@@ -7832,6 +8451,7 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
         <button id="rpg-min-btn" title="Minimize" style="cursor:pointer; font-size:12px; padding:0; font-weight:bold; line-height:18px; box-sizing:border-box;">_</button>
       </div>
     </div>
+    ${isFogSkin() ? fogNumberHtml(display, time) : ""}
     ${hero}
     <div class="sys-panels">
       <div class="sys-box">${bars}</div>
@@ -7865,7 +8485,7 @@ function sysUnitList(list, { title, jumpType, emptyText = "", foe = false, hpOnl
       <div class="sys-unit-head"><span class="rpg-jump" data-idx="${charIndexFor(jumpType, idx)}">${isVeh ? "\u25C6 " : ""}${name}</span>
         ${bond !== null ? `<span class="sys-unit-tag">${sysIcon("bond")}${bond >= 101 ? "\u221E" : escHtml(bond)}</span>` : ""}</div>
       ${mini(isVeh ? "HULL" : "HP", t?.hp_curr, t?.hp_max, foe ? "foe" : "")}
-      ${hpOnly ? "" : mini(eL, eC, eM, "mp")}
+      ${hpOnly ? "" : mini(isFogSkin() && eL === "MP" ? "SPI" : eL, eC, eM, "mp")}
     </div>`;
   }).join("");
   return `<div class="sys-units">${head}${rows}</div>`;
@@ -7873,22 +8493,25 @@ function sysUnitList(list, { title, jumpType, emptyText = "", foe = false, hpOnl
 
 // ---- settings (inside the classic settings overlay, when this skin is on) ----
 function sysSettingsHtml() {
-  const sel = "width:100%; background:#0d1a2c; border:1px solid #3d6a94; color:#dff1ff; padding:6px; margin-bottom:8px;";
-  const lab = "font-size:0.75em; color:#9fc6e6; margin-bottom:4px;";
+  const sel = "width:100%; background:var(--t-0d1a2c, #0d1a2c); border:1px solid var(--t-3d6a94, #3d6a94); color:var(--t-dff1ff, #dff1ff); padding:6px; margin-bottom:8px;";
+  const lab = "font-size:0.75em; color:var(--t-9fc6e6, #9fc6e6); margin-bottom:4px;";
   const opt = (v, t, cur) => `<option value="${v}"${cur === v ? " selected" : ""}>${t}</option>`;
-  const big = ["clock", "hatclock", "hatclock2"].includes(uiSettings.sysBigSlot) ? uiSettings.sysBigSlot : "name";
+  const big = ["clock", "hatclock", "hatclock2", "pocketwatch"].includes(uiSettings.sysBigSlot) ? uiSettings.sysBigSlot : "name";
   const font = uiSettings.sysFont || "exo";
   return `
-    <div style="margin:0 0 10px; padding:8px; border:1px solid rgba(143,208,255,0.35); background:rgba(90,170,255,0.06);">
+    <div style="margin:0 0 10px; padding:8px; border:1px solid rgba(var(--t-143_208_255, 143,208,255),0.35); background:rgba(var(--t-90_170_255, 90,170,255),0.06);">
       <div style="${lab}">Big slot</div>
-      <select id="rpg-sys-bigslot" style="${sel}">${opt("name", "Name", big)}${opt("clock", "Clock (in-world time)", big)}${opt("hatclock", "Clock: Roman, top hat", big)}${opt("hatclock2", "Clock: Roman, top hat (System colours)", big)}</select>
-      <div style="${lab}">Font</div>
-      <select id="rpg-sys-font" style="${sel}">${opt("exo", "Exo 2", font)}${opt("squarish", "Squarish (Rajdhani)", font)}${opt("saira", "Saira Condensed", font)}${opt("teko", "Teko", font)}${opt("sans", "Sans", font)}${opt("preset", "Follow preset", font)}</select>
+      <select id="rpg-sys-bigslot" style="${sel}">${opt("name", "Name", big)}${opt("clock", "Clock (in-world time)", big)}${opt("pocketwatch", "Pocket watch", big)}${opt("hatclock", "Clock: Roman, top hat", big)}${opt("hatclock2", isFogSkin() ? "Clock: Roman, top hat (Gray Fog colours)" : "Clock: Roman, top hat (System colours)", big)}</select>
+      ${isFogSkin() ? "" : `<div style="${lab}">Font</div>`}
+      <select id="rpg-sys-font" style="${sel}${isFogSkin() ? " display:none;" : ""}">${opt("exo", "Exo 2", font)}${opt("squarish", "Squarish (Rajdhani)", font)}${opt("saira", "Saira Condensed", font)}${opt("teko", "Teko", font)}${opt("sans", "Sans", font)}${opt("preset", "Follow preset", font)}</select>
+      ${isFogSkin() ? `<div style="${lab}">Tarot number</div>
+      <select id="rpg-fog-number" style="${sel}">${opt("auto", "Sequence if tracked, else the day", uiSettings.fogNumber || "auto")}${opt("day", "Day of the month", uiSettings.fogNumber || "auto")}${opt("sequence", "Sequence only", uiSettings.fogNumber || "auto")}${opt("none", "None", uiSettings.fogNumber || "auto")}</select>` : ""}
       <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
         <span title="A System popup when a reply gives you items, skills or passives, adds quests, timers or party members, or starts a fight">Notifications</span>
         <input type="checkbox" id="rpg-sys-notices-cb" ${uiSettings.sysNotices !== false ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
       </div>
-      <button id="rpg-sys-testnote" style="width:100%; background:#0d1a2c; border:1px solid #3d6a94; color:#dff1ff; padding:6px; cursor:pointer;">Show a test notification</button>
+      <button id="rpg-sys-testnote" style="width:100%; background:var(--t-0d1a2c, #0d1a2c); border:1px solid var(--t-3d6a94, #3d6a94); color:var(--t-dff1ff, #dff1ff); padding:6px; cursor:pointer; margin-bottom:8px;">Show a test notification</button>
+      <button id="rpg-sys-emblem-open" style="width:100%; background:var(--t-0d1a2c, #0d1a2c); border:1px solid var(--t-3d6a94, #3d6a94); color:var(--t-dff1ff, #dff1ff); padding:6px; cursor:pointer;">Background images\u2026</button>
     </div>`;
 }
 
@@ -7898,8 +8521,12 @@ function sysBindSettings() {
   if (big) { stop(big); big.onchange = () => { uiSettings.sysBigSlot = big.value; saveUiSettings(); renderRPG(); }; }
   const font = document.getElementById("rpg-sys-font");
   if (font) { stop(font); font.onchange = () => { uiSettings.sysFont = font.value; saveUiSettings(); renderRPG(); }; }
+  const fn = document.getElementById("rpg-fog-number");
+  if (fn) { stop(fn); fn.onchange = () => { uiSettings.fogNumber = fn.value; saveUiSettings(); renderRPG(); }; }
   const nt = document.getElementById("rpg-sys-notices-cb");
   if (nt) { stop(nt); nt.onchange = () => { uiSettings.sysNotices = nt.checked; saveUiSettings(); }; }
+  const emb = document.getElementById("rpg-sys-emblem-open");
+  if (emb) emb.onclick = (e) => { e.stopPropagation(); isSettingsOpen = false; emblemEditOpen = true; renderRPG(); };
   const test = document.getElementById("rpg-sys-testnote");
   if (test) test.onclick = (e) => {
     e.stopPropagation();
@@ -8014,7 +8641,7 @@ function sysShowNotices(list, replyKey = "") {
   shown.forEach((n, i) => {
     setTimeout(() => {
       const el = document.createElement("div");
-      el.className = "rpg-sys-note" + (n.warn ? " warn" : "");
+      el.className = "rpg-sys-note" + (n.warn ? " warn" : "") + (isFogSkin() ? " fog" : "");
       el.innerHTML = `<div class="plate">${n.plate}</div><div class="msg">${n.html}</div>`;
       const close = () => {
         if (el.dataset.out) return;
@@ -8036,6 +8663,11 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-26.20", items: [
+    "New skin: Gray Fog. The System panel in a Victorian occult look: charcoal fog with a faint eight-pointed star over a broken circle and stars, a silver double frame with corner flourishes, gothic and serif lettering, and a tarot number under the title (the Sequence if the card tracks one, else the day). MP reads as Spirituality, and the icons lean tarot: a cup, a star, a crescent and a pentacle. Every System feature carries over, including the clocks and notifications.",
+    "Big slot: a pocket watch, with a chain, a small-seconds dial and Breguet hands. Silver and ivory in Gray Fog, glowing in System.",
+    "Background images (System and Gray Fog): stack up to six layers behind the top of the panel: the built-in star, pictures from links, or ones you upload. Each layer's size, position, angle, opacity, shape, faded edges, colour and blend are adjustable, with a live preview.",
+  ] },
   { build: "2026-10-25.3", items: [
     "The turn log now tracks stat changes: max HP and max MP, and ATK, MATK, DEF, SATK and SDEF, for you, the party, NPCs and enemies. Each can be undone or locked like any other change.",
   ] },
@@ -8198,8 +8830,10 @@ const CLASSIC_HELP = [
 ];
 
 const SYS_HELP = [
+  ["Background images", "Settings → Background images…: stack up to six layers behind the top of the panel: the built-in star, pictures from links, or ones you upload. Pick a layer to adjust its size, position, angle, opacity, shape, faded edges, colour and blend, live; Lower and Raise change the stacking. Each skin keeps its own. Uploads stay on that device; a link works anywhere you paste it."],
+  ["Gray Fog", "A second look for this panel: charcoal fog, a silver frame, gothic lettering, silver and violet bars. Pick it under Skin; everything works the same as in System."],
   ["System window", "The panel shows the selected character. Tap the big name (or NAME, with the clock) to switch character. The frame turns red for enemies and purple for vehicles."],
-  ["Big slot", "Settings → Big slot: the character's name, or an analog clock of the in-world time: the glowing one, or a storybook clock with Roman numerals, a bow and a little top hat, in its own pale blue or in the System window's glow."],
+  ["Big slot", "Settings → Big slot: the character's name, or an analog clock of the in-world time: the glowing one, a pocket watch, or a storybook clock with Roman numerals, a bow and a little top hat, in its own pale blue or in the System window's glow."],
   ["Notifications", "Settings → Notifications: a System popup when a reply gives you items, skills, passives, coin or a status, adds quests, timers or party members, or brings in enemies. Tap one to dismiss it. Your own edits never trigger them."],
 ];
 
@@ -8210,12 +8844,12 @@ function classicInfoHtml() {
     ? CHANGELOG.map((c) => `<div style="margin-bottom:10px;"><div style="color:#FFD700; font-weight:bold; margin-bottom:3px;">Build ${escHtml(c.build)}</div>` +
         c.items.map((t) => `<div style="color:#ccc; padding-left:10px; text-indent:-10px; margin-bottom:2px;">• ${escHtml(t)}</div>`).join("") + `</div>`).join("")
       + `<div style="opacity:.6; font-style:italic;">You're on build ${escHtml(HUD_BUILD)}.</div>`
-    : (uiSettings.skin === "system" ? [...SYS_HELP, ...CLASSIC_HELP] : CLASSIC_HELP).map(([k, v]) => `<div style="margin-bottom:9px;"><div style="color:#4FC3F7; font-weight:bold;">${escHtml(k)}</div><div style="color:#ccc;">${escHtml(v)}</div></div>`).join("");
+    : (isSysSkin() ? [...SYS_HELP, ...CLASSIC_HELP] : CLASSIC_HELP).map(([k, v]) => `<div style="margin-bottom:9px;"><div style="color:#4FC3F7; font-weight:bold;">${escHtml(k)}</div><div style="color:#ccc;">${escHtml(v)}</div></div>`).join("");
   return `
     <div id="rpg-info-overlay" style="position:absolute; inset:0; background:#0b0b0d; border:1px solid #333; z-index:100001;
       display:flex; flex-direction:column; box-sizing:border-box; padding:10px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid #333; padding-bottom:6px;">
-        <div style="font-weight:bold; color:#ddd;">${uiSettings.skin === "system" ? sysIcon(isLog ? "log" : "help") + (isLog ? " UPDATE LOG" : " HELP") : isLog ? "\u{1F4DC} UPDATE LOG" : "❓ HELP"}</div>
+        <div style="font-weight:bold; color:#ddd;">${isSysSkin() ? sysIcon(isLog ? "log" : "help") + (isLog ? " UPDATE LOG" : " HELP") : isLog ? "\u{1F4DC} UPDATE LOG" : "❓ HELP"}</div>
         <button id="rpg-info-close" style="background:#444; border:1px solid #777; color:#fff; cursor:pointer; font-size:10px; padding:3px 10px; font-weight:bold;">CLOSE</button>
       </div>
       <div data-scroll-key="c:info:${classicInfo}" style="flex:1; overflow:auto; font-size:0.8em; line-height:1.4; padding-right:4px;">${rows}</div>
@@ -8600,6 +9234,7 @@ function saoSettingsHtml() {
         <select id="rpg-sao-skin">
           <option value="classic">Classic</option>
           <option value="system">System</option>
+          <option value="fog">Gray Fog</option>
           <option value="sao" selected>SAO</option>
         </select></div>`
     + `<div class="rpg-sao-build">build ${HUD_BUILD}</div>`;
