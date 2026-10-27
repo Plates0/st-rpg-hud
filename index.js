@@ -423,7 +423,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-26.30";
+const HUD_BUILD = "2026-10-26.31";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -3466,42 +3466,103 @@ function resetRPG(e) {
     renderRPG();
   }
 }
-// Gray Fog folds the panel away (and unfolds it) instead of swapping it instantly.
-const FOG_FOLD_MS = 380, FOG_UNFOLD_MS = 560, FOG_ORB_MS = 280;
-let fogFold = null;   // { dir: "fold" | "unfold" | "orb", at }
+// Gray Fog folds the panel away like a paper accordion (and unfolds it) instead of
+// swapping it instantly. The panel is copied into horizontal strips that hinge
+// against each other; the folded stack then shrinks into the round button.
+const FOG_FOLD_MS = 560, FOG_UNFOLD_MS = 660, FOG_ORB_MS = 280;
+let fogFold = null;          // { dir: "orb", at, k } while the round button pops in
+let fogFolding = false;      // the accordion is running; the real panel stays hidden under it
 const fogMotionOk = () => uiSettings.fogFold !== false && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 const FOG_FOLD_SPEEDS = { slow: 1.6, normal: 1, fast: .6, instant: .35 };
 const fogFoldK = () => FOG_FOLD_SPEEDS[uiSettings.fogFoldSpeed] || 1;
-// Re-renders mid-animation pick it up where it was, rather than restarting or dropping it.
+// Re-renders mid-animation keep the panel hidden under the fold, and let the button's pop-in carry on.
 function fogFoldClasses(container, minimized) {
-  if (!fogFold) return;
-  const t = Date.now() - fogFold.at;
-  const [cls, base] = fogFold.dir === "fold" ? ["fog-fold", FOG_FOLD_MS]
-    : fogFold.dir === "unfold" ? ["fog-unfold", FOG_UNFOLD_MS] : ["fog-orb-in", FOG_ORB_MS];
-  const ms = base * fogFold.k;
-  if (t >= ms || minimized !== (fogFold.dir === "orb")) return;
-  container.classList.add(cls);
+  if (fogFolding && !minimized) container.style.visibility = "hidden";
+  if (!fogFold || !minimized) return;
+  const t = Date.now() - fogFold.at, ms = FOG_ORB_MS * fogFold.k;
+  if (t >= ms) return;
+  container.classList.add("fog-orb-in");
   container.style.animationDuration = `${Math.round(ms)}ms`;
   container.style.animationDelay = `-${t}ms`;
+}
+function fogAccordion(container, opening, ms, done) {
+  const r = container.getBoundingClientRect();
+  const W = r.width, H = r.height;
+  if (!W || !H) { done(); return; }
+  const N = Math.max(3, Math.min(6, Math.round(H / 120))), h = H / N;
+  const el = (css) => { const d = document.createElement("div"); Object.assign(d.style, css); return d; };
+  const stage = el({ position: "fixed", left: `${r.left}px`, top: `${r.top}px`, width: `${W}px`, height: `${H}px`,
+    zIndex: "100001", pointerEvents: "none", perspective: "900px", perspectiveOrigin: "50% 0" });
+  const holder = el({ position: "absolute", left: "0", top: "0", width: "100%", height: "100%", transformStyle: "preserve-3d", transformOrigin: "100% 0" });
+  stage.appendChild(holder);
+  const strips = [], shades = [];
+  let parent = holder;
+  for (let i = 0; i < N; i++) {
+    const strip = el({ position: "absolute", left: "0", top: i ? "100%" : "0", width: `${W}px`, height: `${h}px`,
+      transformOrigin: "50% 0", transformStyle: "preserve-3d" });
+    const face = el({ position: "absolute", left: "0", top: "0", width: "100%", height: "100%", overflow: "hidden" });
+    const copy = container.cloneNode(true);
+    copy.id = "";
+    Object.assign(copy.style, { position: "absolute", left: "0", top: `${-i * h}px`, right: "auto", bottom: "auto", margin: "0",
+      width: `${W}px`, height: `${H}px`, transform: "none", animation: "none", visibility: "visible", zIndex: "0" });
+    // the strips facing away darken and the ones facing up catch a little light, so the creases read
+    const shade = el({ position: "absolute", left: "0", top: "0", width: "100%", height: "100%", opacity: "0", zIndex: "1",
+      background: i % 2 ? "linear-gradient(#000c, #0006)" : "linear-gradient(#ffffff00, #ffffff40)" });
+    face.append(copy, shade);
+    strip.appendChild(face);
+    parent.appendChild(strip);
+    parent = strip;
+    strips.push(strip); shades.push(shade);
+  }
+  const ease = (x) => (x < .5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2);
+  const SPLIT = .74;                       // most of the time folds; the rest shrinks into the button
+  const pose = (q) => {                    // q: 0 = lying open, 1 = folded away
+    const a = ease(Math.min(1, q / SPLIT)), b = ease(Math.max(0, (q - SPLIT) / (1 - SPLIT)));
+    const th = a * 86, sin = Math.sin(th * Math.PI / 180);
+    strips.forEach((st, i) => { st.style.transform = `rotateX(${i === 0 ? -th : i % 2 ? 2 * th : -2 * th}deg)`; });
+    shades.forEach((sh, i) => { sh.style.opacity = String((i % 2 ? .75 : .5) * sin); });
+    holder.style.transform = `scaleX(${1 - .9 * b})`;
+    holder.style.opacity = String(1 - b);
+  };
+  pose(opening ? 1 : 0);
+  document.body.appendChild(stage);
+  container.style.visibility = "hidden";
+  const t0 = performance.now();
+  const frame = (now) => {
+    const p = Math.min(1, (now - t0) / ms);
+    pose(opening ? 1 - p : p);
+    if (p < 1) requestAnimationFrame(frame);
+    else { stage.remove(); done(); }
+  };
+  requestAnimationFrame(frame);
 }
 function toggleMinimize(e) {
   if (e) e.stopPropagation();
   flushInlineEdits();
+  if (fogFolding) return;                                   // mid-fold: let it finish
   if (isFogSkin() && fogMotionOk()) {
-    if (fogFold?.dir === "fold" && Date.now() - fogFold.at < FOG_FOLD_MS * fogFold.k) return;     // already folding
-    const k = fogFoldK();
-    if (!isMinimized) {
-      fogFold = { dir: "fold", at: Date.now(), k };
-      const c = document.getElementById("rpg-hud-container");
-      if (c) fogFoldClasses(c, false);
-      setTimeout(() => {
+    const k = fogFoldK(), c = document.getElementById("rpg-hud-container");
+    if (!isMinimized && c) {
+      fogFolding = true;
+      fogAccordion(c, false, FOG_FOLD_MS * k, () => {
+        fogFolding = false;
         isMinimized = true; isSettingsOpen = false;
         fogFold = { dir: "orb", at: Date.now(), k };
         renderRPG();
-      }, FOG_FOLD_MS * k);
+      });
       return;
     }
-    fogFold = { dir: "unfold", at: Date.now(), k };
+    if (isMinimized && c) {
+      isMinimized = false; isSettingsOpen = false;
+      fogFolding = true;
+      renderRPG();                                          // lay the panel out (hidden), then unfold a copy of it
+      const c2 = document.getElementById("rpg-hud-container");
+      fogAccordion(c2, true, FOG_UNFOLD_MS * k, () => {
+        fogFolding = false;
+        c2.style.visibility = "";
+      });
+      return;
+    }
   }
   isMinimized = !isMinimized;
   isSettingsOpen = false;
@@ -7922,18 +7983,6 @@ const FOG_CSS = `
 @media (prefers-reduced-motion: reduce){.rpg-fog-orb .fog-orb svg{animation:none}}
 .rpg-fog-orb.fog-orb-in .fog-orb{animation:fogOrbIn ${FOG_ORB_MS}ms cubic-bezier(.3,1.4,.5,1) both; animation-delay:inherit; animation-duration:inherit}
 @keyframes fogOrbIn{from{opacity:0; transform:scale(.3) rotate(-60deg)} to{opacity:1; transform:none}}
-/* opening: a thin strip unrolls sideways, then the panel folds down from the top edge */
-.rpg-sys.rpg-fog.fog-unfold{transform-origin:50% 0; animation:fogUnfold ${FOG_UNFOLD_MS}ms ease-out both}
-.rpg-sys.rpg-fog.fog-fold{transform-origin:50% 0; animation:fogFoldUp ${FOG_FOLD_MS}ms ease-in both; pointer-events:none}
-@keyframes fogUnfold{
-  0%{opacity:0; transform:perspective(1100px) rotateX(-88deg) scaleX(.08)}
-  32%{opacity:1; transform:perspective(1100px) rotateX(-88deg) scaleX(1)}
-  80%{transform:perspective(1100px) rotateX(5deg)}
-  100%{transform:none}}
-@keyframes fogFoldUp{
-  0%{transform:none}
-  55%{opacity:1; transform:perspective(1100px) rotateX(-88deg) scaleX(1)}
-  100%{opacity:0; transform:perspective(1100px) rotateX(-88deg) scaleX(.08)}}
 /* the status mark in the header: the star, still, in the status colour */
 .rpg-fog .fog-status{display:inline-grid; place-items:center; width:20px; height:20px; vertical-align:middle}
 .rpg-fog .fog-status svg{width:20px; height:20px; overflow:visible; filter:drop-shadow(0 0 3px var(--orb-tint)) drop-shadow(0 0 1px rgba(0,0,0,.9))}
@@ -8920,8 +8969,8 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
-  { build: "2026-10-26.30", items: [
-    "New skin: Gray Fog. The System panel in a Victorian occult look: charcoal fog with a faint eight-pointed star over a broken circle and stars, a silver double frame with corner flourishes, gothic and serif lettering, one round menu button at the bottom that fans out into settings, scan, help and the log, a floating round button when minimised whose slowly turning star takes the status colour (the status dot is that star too), a fold and unfold when closing and opening (its speed is adjustable, and it can be turned off), and a tarot number under the title (the Sequence if the card tracks one, else the day). MP reads as Spirituality, and the icons lean tarot: a cup, a star, a crescent and a pentacle. Every System feature carries over, including the clocks and notifications.",
+  { build: "2026-10-26.31", items: [
+    "New skin: Gray Fog. The System panel in a Victorian occult look: charcoal fog with a faint eight-pointed star over a broken circle and stars, a silver double frame with corner flourishes, gothic and serif lettering, one round menu button at the bottom that fans out into settings, scan, help and the log, a floating round button when minimised whose slowly turning star takes the status colour (the status dot is that star too), the panel folding up like a paper accordion when closed and unfolding when opened (its speed is adjustable, and it can be turned off), and a tarot number under the title (the Sequence if the card tracks one, else the day). MP reads as Spirituality, and the icons lean tarot: a cup, a star, a crescent and a pentacle. Every System feature carries over, including the clocks and notifications.",
     "Big slot: a pocket watch, with a chain, a small-seconds dial and Breguet hands. Polished silver and ivory in Gray Fog, glowing in System.",
     "Background images (System and Gray Fog): stack up to six layers behind the top of the panel: the built-in star, pictures from links, or ones you upload. Each layer's size, position, angle, opacity, shape, faded edges, colour and blend are adjustable, with a live preview. Drag on the panel to place a picture, pinch or scroll to size it, twist to turn it, and fold the controls away to see the whole panel while you do.",
   ] },
