@@ -399,6 +399,8 @@ let bondMemory = [];
 let timerMemory = [];
 let historyMemoryKey = null;
 let isMinimized = false;
+let fogDockOpen = false;     // Gray Fog: the centred menu button's buttons are fanned out
+let fogDockAnim = false;     // play the fan-out once, on the render right after a toggle
 let scanTimer = null;
 let charIndex = 0;
 let tabStripScrollLeft = 0; 
@@ -420,7 +422,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-26.23";
+const HUD_BUILD = "2026-10-26.24";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -4145,7 +4147,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
       ${renderEnemySummary()}
 
-    <div class="rpg-c-btns" style="
+    <div class="rpg-c-btns${FOG ? ` fog-dock${fogDockOpen || isSettingsOpen || classicInfo ? " open" : ""}${fogDockAnim ? " anim" : ""}` : ""}" style="
 	  position:absolute; left:10px; bottom:8px;
 	  display:flex; gap:6px;
 	">
@@ -4162,6 +4164,10 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    display:flex; align-items:center; justify-content:center;
 	    box-sizing:border-box;
 	  ">↻</button>
+	  ${FOG ? `<button id="rpg-fog-dock" title="${fogDockOpen ? "Close the menu" : "Menu"}" aria-expanded="${fogDockOpen}">
+	    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5 L13.6 10.4 L21.5 12 L13.6 13.6 L12 21.5 L10.4 13.6 L2.5 12 L10.4 10.4 Z" fill="currentColor"/>
+	      <circle cx="12" cy="12" r="6.3" fill="none" stroke="currentColor" stroke-width="1" opacity=".55"/></svg>
+	    ${!fogDockOpen && changelogUnseen() ? `<span class="fog-dock-badge"></span>` : ""}</button>` : ""}
 	  <button id="rpg-help-btn" title="Help" style="
 	    position:relative; background:#333; border:1px solid #777; color:#fff;
 	    cursor:pointer; width:34px; height:26px;
@@ -4244,6 +4250,14 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     };
 
     bind("rpg-min-btn", toggleMinimize);
+    bind("rpg-fog-dock", (e) => {
+      e?.stopPropagation();
+      fogDockOpen = !(fogDockOpen || isSettingsOpen || classicInfo);
+      if (!fogDockOpen) { if (isSettingsOpen) { flushInlineEdits(); isSettingsOpen = false; } classicInfo = null; }
+      fogDockAnim = true;
+      renderRPG();
+      fogDockAnim = false;
+    });
     bind("rpg-settings-btn", (e) => { classicInfo = null; toggleSettings(e); });
     bind("rpg-error-close", closePipeErrorPanel);
     
@@ -7818,7 +7832,21 @@ const FOG_CSS = `
 /* the corner buttons sit just inside the corner ornaments rather than on top of them */
 .rpg-fog .sys-ctl{right:20px; gap:5px}
 .rpg-fog #rpg-min-btn{width:24px !important}
-.rpg-sys.rpg-fog .rpg-c-btns{left:31px !important; bottom:11px !important}
+/* the bottom buttons tuck behind one centred button and fan out from it */
+.rpg-sys.rpg-fog .rpg-c-btns.fog-dock{left:50% !important; bottom:9px !important; transform:translateX(-50%); align-items:center; gap:7px !important}
+.rpg-fog .fog-dock:not(.open) > button:not(#rpg-fog-dock){display:none !important}
+.rpg-fog #rpg-fog-dock{position:relative; width:32px; height:32px; border-radius:50%; padding:0; cursor:pointer; display:grid; place-items:center;
+  color:#eceef3; background:radial-gradient(circle at 35% 28%, #4a4c56, #1b1b21 70%);
+  border:1px solid rgba(214,217,226,.75); box-shadow:0 0 0 3px rgba(18,18,23,.8), 0 0 0 4px rgba(214,217,226,.28), 0 0 12px var(--sg)}
+.rpg-fog #rpg-fog-dock svg{width:20px; height:20px; transition:transform .3s ease; filter:drop-shadow(0 0 3px var(--sg))}
+.rpg-fog .fog-dock.open #rpg-fog-dock svg{transform:rotate(45deg) scale(.9)}
+.rpg-fog #rpg-fog-dock:hover{border-color:#fff}
+.rpg-fog .fog-dock-badge{position:absolute; top:-2px; right:-2px; width:8px; height:8px; border-radius:50%; background:#ff5252; box-shadow:0 0 0 2px #111}
+.rpg-fog .fog-dock.anim > #rpg-settings-btn,.rpg-fog .fog-dock.anim > #rpg-scan-btn{animation:fogDockL .3s cubic-bezier(.2,.8,.3,1.2) both}
+.rpg-fog .fog-dock.anim > #rpg-help-btn,.rpg-fog .fog-dock.anim > #rpg-log-btn{animation:fogDockR .3s cubic-bezier(.2,.8,.3,1.2) both}
+.rpg-fog .fog-dock.anim > #rpg-settings-btn,.rpg-fog .fog-dock.anim > #rpg-log-btn{animation-delay:.06s}
+@keyframes fogDockL{from{opacity:0; transform:translateX(24px) scale(.6)} to{opacity:1; transform:none}}
+@keyframes fogDockR{from{opacity:0; transform:translateX(-24px) scale(.6)} to{opacity:1; transform:none}}
 .rpg-sys.rpg-fog::before{top:3px; bottom:auto; background-image:${FOG_CORNERS.tl},${FOG_CORNERS.tr}; background-position:left top, right top}
 .rpg-sys.rpg-fog::after{bottom:3px; top:auto; background-image:${FOG_CORNERS.bl},${FOG_CORNERS.br}; background-position:left bottom, right bottom}
 
@@ -8320,8 +8348,8 @@ function sysHatClockSvg(clock, look = "storybook") {
 // A Victorian pocket watch: bow ring and crown on top, a short chain, a
 // small-seconds dial at six and Breguet hands (the open ring near the tip).
 const POCKET_WATCH_LOOKS = {
-  fog: { caseA: "#eceef3", caseB: "#8b8e9a", edge: "#55575f", rim: "#c9ccd6", face: "#efe9da", faceEdge: "#a39d8c",
-    nums: "#2a2620", ticks: "#5a554a", hands: "#28324d", sub: "#8f897a", chain: "#c9ccd6", ampm: "#7a7466" },
+  fog: { metal: true, caseA: "#eceef3", caseB: "#8b8e9a", edge: "#4a4c55", rim: "#c9ccd6", face: "#efe9da", faceEdge: "#a39d8c",
+    nums: "#2a2620", ticks: "#5a554a", hands: "#28324d", sub: "#8f897a", chain: "url(#rpg-pw-case-fog)", ampm: "#7a7466" },
   system: { caseA: "#14304f", caseB: "#081426", edge: "currentColor", rim: "currentColor", face: "#050c18", faceEdge: "currentColor",
     nums: "#e6f5ff", ticks: "#8fb6d8", hands: "#f4fbff", sub: "#6f93b5", chain: "currentColor", ampm: "#8fb6d8" },
 };
@@ -8349,15 +8377,28 @@ function sysPocketWatchSvg(clock, look = "fog") {
   const links = [[51, 21, -35], [45, 26, -50], [40, 32, -65], [37, 39, -80], [36, 47, -95]]
     .map(([x, y, r]) => `<ellipse cx="${x}" cy="${y}" rx="3.6" ry="2.2" transform="rotate(${r} ${x} ${y})"/>`).join("");
   return `<svg viewBox="0 0 120 132" role="img" aria-label="${escAttr(p ? `Time ${clock}` : "Time unknown")}">
-    <defs><linearGradient id="rpg-pw-case" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${L.caseA}"/><stop offset="1" stop-color="${L.caseB}"/></linearGradient></defs>
+    <defs>${L.metal
+      // polished silver: banded light and dark like a reflection, a bevel that runs the other way, and a soft highlight
+      ? `<linearGradient id="rpg-pw-case-${look}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fbfcfe"/><stop offset=".18" stop-color="#c3c6cf"/>
+          <stop offset=".38" stop-color="#6c6f7a"/><stop offset=".52" stop-color="#e3e5ea"/><stop offset=".7" stop-color="#9a9da8"/>
+          <stop offset=".86" stop-color="#5d606a"/><stop offset="1" stop-color="#d4d6dd"/></linearGradient>
+        <linearGradient id="rpg-pw-bezel-${look}" x1="1" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#f4f5f8"/><stop offset=".3" stop-color="#8d909b"/>
+          <stop offset=".55" stop-color="#e9ebef"/><stop offset=".8" stop-color="#6a6d77"/><stop offset="1" stop-color="#c7cad2"/></linearGradient>
+        <radialGradient id="rpg-pw-shine-${look}" cx=".3" cy=".22" r=".6"><stop offset="0" stop-color="#fff" stop-opacity=".85"/>
+          <stop offset=".35" stop-color="#fff" stop-opacity=".18"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>`
+      : `<linearGradient id="rpg-pw-case-${look}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${L.caseA}"/><stop offset="1" stop-color="${L.caseB}"/></linearGradient>`}</defs>
     <g fill="none" stroke="${L.chain}" stroke-width="1.3" opacity=".9">${links}</g>
-    <ellipse cx="${cx}" cy="17" rx="10" ry="8" fill="none" stroke="url(#rpg-pw-case)" stroke-width="3.2"/>
+    <ellipse cx="${cx}" cy="17" rx="10" ry="8" fill="none" stroke="url(#rpg-pw-case-${look})" stroke-width="3.2"/>
     <ellipse cx="${cx}" cy="17" rx="10" ry="8" fill="none" stroke="${L.edge}" stroke-width=".6"/>
-    <rect x="${cx - 4}" y="22" width="8" height="5" rx="1" fill="url(#rpg-pw-case)" stroke="${L.edge}" stroke-width=".7"/>
-    <rect x="${cx - 6.5}" y="26.5" width="13" height="6" rx="2" fill="url(#rpg-pw-case)" stroke="${L.edge}" stroke-width=".7"/>
+    <rect x="${cx - 4}" y="22" width="8" height="5" rx="1" fill="url(#rpg-pw-case-${look})" stroke="${L.edge}" stroke-width=".7"/>
+    <rect x="${cx - 6.5}" y="26.5" width="13" height="6" rx="2" fill="url(#rpg-pw-case-${look})" stroke="${L.edge}" stroke-width=".7"/>
     <path d="M${cx - 4} 27.5v4M${cx - 1.3} 27.5v4M${cx + 1.3} 27.5v4M${cx + 4} 27.5v4" stroke="${L.edge}" stroke-width=".5"/>
-    <circle cx="${cx}" cy="${cy}" r="${R + 3}" fill="url(#rpg-pw-case)" stroke="${L.edge}" stroke-width="1"/>
-    <circle cx="${cx}" cy="${cy}" r="${R - .5}" fill="none" stroke="${L.rim}" stroke-width="1.2" opacity=".8"/>
+    <circle cx="${cx}" cy="${cy}" r="${R + 3}" fill="url(#rpg-pw-case-${look})" stroke="${L.edge}" stroke-width="1"/>
+    ${L.metal ? `<circle cx="${cx}" cy="${cy}" r="${R + 2.5}" fill="url(#rpg-pw-shine-${look})"/>
+    <circle cx="${cx}" cy="${cy}" r="${R - .2}" fill="none" stroke="url(#rpg-pw-bezel-${look})" stroke-width="2.6"/>
+    <circle cx="${cx}" cy="${cy}" r="${R - 1.6}" fill="none" stroke="${L.edge}" stroke-width=".6" opacity=".7"/>
+    <ellipse cx="${cx}" cy="17" rx="10" ry="8" fill="none" stroke="#fff" stroke-width=".7" opacity=".55" stroke-dasharray="9 54" stroke-dashoffset="-34"/>`
+      : `<circle cx="${cx}" cy="${cy}" r="${R - .5}" fill="none" stroke="${L.rim}" stroke-width="1.2" opacity=".8"/>`}
     <circle cx="${cx}" cy="${cy}" r="${R - 2.5}" fill="${L.face}" stroke="${L.faceEdge}" stroke-width=".8"/>
     ${ticks}
     <g fill="${L.nums}" font-family="'Times New Roman',Georgia,serif">${nums}</g>
@@ -8366,6 +8407,7 @@ function sysPocketWatchSvg(clock, look = "fog") {
     ${p ? `<text x="${cx}" y="${cy - 8.5}" text-anchor="middle" font-size="5.2" letter-spacing=".5" fill="${L.ampm}" font-family="inherit">${h >= 12 ? "PM" : "AM"}</text>` : `<text x="${cx}" y="${cy - 10}" text-anchor="middle" font-size="9" fill="${L.ampm}">?</text>`}
     ${p ? hand(17, 11, 1.8, ha) + hand(34, 28, 1.3, ma) : ""}
     <circle cx="${cx}" cy="${cy}" r="2.6" fill="${L.hands}"/>
+    ${L.metal ? `<path d="M${cx - R + 6} ${cy - 2} A${R - 5} ${R - 5} 0 0 1 ${cx + 2} ${cy - R + 5} A${R - 1} ${R - 1} 0 0 0 ${cx - R + 6} ${cy - 2} Z" fill="#fff" opacity=".22"/>` : ""}
   </svg>`;
 }
 
@@ -8667,9 +8709,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
-  { build: "2026-10-26.20", items: [
-    "New skin: Gray Fog. The System panel in a Victorian occult look: charcoal fog with a faint eight-pointed star over a broken circle and stars, a silver double frame with corner flourishes, gothic and serif lettering, and a tarot number under the title (the Sequence if the card tracks one, else the day). MP reads as Spirituality, and the icons lean tarot: a cup, a star, a crescent and a pentacle. Every System feature carries over, including the clocks and notifications.",
-    "Big slot: a pocket watch, with a chain, a small-seconds dial and Breguet hands. Silver and ivory in Gray Fog, glowing in System.",
+  { build: "2026-10-26.24", items: [
+    "New skin: Gray Fog. The System panel in a Victorian occult look: charcoal fog with a faint eight-pointed star over a broken circle and stars, a silver double frame with corner flourishes, gothic and serif lettering, one round menu button at the bottom that fans out into settings, scan, help and the log, and a tarot number under the title (the Sequence if the card tracks one, else the day). MP reads as Spirituality, and the icons lean tarot: a cup, a star, a crescent and a pentacle. Every System feature carries over, including the clocks and notifications.",
+    "Big slot: a pocket watch, with a chain, a small-seconds dial and Breguet hands. Polished silver and ivory in Gray Fog, glowing in System.",
     "Background images (System and Gray Fog): stack up to six layers behind the top of the panel: the built-in star, pictures from links, or ones you upload. Each layer's size, position, angle, opacity, shape, faded edges, colour and blend are adjustable, with a live preview.",
   ] },
   { build: "2026-10-25.3", items: [
