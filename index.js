@@ -420,7 +420,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-26.22";
+const HUD_BUILD = "2026-10-26.23";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -7813,13 +7813,17 @@ const FOG_CSS = `
   --sys-shadow:0 0 0 1px rgba(0,0,0,.6), 0 4px 22px rgba(0,0,0,.55), 0 0 12px var(--sg),
     inset 0 0 0 4px rgba(20,20,25,.85), inset 0 0 0 5px rgba(205,208,218,.30), inset 0 0 40px rgba(0,0,0,.35);
   font-family:${FOG_FONT}}
-.rpg-sys.rpg-fog::before,.rpg-sys.rpg-fog::after{border:0; filter:none; width:auto; height:30px; left:3px; right:3px; z-index:-1;
-  background-repeat:no-repeat; background-size:30px 30px}
+.rpg-sys.rpg-fog::before,.rpg-sys.rpg-fog::after{border:0; filter:none; width:auto; height:26px; left:3px; right:3px; z-index:-1;
+  background-repeat:no-repeat; background-size:26px 26px}
+/* the corner buttons sit just inside the corner ornaments rather than on top of them */
+.rpg-fog .sys-ctl{right:20px; gap:5px}
+.rpg-fog #rpg-min-btn{width:24px !important}
+.rpg-sys.rpg-fog .rpg-c-btns{left:31px !important; bottom:11px !important}
 .rpg-sys.rpg-fog::before{top:3px; bottom:auto; background-image:${FOG_CORNERS.tl},${FOG_CORNERS.tr}; background-position:left top, right top}
 .rpg-sys.rpg-fog::after{bottom:3px; top:auto; background-image:${FOG_CORNERS.bl},${FOG_CORNERS.br}; background-position:left bottom, right bottom}
 
 .rpg-fog .sys-plate{font-family:Cinzel,${FOG_FONT}; font-weight:600; font-size:1.05em; letter-spacing:.32em;
-  padding:4px 16px 3px calc(16px + .32em); background:rgba(18,18,23,.6); border-color:rgba(214,217,226,.7);
+  padding:4px 11px 3px calc(11px + .32em); background:rgba(18,18,23,.6); border-color:rgba(214,217,226,.7);
   box-shadow:0 0 0 3px rgba(18,18,23,.75), 0 0 0 4px rgba(214,217,226,.25), 0 0 14px var(--sg); text-shadow:0 0 8px var(--sg)}
 .rpg-fog .sys-plate::before,.rpg-fog .sys-plate::after{content:"\\2726"; font-size:.6em; opacity:.75; letter-spacing:0; vertical-align:.15em}
 .rpg-fog .sys-plate::before{margin-right:.6em} .rpg-fog .sys-plate::after{margin-left:.3em}
