@@ -423,7 +423,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-26.26";
+const HUD_BUILD = "2026-10-26.28";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -3702,6 +3702,20 @@ function renderClassicSkin() {
       const latestTitle = latest?.detail ? `${latest.label}\n${latest.detail}` : (latest?.label || "");
 
       container.className = "";
+      if (FOG) {
+        // Gray Fog: a floating round button with the slowly turning star, coloured like the status dot
+        const tint = latest?.status === "valid" || latest?.status === "invalid" || latest?.status === "notag" || latest?.status === "user" ? dot : "#8a8c96";
+        container.className = "rpg-fog-orb";
+        container.style.cssText = `position: fixed; right: 12px;
+          top: clamp(calc(env(safe-area-inset-top, 0px) + 50px), 20vh, calc(100vh - env(safe-area-inset-bottom, 0px) - 50px));
+          transform: translateY(-50%); z-index: 99999; --orb-tint: ${tint};`;
+        container.innerHTML = `<button class="fog-orb" title="${escAttr(latestTitle || "Open the HUD")}" aria-label="Open the HUD">
+          <svg viewBox="0 0 24 24" aria-hidden="true" style="animation-delay:-${Date.now() % 14000}ms">
+            <path d="M12 2.5 L13.6 10.4 L21.5 12 L13.6 13.6 L12 21.5 L10.4 13.6 L2.5 12 L10.4 10.4 Z" fill="var(--orb-tint)"/>
+            <circle cx="12" cy="12" r="6.3" fill="none" stroke="var(--orb-tint)" stroke-width="1" opacity=".5"/></svg></button>`;
+        container.onclick = toggleMinimize;
+        return;
+      }
       container.style.cssText = SYS ? `
         position: fixed; right: 0;
         top: clamp(calc(env(safe-area-inset-top, 0px) + 50px), 20vh, calc(100vh - env(safe-area-inset-bottom, 0px) - 50px));
@@ -4191,7 +4205,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         style="position:absolute; left:-8px; top:0; bottom:0; width:16px;
           cursor:ew-resize; z-index:200000; background:transparent; touch-action:none;"></div>
 
-      ${SYS && emblemEditOpen && !isSettingsOpen ? emblemEditorHtml() : ""}
+      ${SYS && emblemEditOpen && !isSettingsOpen ? `<div id="rpg-emblem-drag" title="Drag to move the picture. Pinch or scroll to resize; twist with two fingers (or Shift+scroll) to rotate."></div><div class="em-guide"></div>` + emblemEditorHtml() : ""}
       ${settingsPanelHtml}
       ${errorPanelHtml}
       ${classicInfoHtml()}
@@ -7848,6 +7862,16 @@ const FOG_CSS = `
 .rpg-fog .fog-dock.open.anim #rpg-fog-dock .fog-star{animation:fogDockTurn .35s ease-out both}
 .rpg-fog .fog-dock.anim:not(.open) #rpg-fog-dock .fog-star{animation:fogDockUnturn .3s ease-out both}
 @keyframes fogDockSpin{to{transform:rotate(360deg)}}
+/* the HUD folded away: a floating round button, its star tinted by the status */
+.rpg-fog-orb .fog-orb{width:44px; height:44px; border-radius:50%; padding:0; cursor:pointer; display:grid; place-items:center;
+  touch-action:manipulation; user-select:none; -webkit-tap-highlight-color:transparent;
+  background:radial-gradient(circle at 35% 28%, #4a4c56, #1b1b21 70%); border:1px solid rgba(214,217,226,.75);
+  box-shadow:0 0 0 3px rgba(18,18,23,.85), 0 0 0 4px rgba(214,217,226,.3), 0 2px 12px rgba(0,0,0,.6), 0 0 14px rgba(200,205,225,.25);
+  transition:transform .15s}
+.rpg-fog-orb .fog-orb:hover{transform:scale(1.06)}
+.rpg-fog-orb .fog-orb svg{width:26px; height:26px; overflow:visible; animation:fogDockSpin 14s linear infinite;
+  filter:drop-shadow(0 0 3px var(--orb-tint)) drop-shadow(0 0 1px rgba(0,0,0,.8))}
+@media (prefers-reduced-motion: reduce){.rpg-fog-orb .fog-orb svg{animation:none}}
 @keyframes fogDockTurn{from{transform:none} to{transform:rotate(45deg) scale(.9)}}
 @keyframes fogDockUnturn{from{transform:rotate(45deg) scale(.9)} to{transform:none}}
 @media (prefers-reduced-motion: reduce){.rpg-fog .fog-dock.open #rpg-fog-dock svg{animation:none}}
@@ -7955,6 +7979,7 @@ const EMBLEM_BUILTIN_DEFAULT = { src: "builtin", url: "", size: 77, x: 0, y: -13
 const emblemImgKey = (skin, id) => id === "legacy" ? `rpgHud:emblemImg:${skin}` : `rpgHud:emblemImg:${skin}:${id}`;
 const emblemImgCache = {};
 let emblemEditOpen = false;
+let emblemEdMin = false;     // the editor folded down to its header, to see more of the panel
 let emblemSel = 0;
 
 // the layer list for a skin; older single-image settings are read as one layer
@@ -8022,6 +8047,81 @@ function applyEmblem(container) {
       mixBlendMode: l.blend === "screen" ? "screen" : l.blend === "soft" ? "soft-light" : "normal",
     });
   });
+  // while editing, a dashed outline shows the selected layer's box
+  const guide = container.querySelector(".em-guide"), g = layers[emblemSel];
+  if (guide) {
+    if (!g) { guide.style.display = "none"; return; }
+    const size = W * g.size / 100;
+    Object.assign(guide.style, { display: "block", width: `${size}px`, height: `${size}px`, top: `${(W * g.y / 100).toFixed(1)}px`,
+      left: `calc(50% + ${(W * g.x / 100).toFixed(1)}px)`, transform: `translateX(-50%) rotate(${g.rot}deg)`,
+      borderRadius: g.shape === "circle" ? "50%" : g.shape === "rounded" ? "18%" : "0" });
+  }
+}
+
+// Move, resize and turn the selected layer by dragging on the panel itself.
+function bindEmblemDrag(container) {
+  const pad = container.querySelector("#rpg-emblem-drag");
+  if (!pad) return;
+  const skin = uiSettings.skin, i = emblemSel;
+  const lim = Object.fromEntries(EMBLEM_SLIDERS.map(([k, , min, max]) => [k, [min, max]]));
+  const clamp = (k, v) => Math.max(lim[k][0], Math.min(lim[k][1], Math.round(v)));
+  const W = () => container.clientWidth || 300;
+  const set = (patch) => {
+    const l = emblemLayers(skin)[i];
+    if (!l) return;
+    const out = {};
+    for (const k of Object.keys(patch)) out[k] = k === "rot" ? ((Math.round(patch[k]) + 540) % 360) - 180 : clamp(k, patch[k]);
+    setEmblemLayer(i, out, false);
+    applyEmblem(container);
+    for (const k of Object.keys(out)) {
+      const el = container.querySelector(`.em-slide[data-k="${k}"]`);
+      if (el) { el.value = out[k]; el.nextElementSibling.textContent = out[k] + el.dataset.unit; }
+    }
+  };
+  const pts = new Map();
+  let start = null;
+  const snapshot = () => {
+    const l = emblemLayers(skin)[i];
+    const p = [...pts.values()];
+    const g = p.length > 1 ? { d: Math.hypot(p[1].x - p[0].x, p[1].y - p[0].y), a: Math.atan2(p[1].y - p[0].y, p[1].x - p[0].x),
+      cx: (p[0].x + p[1].x) / 2, cy: (p[0].y + p[1].y) / 2 } : { cx: p[0].x, cy: p[0].y };
+    start = { l: { ...l }, ...g, n: p.length };
+  };
+  pad.onpointerdown = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (!emblemLayers(skin)[i]) return;
+    pad.setPointerCapture?.(e.pointerId);
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    snapshot();
+  };
+  pad.onpointermove = (e) => {
+    if (!pts.has(e.pointerId) || !start) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const p = [...pts.values()], w = W(), L = start.l;
+    if (p.length === 1 && start.n === 1) {
+      set({ x: L.x + (p[0].x - start.cx) / w * 100, y: L.y + (p[0].y - start.cy) / w * 100 });
+    } else if (p.length > 1 && start.n > 1) {
+      const d = Math.hypot(p[1].x - p[0].x, p[1].y - p[0].y), a = Math.atan2(p[1].y - p[0].y, p[1].x - p[0].x);
+      const cx = (p[0].x + p[1].x) / 2, cy = (p[0].y + p[1].y) / 2;
+      set({ size: L.size * d / Math.max(1, start.d), rot: L.rot + (a - start.a) * 180 / Math.PI,
+        x: L.x + (cx - start.cx) / w * 100, y: L.y + (cy - start.cy) / w * 100 });
+    }
+  };
+  const lift = (e) => {
+    if (!pts.delete(e.pointerId)) return;
+    if (pts.size) snapshot(); else { start = null; saveUiSettings(); }
+  };
+  pad.onpointerup = lift; pad.onpointercancel = lift;
+  pad.onclick = (e) => e.stopPropagation();
+  let wheelSave = 0;
+  pad.onwheel = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const l = emblemLayers(skin)[i];
+    if (!l) return;
+    const step = e.deltaY < 0 ? 1 : -1;
+    set(e.shiftKey ? { rot: l.rot + step * 3 } : { size: l.size + step * 2 });
+    clearTimeout(wheelSave); wheelSave = setTimeout(saveUiSettings, 400);
+  };
 }
 
 const EMBLEM_SLIDERS = [
@@ -8038,11 +8138,15 @@ function emblemEditorHtml() {
   const chips = layers.map((x, i) => `<button class="em-chip${i === emblemSel ? " on" : ""}" data-i="${i}" title="Layer ${i + 1}">${i + 1} · ${EMBLEM_SRC_LABEL[x.src] || x.src}</button>`).join("");
   const tools = `<div class="em-row em-layers">${chips || `<span class="em-none">No images.</span>`}
       ${layers.length < EMBLEM_MAX ? `<button id="em-add" title="Add a layer on top">+ Add</button>` : ""}</div>`;
+  const head = `<div class="em-head"><span>BACKGROUND IMAGES</span><span class="em-headbtns">
+      <button id="em-fold" title="${emblemEdMin ? "Show the controls" : "Fold the controls down to see the panel"}">${emblemEdMin ? "▴" : "▾"}</button><button id="em-done">Done</button></span></div>`;
+  if (emblemEdMin) return `<div id="rpg-emblem-ed" class="rpg-emblem-ed min">${head}${l ? tools : ""}
+      <p class="em-hint">Drag the panel to move layer ${emblemSel + 1}; pinch or scroll to resize, twist or Shift+scroll to rotate.</p></div>`;
   if (!l) return `<div id="rpg-emblem-ed" class="rpg-emblem-ed">
-      <div class="em-head"><span>BACKGROUND IMAGES</span><button id="em-done">Done</button></div>${tools}
+      ${head}${tools}
       <p class="em-hint">Add a layer to use the star, a picture from a link, or one from this device. Layers stack bottom to top.</p></div>`;
   return `<div id="rpg-emblem-ed" class="rpg-emblem-ed">
-      <div class="em-head"><span>BACKGROUND IMAGES</span><button id="em-done">Done</button></div>
+      ${head}
       ${tools}
       <div class="em-row em-btns">
         <button id="em-down" ${emblemSel === 0 ? "disabled" : ""} title="Move this layer down">◀ Lower</button>
@@ -8060,7 +8164,7 @@ function emblemEditorHtml() {
       ${sel("em-tone", "Colour", l.tone, [["original", "Original"], ["silver", "Silver (greyscale)"], ["dim", "Dimmed"]])}
       ${sel("em-blend", "Blend", l.blend, [["normal", "Normal"], ["screen", "Glow (dark parts vanish)"], ["soft", "Soft light"]])}
       <div class="em-row em-btns"><button id="em-reset">Reset this layer's position and look</button></div>
-      <p class="em-hint">Layers stack bottom to top. ${l.src === "url" ? "Any public image link; some sites block showing their images elsewhere, and if yours stays blank, save it and use Upload. "
+      <p class="em-hint">Drag on the panel above to move this layer; pinch or scroll to resize, twist or Shift+scroll to rotate. Fold the controls (▾) to see more. Layers stack bottom to top. ${l.src === "url" ? "Any public image link; some sites block showing their images elsewhere, and if yours stays blank, save it and use Upload. "
         : l.src === "upload" ? "Kept on this device only, shrunk to keep it light. For every device, use a link instead. " : ""}Glow suits a light picture on a black background.</p>
     </div>`;
 }
@@ -8073,6 +8177,14 @@ function bindEmblemEditor(container) {
   const skin = uiSettings.skin, i = emblemSel;
   const layer = () => emblemLayers(skin)[emblemSel];
   box.querySelectorAll(".em-slide").forEach((el) => {
+    // while a slider is held, the editor turns see-through except for that slider
+    el.onpointerdown = () => {
+      box.classList.add("peek");
+      el.closest(".em-row")?.classList.add("em-active");
+      const end = () => { box.classList.remove("peek"); el.closest(".em-row")?.classList.remove("em-active");
+        window.removeEventListener("pointerup", end); window.removeEventListener("pointercancel", end); };
+      window.addEventListener("pointerup", end); window.addEventListener("pointercancel", end);
+    };
     el.oninput = () => {
       setEmblemLayer(i, { [el.dataset.k]: Number(el.value) }, false);
       el.nextElementSibling.textContent = el.value + el.dataset.unit;
@@ -8088,7 +8200,9 @@ function bindEmblemEditor(container) {
   onSel("em-blend", (v) => { setEmblemLayer(i, { blend: v }); applyEmblem(container); });
   const btn = (id, fn) => { const el = box.querySelector("#" + id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
   box.querySelectorAll(".em-chip").forEach((el) => { el.onclick = (e) => { e.stopPropagation(); emblemSel = +el.dataset.i; renderRPG(); }; });
-  btn("em-done", () => { emblemEditOpen = false; renderRPG(); });
+  btn("em-done", () => { emblemEditOpen = false; emblemEdMin = false; renderRPG(); });
+  btn("em-fold", () => { emblemEdMin = !emblemEdMin; renderRPG(); });
+  bindEmblemDrag(container);
   btn("em-add", () => {
     const layers = emblemLayers(skin);
     if (layers.length >= EMBLEM_MAX) return;
@@ -8167,7 +8281,8 @@ const EMBLEM_CSS = `
   background-position:center; background-repeat:no-repeat}
 .rpg-emblem-ed{position:absolute; left:8px; right:8px; bottom:8px; max-height:60%; overflow:auto; z-index:100000; box-sizing:border-box;
   padding:8px 10px; font-size:.8em; color:var(--t-dff1ff, #dff1ff);
-  background:rgba(var(--t-4_9_18, 4,9,18),.96); border:1px solid var(--sc); box-shadow:0 0 12px var(--sg)}
+  background:rgba(var(--t-4_9_18, 4,9,18),.96); border:1px solid var(--sc); box-shadow:0 0 12px var(--sg);
+  transition:background .15s, border-color .15s, box-shadow .15s}
 .rpg-emblem-ed .em-head{display:flex; justify-content:space-between; align-items:center; letter-spacing:.18em; color:var(--sc);
   margin-bottom:6px; text-shadow:0 0 6px var(--sg)}
 .rpg-emblem-ed .em-row{display:flex; align-items:center; gap:8px; margin:5px 0}
@@ -8185,6 +8300,16 @@ const EMBLEM_CSS = `
 .rpg-emblem-ed button:disabled{opacity:.35; cursor:default}
 .rpg-emblem-ed .em-none{color:var(--t-8fb6d8, #8fb6d8); flex:1}
 .rpg-emblem-ed .em-hint{margin:6px 0 0; color:var(--t-8fb6d8, #8fb6d8); font-size:.92em; line-height:1.35}
+.rpg-emblem-ed .em-headbtns{display:flex; gap:6px}
+.rpg-emblem-ed.min{max-height:none}
+.rpg-emblem-ed.min .em-hint{margin-top:4px}
+/* holding a slider: only that slider stays visible, so the picture behind can be seen */
+.rpg-emblem-ed.peek{background:transparent; border-color:transparent; box-shadow:none; overflow:hidden}
+.rpg-emblem-ed.peek > *:not(.em-active){opacity:0; transition:opacity .15s}
+.rpg-emblem-ed.peek .em-active{background:rgba(var(--t-4_9_18, 4,9,18),.88); outline:1px solid var(--sc); padding:4px 6px; margin:0 -6px}
+#rpg-emblem-drag{position:absolute; inset:0; z-index:99998; cursor:move; touch-action:none; background:transparent}
+.rpg-sys .em-guide{position:absolute; z-index:99997; pointer-events:none; display:none; box-sizing:border-box;
+  border:1px dashed var(--sc); box-shadow:0 0 0 1px rgba(0,0,0,.5), 0 0 8px var(--sg)}
 `;
 
 function sysEnsureCss() {
@@ -8720,10 +8845,10 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
-  { build: "2026-10-26.24", items: [
-    "New skin: Gray Fog. The System panel in a Victorian occult look: charcoal fog with a faint eight-pointed star over a broken circle and stars, a silver double frame with corner flourishes, gothic and serif lettering, one round menu button at the bottom that fans out into settings, scan, help and the log, and a tarot number under the title (the Sequence if the card tracks one, else the day). MP reads as Spirituality, and the icons lean tarot: a cup, a star, a crescent and a pentacle. Every System feature carries over, including the clocks and notifications.",
+  { build: "2026-10-26.28", items: [
+    "New skin: Gray Fog. The System panel in a Victorian occult look: charcoal fog with a faint eight-pointed star over a broken circle and stars, a silver double frame with corner flourishes, gothic and serif lettering, one round menu button at the bottom that fans out into settings, scan, help and the log, a floating round button when minimised whose slowly turning star takes the status colour, and a tarot number under the title (the Sequence if the card tracks one, else the day). MP reads as Spirituality, and the icons lean tarot: a cup, a star, a crescent and a pentacle. Every System feature carries over, including the clocks and notifications.",
     "Big slot: a pocket watch, with a chain, a small-seconds dial and Breguet hands. Polished silver and ivory in Gray Fog, glowing in System.",
-    "Background images (System and Gray Fog): stack up to six layers behind the top of the panel: the built-in star, pictures from links, or ones you upload. Each layer's size, position, angle, opacity, shape, faded edges, colour and blend are adjustable, with a live preview.",
+    "Background images (System and Gray Fog): stack up to six layers behind the top of the panel: the built-in star, pictures from links, or ones you upload. Each layer's size, position, angle, opacity, shape, faded edges, colour and blend are adjustable, with a live preview. Drag on the panel to place a picture, pinch or scroll to size it, twist to turn it, and fold the controls away to see the whole panel while you do.",
   ] },
   { build: "2026-10-25.3", items: [
     "The turn log now tracks stat changes: max HP and max MP, and ATK, MATK, DEF, SATK and SDEF, for you, the party, NPCs and enemies. Each can be undone or locked like any other change.",
