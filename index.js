@@ -423,7 +423,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-26.31";
+const HUD_BUILD = "2026-10-26.32";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -7657,6 +7657,10 @@ const SYS_CSS = `
 .rpg-sys .sys-pick select{position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; font-size:16px;
   -webkit-appearance:none; appearance:none; border:0; margin:0}
 .rpg-sys .sys-caret{font-size:.5em; opacity:.7; margin-left:.35em; vertical-align:middle; text-shadow:none}
+/* in the big name the caret hangs off to the right, so the name itself stays centred */
+.rpg-sys .sys-big .sys-pick{max-width:calc(100% - 1.6em)}
+.rpg-sys .sys-big .sys-pick select{width:calc(100% + 1.6em)}   /* the caret still opens the picker */
+.rpg-sys .sys-big .sys-caret{position:absolute; left:100%; top:50%; transform:translateY(-50%); margin-left:.35em; line-height:1}
 
 .rpg-sys .sys-panels{display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:8px; margin-bottom:8px}
 .rpg-sys .sys-box{border:1px solid rgba(var(--t-143_208_255, 143,208,255),.42); padding:7px 10px; background:rgba(var(--t-8_20_38, 8,20,38),.45);
