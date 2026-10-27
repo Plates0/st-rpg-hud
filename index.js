@@ -423,7 +423,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-26.28";
+const HUD_BUILD = "2026-10-26.30";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -454,6 +454,8 @@ const defaultUiSettings = {
   sysNotices: true,       // system skin: "You have acquired..." popups when a reply adds things
   sysFont: "exo",         // system skin font: a SAO_FONTS key, or "preset" for the classic preset
   fogNumber: "auto",      // Gray Fog's tarot number: "auto" (Sequence, else the day) | "day" | "sequence" | "none"
+  fogFold: true,          // Gray Fog: fold the panel into the round button and back
+  fogFoldSpeed: "normal", // "slow" | "normal" | "fast" | "instant"
   fontPreset: "retro_mono",
   fontFamily: "'Courier New', Courier, monospace",
   fontScale: 1.0,
@@ -1292,6 +1294,17 @@ function indicatorColor(status) {
   }
 }
 
+// Gray Fog's four-pointed star, used for the menu button, the folded-away button and the status mark
+const FOG_STAR_GLYPH = (fill) => `<path d="M12 2.5 L13.6 10.4 L21.5 12 L13.6 13.6 L12 21.5 L10.4 13.6 L2.5 12 L10.4 10.4 Z" fill="${fill}"/>
+  <circle cx="12" cy="12" r="6.3" fill="none" stroke="${fill}" stroke-width="1" opacity=".5"/>`;
+// the dot's colours; with no chat the dot's dark grey would vanish on the dark panel, so a softer grey
+function fogStatusTint(status) {
+  return ["valid", "invalid", "notag", "user"].includes(status) ? indicatorColor(status) : "#8a8c96";
+}
+function fogStatusStarHtml(status, title) {
+  return `<span class="fog-status" title="${escAttr(title || "")}" style="--orb-tint:${fogStatusTint(status)}">
+    <svg viewBox="0 0 24 24" aria-hidden="true">${FOG_STAR_GLYPH("var(--orb-tint)")}</svg></span>`;
+}
 function renderIndicatorDotHtml(status, title) {
   const c = indicatorColor(status);
   return `
@@ -3453,9 +3466,43 @@ function resetRPG(e) {
     renderRPG();
   }
 }
+// Gray Fog folds the panel away (and unfolds it) instead of swapping it instantly.
+const FOG_FOLD_MS = 380, FOG_UNFOLD_MS = 560, FOG_ORB_MS = 280;
+let fogFold = null;   // { dir: "fold" | "unfold" | "orb", at }
+const fogMotionOk = () => uiSettings.fogFold !== false && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+const FOG_FOLD_SPEEDS = { slow: 1.6, normal: 1, fast: .6, instant: .35 };
+const fogFoldK = () => FOG_FOLD_SPEEDS[uiSettings.fogFoldSpeed] || 1;
+// Re-renders mid-animation pick it up where it was, rather than restarting or dropping it.
+function fogFoldClasses(container, minimized) {
+  if (!fogFold) return;
+  const t = Date.now() - fogFold.at;
+  const [cls, base] = fogFold.dir === "fold" ? ["fog-fold", FOG_FOLD_MS]
+    : fogFold.dir === "unfold" ? ["fog-unfold", FOG_UNFOLD_MS] : ["fog-orb-in", FOG_ORB_MS];
+  const ms = base * fogFold.k;
+  if (t >= ms || minimized !== (fogFold.dir === "orb")) return;
+  container.classList.add(cls);
+  container.style.animationDuration = `${Math.round(ms)}ms`;
+  container.style.animationDelay = `-${t}ms`;
+}
 function toggleMinimize(e) {
   if (e) e.stopPropagation();
   flushInlineEdits();
+  if (isFogSkin() && fogMotionOk()) {
+    if (fogFold?.dir === "fold" && Date.now() - fogFold.at < FOG_FOLD_MS * fogFold.k) return;     // already folding
+    const k = fogFoldK();
+    if (!isMinimized) {
+      fogFold = { dir: "fold", at: Date.now(), k };
+      const c = document.getElementById("rpg-hud-container");
+      if (c) fogFoldClasses(c, false);
+      setTimeout(() => {
+        isMinimized = true; isSettingsOpen = false;
+        fogFold = { dir: "orb", at: Date.now(), k };
+        renderRPG();
+      }, FOG_FOLD_MS * k);
+      return;
+    }
+    fogFold = { dir: "unfold", at: Date.now(), k };
+  }
   isMinimized = !isMinimized;
   isSettingsOpen = false;
   renderRPG();
@@ -3704,15 +3751,14 @@ function renderClassicSkin() {
       container.className = "";
       if (FOG) {
         // Gray Fog: a floating round button with the slowly turning star, coloured like the status dot
-        const tint = latest?.status === "valid" || latest?.status === "invalid" || latest?.status === "notag" || latest?.status === "user" ? dot : "#8a8c96";
+        const tint = fogStatusTint(latest?.status);
         container.className = "rpg-fog-orb";
         container.style.cssText = `position: fixed; right: 12px;
           top: clamp(calc(env(safe-area-inset-top, 0px) + 50px), 20vh, calc(100vh - env(safe-area-inset-bottom, 0px) - 50px));
           transform: translateY(-50%); z-index: 99999; --orb-tint: ${tint};`;
+        fogFoldClasses(container, true);
         container.innerHTML = `<button class="fog-orb" title="${escAttr(latestTitle || "Open the HUD")}" aria-label="Open the HUD">
-          <svg viewBox="0 0 24 24" aria-hidden="true" style="animation-delay:-${Date.now() % 14000}ms">
-            <path d="M12 2.5 L13.6 10.4 L21.5 12 L13.6 13.6 L12 21.5 L10.4 13.6 L2.5 12 L10.4 10.4 Z" fill="var(--orb-tint)"/>
-            <circle cx="12" cy="12" r="6.3" fill="none" stroke="var(--orb-tint)" stroke-width="1" opacity=".5"/></svg></button>`;
+          <svg viewBox="0 0 24 24" aria-hidden="true" style="animation-delay:-${Date.now() % 14000}ms">${FOG_STAR_GLYPH("var(--orb-tint)")}</svg></button>`;
         container.onclick = toggleMinimize;
         return;
       }
@@ -3799,11 +3845,13 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
   applyHudTypography(container);
   if (SYS) container.style.fontFamily = sysFontStack();
   container.className = SYS ? `rpg-sys${FOG ? " rpg-fog" : ""}` : "";
+  if (FOG) fogFoldClasses(container, false);
   container.onclick = null;
 
   try {
     const { root, display, type, isVehicle } = getActiveData();
     if (SYS) container.className = `rpg-sys${FOG ? " rpg-fog" : ""} rpg-sys-${isVehicle ? "veh" : type}`;
+    if (FOG) fogFoldClasses(container, false);
     const context = SillyTavern.getContext();
     const chat = context?.chat;
     latest = updateLatestStatusAndToast(chat);
@@ -7847,7 +7895,7 @@ const FOG_CSS = `
 .rpg-sys.rpg-fog::before,.rpg-sys.rpg-fog::after{border:0; filter:none; width:auto; height:26px; left:3px; right:3px; z-index:-1;
   background-repeat:no-repeat; background-size:26px 26px}
 /* the corner buttons sit just inside the corner ornaments rather than on top of them */
-.rpg-fog .sys-ctl{right:20px; gap:5px}
+.rpg-fog .sys-ctl{right:7px; gap:6px}   /* the minimize button's corner sits on the corner flourish's diagonal */
 .rpg-fog #rpg-min-btn{width:24px !important}
 /* the bottom buttons tuck behind one centred button and fan out from it */
 .rpg-sys.rpg-fog .rpg-c-btns.fog-dock{left:50% !important; bottom:13.5px !important; transform:translateX(-50%); align-items:center; gap:7px !important}
@@ -7872,6 +7920,23 @@ const FOG_CSS = `
 .rpg-fog-orb .fog-orb svg{width:26px; height:26px; overflow:visible; animation:fogDockSpin 14s linear infinite;
   filter:drop-shadow(0 0 3px var(--orb-tint)) drop-shadow(0 0 1px rgba(0,0,0,.8))}
 @media (prefers-reduced-motion: reduce){.rpg-fog-orb .fog-orb svg{animation:none}}
+.rpg-fog-orb.fog-orb-in .fog-orb{animation:fogOrbIn ${FOG_ORB_MS}ms cubic-bezier(.3,1.4,.5,1) both; animation-delay:inherit; animation-duration:inherit}
+@keyframes fogOrbIn{from{opacity:0; transform:scale(.3) rotate(-60deg)} to{opacity:1; transform:none}}
+/* opening: a thin strip unrolls sideways, then the panel folds down from the top edge */
+.rpg-sys.rpg-fog.fog-unfold{transform-origin:50% 0; animation:fogUnfold ${FOG_UNFOLD_MS}ms ease-out both}
+.rpg-sys.rpg-fog.fog-fold{transform-origin:50% 0; animation:fogFoldUp ${FOG_FOLD_MS}ms ease-in both; pointer-events:none}
+@keyframes fogUnfold{
+  0%{opacity:0; transform:perspective(1100px) rotateX(-88deg) scaleX(.08)}
+  32%{opacity:1; transform:perspective(1100px) rotateX(-88deg) scaleX(1)}
+  80%{transform:perspective(1100px) rotateX(5deg)}
+  100%{transform:none}}
+@keyframes fogFoldUp{
+  0%{transform:none}
+  55%{opacity:1; transform:perspective(1100px) rotateX(-88deg) scaleX(1)}
+  100%{opacity:0; transform:perspective(1100px) rotateX(-88deg) scaleX(.08)}}
+/* the status mark in the header: the star, still, in the status colour */
+.rpg-fog .fog-status{display:inline-grid; place-items:center; width:20px; height:20px; vertical-align:middle}
+.rpg-fog .fog-status svg{width:20px; height:20px; overflow:visible; filter:drop-shadow(0 0 3px var(--orb-tint)) drop-shadow(0 0 1px rgba(0,0,0,.9))}
 @keyframes fogDockTurn{from{transform:none} to{transform:rotate(45deg) scale(.9)}}
 @keyframes fogDockUnturn{from{transform:rotate(45deg) scale(.9)} to{transform:none}}
 @media (prefers-reduced-motion: reduce){.rpg-fog .fog-dock.open #rpg-fog-dock svg{animation:none}}
@@ -8629,7 +8694,7 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
       <span class="sys-kind">${kind}</span>
       <div class="sys-plate">STATUS</div>
       <div class="sys-ctl">
-        <span id="rpg-latest-indicator" style="cursor:pointer; user-select:none;">${renderIndicatorDotHtml(latest.status, latestTitle)}</span>
+        <span id="rpg-latest-indicator" style="cursor:pointer; user-select:none;">${isFogSkin() ? fogStatusStarHtml(latest.status, latestTitle) : renderIndicatorDotHtml(latest.status, latestTitle)}</span>
         <button id="rpg-min-btn" title="Minimize" style="cursor:pointer; font-size:12px; padding:0; font-weight:bold; line-height:18px; box-sizing:border-box;">_</button>
       </div>
     </div>
@@ -8687,7 +8752,13 @@ function sysSettingsHtml() {
       ${isFogSkin() ? "" : `<div style="${lab}">Font</div>`}
       <select id="rpg-sys-font" style="${sel}${isFogSkin() ? " display:none;" : ""}">${opt("exo", "Exo 2", font)}${opt("squarish", "Squarish (Rajdhani)", font)}${opt("saira", "Saira Condensed", font)}${opt("teko", "Teko", font)}${opt("sans", "Sans", font)}${opt("preset", "Follow preset", font)}</select>
       ${isFogSkin() ? `<div style="${lab}">Tarot number</div>
-      <select id="rpg-fog-number" style="${sel}">${opt("auto", "Sequence if tracked, else the day", uiSettings.fogNumber || "auto")}${opt("day", "Day of the month", uiSettings.fogNumber || "auto")}${opt("sequence", "Sequence only", uiSettings.fogNumber || "auto")}${opt("none", "None", uiSettings.fogNumber || "auto")}</select>` : ""}
+      <select id="rpg-fog-number" style="${sel}">${opt("auto", "Sequence if tracked, else the day", uiSettings.fogNumber || "auto")}${opt("day", "Day of the month", uiSettings.fogNumber || "auto")}${opt("sequence", "Sequence only", uiSettings.fogNumber || "auto")}${opt("none", "None", uiSettings.fogNumber || "auto")}</select>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+        <span title="The panel folds into the round button when you minimize it, and unfolds when you open it">Fold animation</span>
+        <input type="checkbox" id="rpg-fog-fold-cb" ${uiSettings.fogFold !== false ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
+      </div>
+      <div style="${lab}${uiSettings.fogFold === false ? " opacity:.45;" : ""}">Fold speed</div>
+      <select id="rpg-fog-fold-speed" style="${sel}${uiSettings.fogFold === false ? " opacity:.45;" : ""}" ${uiSettings.fogFold === false ? "disabled" : ""}>${["slow", "normal", "fast", "instant"].map((v) => opt(v, { slow: "Slow", normal: "Normal", fast: "Fast", instant: "Very fast" }[v], FOG_FOLD_SPEEDS[uiSettings.fogFoldSpeed] ? uiSettings.fogFoldSpeed : "normal")).join("")}</select>` : ""}
       <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
         <span title="A System popup when a reply gives you items, skills or passives, adds quests, timers or party members, or starts a fight">Notifications</span>
         <input type="checkbox" id="rpg-sys-notices-cb" ${uiSettings.sysNotices !== false ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
@@ -8705,6 +8776,10 @@ function sysBindSettings() {
   if (font) { stop(font); font.onchange = () => { uiSettings.sysFont = font.value; saveUiSettings(); renderRPG(); }; }
   const fn = document.getElementById("rpg-fog-number");
   if (fn) { stop(fn); fn.onchange = () => { uiSettings.fogNumber = fn.value; saveUiSettings(); renderRPG(); }; }
+  const fc = document.getElementById("rpg-fog-fold-cb");
+  if (fc) { stop(fc); fc.onchange = () => { uiSettings.fogFold = fc.checked; saveUiSettings(); renderRPG(); }; }
+  const fs = document.getElementById("rpg-fog-fold-speed");
+  if (fs) { stop(fs); fs.onchange = () => { uiSettings.fogFoldSpeed = fs.value; saveUiSettings(); }; }
   const nt = document.getElementById("rpg-sys-notices-cb");
   if (nt) { stop(nt); nt.onchange = () => { uiSettings.sysNotices = nt.checked; saveUiSettings(); }; }
   const emb = document.getElementById("rpg-sys-emblem-open");
@@ -8845,8 +8920,8 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
-  { build: "2026-10-26.28", items: [
-    "New skin: Gray Fog. The System panel in a Victorian occult look: charcoal fog with a faint eight-pointed star over a broken circle and stars, a silver double frame with corner flourishes, gothic and serif lettering, one round menu button at the bottom that fans out into settings, scan, help and the log, a floating round button when minimised whose slowly turning star takes the status colour, and a tarot number under the title (the Sequence if the card tracks one, else the day). MP reads as Spirituality, and the icons lean tarot: a cup, a star, a crescent and a pentacle. Every System feature carries over, including the clocks and notifications.",
+  { build: "2026-10-26.30", items: [
+    "New skin: Gray Fog. The System panel in a Victorian occult look: charcoal fog with a faint eight-pointed star over a broken circle and stars, a silver double frame with corner flourishes, gothic and serif lettering, one round menu button at the bottom that fans out into settings, scan, help and the log, a floating round button when minimised whose slowly turning star takes the status colour (the status dot is that star too), a fold and unfold when closing and opening (its speed is adjustable, and it can be turned off), and a tarot number under the title (the Sequence if the card tracks one, else the day). MP reads as Spirituality, and the icons lean tarot: a cup, a star, a crescent and a pentacle. Every System feature carries over, including the clocks and notifications.",
     "Big slot: a pocket watch, with a chain, a small-seconds dial and Breguet hands. Polished silver and ivory in Gray Fog, glowing in System.",
     "Background images (System and Gray Fog): stack up to six layers behind the top of the panel: the built-in star, pictures from links, or ones you upload. Each layer's size, position, angle, opacity, shape, faded edges, colour and blend are adjustable, with a live preview. Drag on the panel to place a picture, pinch or scroll to size it, twist to turn it, and fold the controls away to see the whole panel while you do.",
   ] },
