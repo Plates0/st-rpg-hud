@@ -423,7 +423,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-26.32";
+const HUD_BUILD = "2026-10-27.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -456,6 +456,7 @@ const defaultUiSettings = {
   fogNumber: "auto",      // Gray Fog's tarot number: "auto" (Sequence, else the day) | "day" | "sequence" | "none"
   fogFold: true,          // Gray Fog: fold the panel into the round button and back
   fogFoldSpeed: "normal", // "slow" | "normal" | "fast" | "instant"
+  fogOrbPos: null,        // Gray Fog: where the folded-away button was dragged to, { fx, fy } as screen fractions
   fontPreset: "retro_mono",
   fontFamily: "'Courier New', Courier, monospace",
   fontScale: 1.0,
@@ -3485,6 +3486,57 @@ function fogFoldClasses(container, minimized) {
   container.style.animationDuration = `${Math.round(ms)}ms`;
   container.style.animationDelay = `-${t}ms`;
 }
+// The folded-away button can be dragged anywhere; where it was left is kept as a
+// fraction of the screen (its centre), so it stays in the same spot after a resize.
+const FOG_ORB_HALF = 22, FOG_ORB_EDGE = 8;
+function fogOrbPlaceCss() {
+  const p = uiSettings.fogOrbPos;
+  if (!p || !Number.isFinite(p.fx) || !Number.isFinite(p.fy))
+    return `right: 12px; top: clamp(calc(env(safe-area-inset-top, 0px) + 50px), 20vh, calc(100vh - env(safe-area-inset-bottom, 0px) - 50px));
+      transform: translateY(-50%);`;
+  const lo = FOG_ORB_EDGE, hi = FOG_ORB_EDGE + 2 * FOG_ORB_HALF;
+  return `left: clamp(${lo}px, calc(${(p.fx * 100).toFixed(3)}vw - ${FOG_ORB_HALF}px), calc(100vw - ${hi}px));
+    top: clamp(calc(env(safe-area-inset-top, 0px) + ${lo}px), calc(${(p.fy * 100).toFixed(3)}vh - ${FOG_ORB_HALF}px), calc(100vh - env(safe-area-inset-bottom, 0px) - ${hi}px));`;
+}
+function fogBindOrbDrag(container) {
+  const btn = container.querySelector(".fog-orb");
+  if (!btn) return;
+  let start = null, dragged = false;
+  btn.onpointerdown = (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    const r = container.getBoundingClientRect();
+    start = { x: e.clientX, y: e.clientY, left: r.left, top: r.top, id: e.pointerId };
+    dragged = false;
+    btn.setPointerCapture?.(e.pointerId);
+  };
+  btn.onpointermove = (e) => {
+    if (!start || e.pointerId !== start.id) return;
+    const dx = e.clientX - start.x, dy = e.clientY - start.y;
+    if (!dragged && Math.hypot(dx, dy) < 6) return;          // a tap, not a drag (yet)
+    dragged = true;
+    const vw = window.innerWidth, vh = window.innerHeight, size = 2 * FOG_ORB_HALF;
+    const left = Math.max(FOG_ORB_EDGE, Math.min(vw - size - FOG_ORB_EDGE, start.left + dx));
+    const top = Math.max(FOG_ORB_EDGE, Math.min(vh - size - FOG_ORB_EDGE, start.top + dy));
+    Object.assign(container.style, { left: `${left}px`, top: `${top}px`, right: "auto", transform: "none" });
+    container.classList.add("dragging");
+    // kept live, so a re-render mid-drag doesn't throw it back
+    uiSettings.fogOrbPos = { fx: (left + FOG_ORB_HALF) / vw, fy: (top + FOG_ORB_HALF) / vh };
+  };
+  const end = (e) => {
+    if (!start || e.pointerId !== start.id) return;
+    start = null;
+    container.classList.remove("dragging");
+    if (dragged) saveUiSettings();
+  };
+  btn.onpointerup = end;
+  btn.onpointercancel = end;
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    if (dragged) { dragged = false; return; }               // the end of a drag isn't a tap
+    toggleMinimize(e);
+  };
+  container.onclick = null;
+}
 function fogAccordion(container, opening, ms, done) {
   const r = container.getBoundingClientRect();
   const W = r.width, H = r.height;
@@ -3814,13 +3866,11 @@ function renderClassicSkin() {
         // Gray Fog: a floating round button with the slowly turning star, coloured like the status dot
         const tint = fogStatusTint(latest?.status);
         container.className = "rpg-fog-orb";
-        container.style.cssText = `position: fixed; right: 12px;
-          top: clamp(calc(env(safe-area-inset-top, 0px) + 50px), 20vh, calc(100vh - env(safe-area-inset-bottom, 0px) - 50px));
-          transform: translateY(-50%); z-index: 99999; --orb-tint: ${tint};`;
+        container.style.cssText = `position: fixed; ${fogOrbPlaceCss()} z-index: 99999; --orb-tint: ${tint};`;
         fogFoldClasses(container, true);
-        container.innerHTML = `<button class="fog-orb" title="${escAttr(latestTitle || "Open the HUD")}" aria-label="Open the HUD">
+        container.innerHTML = `<button class="fog-orb" title="${escAttr(latestTitle || "Open the HUD")}${"\n"}(drag to move)" aria-label="Open the HUD">
           <svg viewBox="0 0 24 24" aria-hidden="true" style="animation-delay:-${Date.now() % 14000}ms">${FOG_STAR_GLYPH("var(--orb-tint)")}</svg></button>`;
-        container.onclick = toggleMinimize;
+        fogBindOrbDrag(container);
         return;
       }
       container.style.cssText = SYS ? `
@@ -7977,11 +8027,13 @@ const FOG_CSS = `
 @keyframes fogDockSpin{to{transform:rotate(360deg)}}
 /* the HUD folded away: a floating round button, its star tinted by the status */
 .rpg-fog-orb .fog-orb{width:44px; height:44px; border-radius:50%; padding:0; cursor:pointer; display:grid; place-items:center;
-  touch-action:manipulation; user-select:none; -webkit-tap-highlight-color:transparent;
+  touch-action:none; user-select:none; -webkit-tap-highlight-color:transparent;
   background:radial-gradient(circle at 35% 28%, #4a4c56, #1b1b21 70%); border:1px solid rgba(214,217,226,.75);
   box-shadow:0 0 0 3px rgba(18,18,23,.85), 0 0 0 4px rgba(214,217,226,.3), 0 2px 12px rgba(0,0,0,.6), 0 0 14px rgba(200,205,225,.25);
   transition:transform .15s}
 .rpg-fog-orb .fog-orb:hover{transform:scale(1.06)}
+.rpg-fog-orb.dragging .fog-orb{transform:scale(1.1); cursor:grabbing; transition:none;
+  box-shadow:0 0 0 3px rgba(18,18,23,.85), 0 0 0 4px rgba(214,217,226,.4), 0 6px 18px rgba(0,0,0,.7), 0 0 18px rgba(200,205,225,.35)}
 .rpg-fog-orb .fog-orb svg{width:26px; height:26px; overflow:visible; animation:fogDockSpin 14s linear infinite;
   filter:drop-shadow(0 0 3px var(--orb-tint)) drop-shadow(0 0 1px rgba(0,0,0,.8))}
 @media (prefers-reduced-motion: reduce){.rpg-fog-orb .fog-orb svg{animation:none}}
@@ -8973,6 +9025,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-27.1", items: [
+    "Gray Fog: the round button the HUD folds into can be dragged anywhere on screen, and stays where you leave it. Tap it to open the HUD as before.",
+  ] },
   { build: "2026-10-26.31", items: [
     "New skin: Gray Fog. The System panel in a Victorian occult look: charcoal fog with a faint eight-pointed star over a broken circle and stars, a silver double frame with corner flourishes, gothic and serif lettering, one round menu button at the bottom that fans out into settings, scan, help and the log, a floating round button when minimised whose slowly turning star takes the status colour (the status dot is that star too), the panel folding up like a paper accordion when closed and unfolding when opened (its speed is adjustable, and it can be turned off), and a tarot number under the title (the Sequence if the card tracks one, else the day). MP reads as Spirituality, and the icons lean tarot: a cup, a star, a crescent and a pentacle. Every System feature carries over, including the clocks and notifications.",
     "Big slot: a pocket watch, with a chain, a small-seconds dial and Breguet hands. Polished silver and ivory in Gray Fog, glowing in System.",
