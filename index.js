@@ -423,7 +423,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-27.1";
+const HUD_BUILD = "2026-10-28.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -457,6 +457,7 @@ const defaultUiSettings = {
   fogFold: true,          // Gray Fog: fold the panel into the round button and back
   fogFoldSpeed: "normal", // "slow" | "normal" | "fast" | "instant"
   fogOrbPos: null,        // Gray Fog: where the folded-away button was dragged to, { fx, fy } as screen fractions
+  fogOrbLock: false,      // Gray Fog: the folded-away button can't be dragged
   fontPreset: "retro_mono",
   fontFamily: "'Courier New', Courier, monospace",
   fontScale: 1.0,
@@ -3494,33 +3495,58 @@ function fogOrbPlaceCss() {
   if (!p || !Number.isFinite(p.fx) || !Number.isFinite(p.fy))
     return `right: 12px; top: clamp(calc(env(safe-area-inset-top, 0px) + 50px), 20vh, calc(100vh - env(safe-area-inset-bottom, 0px) - 50px));
       transform: translateY(-50%);`;
-  const lo = FOG_ORB_EDGE, hi = FOG_ORB_EDGE + 2 * FOG_ORB_HALF;
-  return `left: clamp(${lo}px, calc(${(p.fx * 100).toFixed(3)}vw - ${FOG_ORB_HALF}px), calc(100vw - ${hi}px));
-    top: clamp(calc(env(safe-area-inset-top, 0px) + ${lo}px), calc(${(p.fy * 100).toFixed(3)}vh - ${FOG_ORB_HALF}px), calc(100vh - env(safe-area-inset-bottom, 0px) - ${hi}px));`;
+  return "left: 0px; top: 0px;";            // placed exactly by fogOrbPlace() once it's laid out
+}
+// How the button's style position maps to where it shows on screen (screen = a + k * style).
+// Measured rather than assumed, so a zoomed or scaled page still puts it right under the finger.
+function fogOrbMap(container) {
+  const r = container.getBoundingClientRect();
+  const k = r.width && container.offsetWidth ? r.width / container.offsetWidth : 1;
+  const cs = getComputedStyle(container);
+  return { r, k, ax: r.left - k * (parseFloat(cs.left) || 0), ay: r.top - k * (parseFloat(cs.top) || 0) };
+}
+// Put the button's centre at (cx, cy) on screen, kept inside the screen.
+function fogOrbPlace(container, cx, cy) {
+  let m = fogOrbMap(container);
+  if (container.style.transform || container.style.right) {          // switch from the default spot to left/top
+    Object.assign(container.style, { left: `${m.r.left / m.k}px`, top: `${m.r.top / m.k}px`, right: "auto", transform: "none" });
+    m = fogOrbMap(container);
+  }
+  const hw = m.r.width / 2, hh = m.r.height / 2;
+  const vw = window.visualViewport?.width || window.innerWidth, vh = window.visualViewport?.height || window.innerHeight;
+  cx = Math.max(FOG_ORB_EDGE + hw, Math.min(vw - FOG_ORB_EDGE - hw, cx));
+  cy = Math.max(FOG_ORB_EDGE + hh, Math.min(vh - FOG_ORB_EDGE - hh, cy));
+  container.style.left = `${((cx - hw - m.ax) / m.k).toFixed(1)}px`;
+  container.style.top = `${((cy - hh - m.ay) / m.k).toFixed(1)}px`;
+  return { cx, cy, vw, vh };
 }
 function fogBindOrbDrag(container) {
   const btn = container.querySelector(".fog-orb");
   if (!btn) return;
+  const p = uiSettings.fogOrbPos;
+  if (p && Number.isFinite(p.fx) && Number.isFinite(p.fy)) {
+    const vw = window.visualViewport?.width || window.innerWidth, vh = window.visualViewport?.height || window.innerHeight;
+    fogOrbPlace(container, p.fx * vw, p.fy * vh);
+  }
+  const locked = !!uiSettings.fogOrbLock;
+  container.classList.toggle("locked", locked);
   let start = null, dragged = false;
   btn.onpointerdown = (e) => {
-    if (e.button !== undefined && e.button !== 0) return;
+    if (locked || (e.button !== undefined && e.button !== 0)) return;
     const r = container.getBoundingClientRect();
-    start = { x: e.clientX, y: e.clientY, left: r.left, top: r.top, id: e.pointerId };
+    // where on the button it was picked up, so that point stays under the finger
+    start = { x: e.clientX, y: e.clientY, gx: e.clientX - (r.left + r.width / 2), gy: e.clientY - (r.top + r.height / 2), id: e.pointerId };
     dragged = false;
     btn.setPointerCapture?.(e.pointerId);
   };
   btn.onpointermove = (e) => {
     if (!start || e.pointerId !== start.id) return;
-    const dx = e.clientX - start.x, dy = e.clientY - start.y;
-    if (!dragged && Math.hypot(dx, dy) < 6) return;          // a tap, not a drag (yet)
+    if (!dragged && Math.hypot(e.clientX - start.x, e.clientY - start.y) < 6) return;     // a tap, not a drag (yet)
     dragged = true;
-    const vw = window.innerWidth, vh = window.innerHeight, size = 2 * FOG_ORB_HALF;
-    const left = Math.max(FOG_ORB_EDGE, Math.min(vw - size - FOG_ORB_EDGE, start.left + dx));
-    const top = Math.max(FOG_ORB_EDGE, Math.min(vh - size - FOG_ORB_EDGE, start.top + dy));
-    Object.assign(container.style, { left: `${left}px`, top: `${top}px`, right: "auto", transform: "none" });
     container.classList.add("dragging");
+    const at = fogOrbPlace(container, e.clientX - start.gx, e.clientY - start.gy);
     // kept live, so a re-render mid-drag doesn't throw it back
-    uiSettings.fogOrbPos = { fx: (left + FOG_ORB_HALF) / vw, fy: (top + FOG_ORB_HALF) / vh };
+    uiSettings.fogOrbPos = { fx: at.cx / at.vw, fy: at.cy / at.vh };
   };
   const end = (e) => {
     if (!start || e.pointerId !== start.id) return;
@@ -3530,6 +3556,7 @@ function fogBindOrbDrag(container) {
   };
   btn.onpointerup = end;
   btn.onpointercancel = end;
+  btn.oncontextmenu = (e) => e.preventDefault();            // a long press shouldn't pop up a menu
   btn.onclick = (e) => {
     e.stopPropagation();
     if (dragged) { dragged = false; return; }               // the end of a drag isn't a tap
@@ -8031,9 +8058,10 @@ const FOG_CSS = `
   background:radial-gradient(circle at 35% 28%, #4a4c56, #1b1b21 70%); border:1px solid rgba(214,217,226,.75);
   box-shadow:0 0 0 3px rgba(18,18,23,.85), 0 0 0 4px rgba(214,217,226,.3), 0 2px 12px rgba(0,0,0,.6), 0 0 14px rgba(200,205,225,.25);
   transition:transform .15s}
-.rpg-fog-orb .fog-orb:hover{transform:scale(1.06)}
-.rpg-fog-orb.dragging .fog-orb{transform:scale(1.1); cursor:grabbing; transition:none;
-  box-shadow:0 0 0 3px rgba(18,18,23,.85), 0 0 0 4px rgba(214,217,226,.4), 0 6px 18px rgba(0,0,0,.7), 0 0 18px rgba(200,205,225,.35)}
+@media (hover:hover){ .rpg-fog-orb:not(.dragging) .fog-orb:hover{transform:scale(1.06)} }
+.rpg-fog-orb .fog-orb{-webkit-touch-callout:none; -webkit-user-select:none}
+.rpg-fog-orb.dragging .fog-orb{cursor:grabbing; transition:none}
+.rpg-fog-orb.locked .fog-orb{touch-action:manipulation}
 .rpg-fog-orb .fog-orb svg{width:26px; height:26px; overflow:visible; animation:fogDockSpin 14s linear infinite;
   filter:drop-shadow(0 0 3px var(--orb-tint)) drop-shadow(0 0 1px rgba(0,0,0,.8))}
 @media (prefers-reduced-motion: reduce){.rpg-fog-orb .fog-orb svg{animation:none}}
@@ -8863,7 +8891,12 @@ function sysSettingsHtml() {
         <input type="checkbox" id="rpg-fog-fold-cb" ${uiSettings.fogFold !== false ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
       </div>
       <div style="${lab}${uiSettings.fogFold === false ? " opacity:.45;" : ""}">Fold speed</div>
-      <select id="rpg-fog-fold-speed" style="${sel}${uiSettings.fogFold === false ? " opacity:.45;" : ""}" ${uiSettings.fogFold === false ? "disabled" : ""}>${["slow", "normal", "fast", "instant"].map((v) => opt(v, { slow: "Slow", normal: "Normal", fast: "Fast", instant: "Very fast" }[v], FOG_FOLD_SPEEDS[uiSettings.fogFoldSpeed] ? uiSettings.fogFoldSpeed : "normal")).join("")}</select>` : ""}
+      <select id="rpg-fog-fold-speed" style="${sel}${uiSettings.fogFold === false ? " opacity:.45;" : ""}" ${uiSettings.fogFold === false ? "disabled" : ""}>${["slow", "normal", "fast", "instant"].map((v) => opt(v, { slow: "Slow", normal: "Normal", fast: "Fast", instant: "Very fast" }[v], FOG_FOLD_SPEEDS[uiSettings.fogFoldSpeed] ? uiSettings.fogFoldSpeed : "normal")).join("")}</select>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+        <span title="Stop the round button (the folded-away HUD) from being dragged">Lock button position</span>
+        <input type="checkbox" id="rpg-fog-orb-lock" ${uiSettings.fogOrbLock ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
+      </div>
+      <button id="rpg-fog-orb-reset" style="width:100%; background:var(--t-0d1a2c, #0d1a2c); border:1px solid var(--t-3d6a94, #3d6a94); color:var(--t-dff1ff, #dff1ff); padding:6px; cursor:pointer; margin-bottom:8px;${uiSettings.fogOrbPos ? "" : " opacity:.45;"}" ${uiSettings.fogOrbPos ? "" : "disabled"}>Reset button position</button>` : ""}
       <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
         <span title="A System popup when a reply gives you items, skills or passives, adds quests, timers or party members, or starts a fight">Notifications</span>
         <input type="checkbox" id="rpg-sys-notices-cb" ${uiSettings.sysNotices !== false ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
@@ -8885,6 +8918,10 @@ function sysBindSettings() {
   if (fc) { stop(fc); fc.onchange = () => { uiSettings.fogFold = fc.checked; saveUiSettings(); renderRPG(); }; }
   const fs = document.getElementById("rpg-fog-fold-speed");
   if (fs) { stop(fs); fs.onchange = () => { uiSettings.fogFoldSpeed = fs.value; saveUiSettings(); }; }
+  const ol = document.getElementById("rpg-fog-orb-lock");
+  if (ol) { stop(ol); ol.onchange = () => { uiSettings.fogOrbLock = ol.checked; saveUiSettings(); }; }
+  const orr = document.getElementById("rpg-fog-orb-reset");
+  if (orr) orr.onclick = (e) => { e.stopPropagation(); uiSettings.fogOrbPos = null; saveUiSettings(); renderRPG(); hudToast.success("The button is back in its usual spot."); };
   const nt = document.getElementById("rpg-sys-notices-cb");
   if (nt) { stop(nt); nt.onchange = () => { uiSettings.sysNotices = nt.checked; saveUiSettings(); }; }
   const emb = document.getElementById("rpg-sys-emblem-open");
@@ -9025,8 +9062,8 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
-  { build: "2026-10-27.1", items: [
-    "Gray Fog: the round button the HUD folds into can be dragged anywhere on screen, and stays where you leave it. Tap it to open the HUD as before.",
+  { build: "2026-10-28.1", items: [
+    "Gray Fog: the round button the HUD folds into can be dragged anywhere on screen, and stays where you leave it. Tap it to open the HUD as before. Settings can lock it in place or put it back in its usual spot.",
   ] },
   { build: "2026-10-26.31", items: [
     "New skin: Gray Fog. The System panel in a Victorian occult look: charcoal fog with a faint eight-pointed star over a broken circle and stars, a silver double frame with corner flourishes, gothic and serif lettering, one round menu button at the bottom that fans out into settings, scan, help and the log, a floating round button when minimised whose slowly turning star takes the status colour (the status dot is that star too), the panel folding up like a paper accordion when closed and unfolding when opened (its speed is adjustable, and it can be turned off), and a tarot number under the title (the Sequence if the card tracks one, else the day). MP reads as Spirituality, and the icons lean tarot: a cup, a star, a crescent and a pentacle. Every System feature carries over, including the clocks and notifications.",
