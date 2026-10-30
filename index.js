@@ -423,7 +423,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-28.1";
+const HUD_BUILD = "2026-10-30.3";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -458,6 +458,7 @@ const defaultUiSettings = {
   fogFoldSpeed: "normal", // "slow" | "normal" | "fast" | "instant"
   fogOrbPos: null,        // Gray Fog: where the folded-away button was dragged to, { fx, fy } as screen fractions
   fogOrbLock: false,      // Gray Fog: the folded-away button can't be dragged
+  meterIcons: {},         // System and Gray Fog: icons chosen for meters, by meter name (like meterColors)
   fontPreset: "retro_mono",
   fontFamily: "'Courier New', Courier, monospace",
   fontScale: 1.0,
@@ -3229,8 +3230,20 @@ function meterAutoColor(name) {
   if (k.includes("heat") || k.includes("temp")) return "#ff7043";
   if (k.includes("corrupt") || k.includes("taint")) return "#ba68c8";
   if (k.includes("rad") || k.includes("toxin") || k.includes("poison")) return "#cddc39";
-  return "#26a69a";
+  // everything else takes the colour of the icon its name gets
+  return METER_ICON_COLORS[meterIconAuto(name)] || "#26a69a";
 }
+// a bar colour for each meter icon, for names the rules above don't cover
+const METER_ICON_COLORS = {
+  hp: "#e57373", "m-blood": "#e53935", "m-brain": "#64b5f6", "m-hunger": "#81c784", "m-meat": "#a1887f",
+  "m-thirst": "#4dd0e1", "m-energy": "#ffd54f", "m-sleep": "#9fa8da", "m-cold": "#81d4fa", "m-heat": "#ff7043",
+  "m-corrupt": "#ba68c8", "m-rad": "#cddc39", "m-poison": "#8bc34a", "m-sick": "#afb42b", "m-air": "#b3e5fc",
+  "m-stress": "#ff8a65", "m-mood": "#ffe082", bond: "#f48fb1", "m-ward": "#00bcd4", def: "#90a4ae",
+  "m-ammo": "#c8a165", "m-focus": "#7986cb", "m-eye": "#ffb74d", "m-battery": "#9ccc65", "m-xp": "#b39ddb",
+  "m-fame": "#ffc107", "m-luck": "#66bb6a", "m-faith": "#fff59d", satk: "#ff5252", mp: "#448aff",
+  hourglass: "#bcaaa4", coin: "#ffd700", sparkle: "#e1bee7",
+  "m-zone": "#d500f9", "m-boost": "#ff1744", "m-divide": "#a8ccff",
+};
 
 function renderMeters(meters, editable = false) {
   if (!Array.isArray(meters) || meters.length === 0) return "";
@@ -4551,7 +4564,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         saoStartMeterEdit();
         // "+ meter" opens straight onto a new, empty row
         if (el.hasAttribute("data-meter-add")) {
-          saoMeterEdit.push({ name: "", curr: "0", max: "100", color: "#26a69a", custom: false, orig: "" });
+          saoMeterEdit.push({ name: "", curr: "0", max: "100", color: "#26a69a", custom: false, icon: "", orig: "" });
         }
         renderRPG();
         if (el.hasAttribute("data-meter-add")) {
@@ -5113,6 +5126,7 @@ let saoQuestTab = "quests";   // "quests" | "log"
 const saoScroll = new Map();  // scroll key -> {top, left}
 let saoLogShown = 20;         // turns rendered before "show older"
 let saoMeterEdit = null;
+let meterIconPick = null;    // which meter editor row has its icon grid open (System and Gray Fog)
 let meterEditIdx = -1;       // classic/System: whose meters the open editor belongs to
 let saoMasteryEdit = null;   // null, or a draft: [{name, curr, max, tail, orig}]     // null, or a draft: [{name, curr, max, color, custom}]
 let saoLayoutMode = false;   // drag clusters around instead of using them
@@ -6408,9 +6422,16 @@ function saoMetersSection(display) {
   const meters = Array.isArray(display.meters) ? display.meters : [];
 
   if (saoMeterEdit) {
+    const icons = isSysSkin();       // only these skins show a meter's icon
+    if (meterIconPick !== null && !saoMeterEdit[meterIconPick]) meterIconPick = null;
+    const grid = (i, m) => `<div class="rpg-sao-m-icons" data-i="${i}">
+        <button class="rpg-sao-m-ic auto${m.icon ? "" : " on"}" data-i="${i}" data-icon="" title="Pick from the name">Auto</button>
+        ${METER_ICONS.map(([k, label]) => `<button class="rpg-sao-m-ic${m.icon === k ? " on" : ""}" data-i="${i}" data-icon="${k}" title="${escAttr(label)}">${sysIcon(k)}</button>`).join("")}
+      </div>`;
     const rows = saoMeterEdit.map((m, i) => `
       <div class="rpg-sao-mrow-edit" data-i="${i}">
         ${reorderBtns("meter", i, saoMeterEdit.length)}
+        ${icons ? `<button class="rpg-sao-m-icon${meterIconPick === i ? " on" : ""}" data-i="${i}" title="Icon${m.icon ? "" : " (from the name)"}">${sysIcon(m.icon || meterIconAuto(m.name))}</button>` : ""}
         <input type="color" class="rpg-sao-m-color" data-i="${i}" value="${escAttr(m.color)}"
           title="Colour${m.custom ? "" : " (automatic)"}">
         <input type="text" class="rpg-sao-m-name" data-i="${i}" value="${escAttr(m.name)}" placeholder="Name">
@@ -6419,7 +6440,7 @@ function saoMetersSection(display) {
         <input type="text" class="rpg-sao-m-max" data-i="${i}" value="${escAttr(m.max)}" inputmode="decimal">
         <button class="rpg-sao-m-auto${m.custom ? "" : " off"}" data-i="${i}" title="Back to automatic colour">&#8634;</button>
         <button class="rpg-sao-m-del" data-i="${i}" title="Remove">&#10005;</button>
-      </div>`).join("");
+      </div>${icons && meterIconPick === i ? grid(i, m) : ""}`).join("");
 
     return `<div class="rpg-sao-subhead"><span class="rpg-sao-sub">Meters</span></div>
       <div class="rpg-sao-meditor">
@@ -7116,8 +7137,10 @@ function saoStartMeterEdit() {
     max: m.max ?? 100,
     color: meterColorByName(m.name),
     custom: !!uiSettings.meterColors?.[meterKey(m.name)],
+    icon: uiSettings.meterIcons?.[meterKey(m.name)] || "",
     orig: m.name ?? "",
   }));
+  meterIconPick = null;
 }
 
 function saoSaveMeterEdit() {
@@ -7154,6 +7177,16 @@ function saoSaveMeterEdit() {
     if (m.orig && meterKey(m.orig) !== k) delete colors[meterKey(m.orig)];   // renamed
   });
   uiSettings.meterColors = colors;
+  // icons the same way; a meter left on Auto follows its name
+  const icons = { ...(uiSettings.meterIcons || {}) };
+  draft.forEach((m) => {
+    const k = meterKey(m.name);
+    if (m.orig && meterKey(m.orig) !== k) delete icons[meterKey(m.orig)];
+    if (m.icon) icons[k] = m.icon;
+    else delete icons[k];
+  });
+  uiSettings.meterIcons = icons;
+  meterIconPick = null;
   saveUiSettings();
 
   saoMeterEdit = null;
@@ -7174,6 +7207,14 @@ function saoBindMeterEditor() {
     el.onclick = (e) => e.stopPropagation();
   });
   field(".rpg-sao-m-name", "name");
+  // a meter on Auto shows the icon its name would get, as you type
+  body.querySelectorAll(".rpg-sao-m-name").forEach((el) => {
+    el.addEventListener("input", () => {
+      const m = saoMeterEdit[+el.dataset.i];
+      const b = body.querySelector(`.rpg-sao-m-icon[data-i="${el.dataset.i}"]`);
+      if (m && b && !m.icon) b.innerHTML = sysIcon(meterIconAuto(m.name));
+    });
+  });
   field(".rpg-sao-m-curr", "curr");
   field(".rpg-sao-m-max", "max");
 
@@ -7190,7 +7231,17 @@ function saoBindMeterEditor() {
   const btn = (sel, fn) => body.querySelectorAll(sel).forEach((el) => {
     el.onclick = (e) => { e.stopPropagation(); fn(+el.dataset.i); };
   });
-  btn(".rpg-sao-m-del", (i) => { saoMeterEdit.splice(i, 1); renderRPG(); });
+  btn(".rpg-sao-m-del", (i) => { saoMeterEdit.splice(i, 1); meterIconPick = null; renderRPG(); });
+  btn(".rpg-sao-m-icon", (i) => { meterIconPick = meterIconPick === i ? null : i; renderRPG(); });
+  body.querySelectorAll(".rpg-sao-m-ic").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const m = saoMeterEdit[+el.dataset.i];
+      if (m) m.icon = el.dataset.icon || "";
+      meterIconPick = null;
+      renderRPG();
+    };
+  });
   btn(".rpg-sao-m-auto", (i) => {
     const m = saoMeterEdit[i]; if (!m) return;
     m.custom = false; m.color = meterAutoColor(m.name); renderRPG();
@@ -7198,14 +7249,14 @@ function saoBindMeterEditor() {
 
   const one = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
   one("rpg-sao-m-add", () => {
-    saoMeterEdit.push({ name: "", curr: "0", max: "100", color: "#26a69a", custom: false, orig: "" });
+    saoMeterEdit.push({ name: "", curr: "0", max: "100", color: "#26a69a", custom: false, icon: "", orig: "" });
     renderRPG();
     requestAnimationFrame(() => {
       const names = document.querySelectorAll(".rpg-sao-m-name");
       names[names.length - 1]?.focus();
     });
   });
-  one("rpg-sao-m-cancel", () => { saoMeterEdit = null; renderRPG(); });
+  one("rpg-sao-m-cancel", () => { saoMeterEdit = null; meterIconPick = null; renderRPG(); });
   one("rpg-sao-m-save", saoSaveMeterEdit);
 }
 
@@ -7801,7 +7852,18 @@ const SYS_CSS = `
 .rpg-sys .sys-medit .rpg-c-medit{margin:0; padding:0; border:0; font-size:.8em}
 .rpg-sys .rpg-c-ed .rpg-sao-mrow-edit{border-bottom-color:rgba(var(--t-143_208_255, 143,208,255),.15)}
 .rpg-sys .rpg-c-ed .rpg-sao-mrow-edit input[type=text]{background:rgba(var(--t-6_16_30, 6,16,30),.9); border-color:rgba(var(--t-143_208_255, 143,208,255),.35); color:var(--t-eaf6ff, #eaf6ff)}
-.rpg-sys .rpg-c-ed .rpg-sao-m-auto,.rpg-sys .rpg-c-ed .rpg-sao-m-del,.rpg-sys .rpg-c-ed .rpg-sao-m-color{background:rgba(var(--t-10_26_48, 10,26,48),.9);
+.rpg-sys .rpg-c-ed .rpg-sao-m-icon{flex:0 0 26px; width:26px; height:22px; padding:0; cursor:pointer; display:grid; place-items:center; border-radius:2px}
+.rpg-sys .rpg-c-ed .rpg-sao-m-icon .sys-svg{width:14px; height:14px}
+.rpg-sys .rpg-c-ed .rpg-sao-m-icon.on{border-color:var(--sc); box-shadow:0 0 6px var(--sg); color:#fff}
+.rpg-sys .rpg-c-ed .rpg-sao-m-icons{display:grid; grid-template-columns:repeat(auto-fill, minmax(28px, 1fr)); gap:4px; margin:-2px 0 8px; padding:6px;
+  border:1px solid rgba(var(--t-143_208_255, 143,208,255),.3); background:rgba(var(--t-4_9_18, 4,9,18),.6)}
+.rpg-sys .rpg-c-ed .rpg-sao-m-ic{height:28px; padding:0; cursor:pointer; display:grid; place-items:center; border-radius:2px;
+  background:rgba(var(--t-10_26_48, 10,26,48),.9); border:1px solid rgba(var(--t-143_208_255, 143,208,255),.25); color:var(--t-cfe6f8, #cfe6f8)}
+.rpg-sys .rpg-c-ed .rpg-sao-m-ic .sys-svg{width:16px; height:16px}
+.rpg-sys .rpg-c-ed .rpg-sao-m-ic.auto{grid-column:span 2; font:inherit; font-size:.85em; letter-spacing:.08em}
+.rpg-sys .rpg-c-ed .rpg-sao-m-ic.on{border-color:var(--sc); box-shadow:inset 0 0 6px var(--sg), 0 0 6px var(--sg); color:#fff}
+.rpg-sys .rpg-c-ed .rpg-sao-m-ic:hover{border-color:var(--sc)}
+.rpg-sys .rpg-c-ed .rpg-sao-m-icon,.rpg-sys .rpg-c-ed .rpg-sao-m-auto,.rpg-sys .rpg-c-ed .rpg-sao-m-del,.rpg-sys .rpg-c-ed .rpg-sao-m-color{background:rgba(var(--t-10_26_48, 10,26,48),.9);
   border-color:rgba(var(--t-143_208_255, 143,208,255),.4); color:var(--t-cfe6f8, #cfe6f8)}
 .rpg-sys .rpg-c-ed .rpg-sao-ledit-text,.rpg-sys .rpg-c-ed .rpg-sao-mast-edit input[type=text]{background:rgba(var(--t-6_16_30, 6,16,30),.9);
   border-color:rgba(var(--t-143_208_255, 143,208,255),.35); color:var(--t-eaf6ff, #eaf6ff)}
@@ -8582,7 +8644,95 @@ const FOG_ICON_PATHS = {
   matk: '<path d="M2.3 13.1L9 6.4l1.1 1.1-6.7 6.7z" fill="currentColor" fill-opacity=".18"/><path d="M4.3 10.1l1.1 1.1M6.3 8.1l1.1 1.1" stroke-width=".9"/><path d="M12.2 1.4l.8 2.6 2.6.8-2.6.8-.8 2.6-.8-2.6-2.6-.8 2.6-.8z" fill="currentColor" fill-opacity=".35"/><path d="M14.4 8.6v1.6M13.6 9.4h1.6M8.6 1.6v1.2M8 2.2h1.2" stroke-width=".8"/>',
   coin: '<circle cx="8" cy="8" r="6"/><path d="M8 3.4 L10.7 11.72 L3.63 6.58 L12.37 6.58 L5.3 11.72 Z" stroke-width="1"/>',
 };
-const sysIcon = (k) => `<svg class="sys-svg" viewBox="0 0 16 16" aria-hidden="true">${(isFogSkin() && FOG_ICON_PATHS[k]) || SYS_ICON_PATHS[k] || ""}</svg>`;
+// Meter icons, picked from the meter's name (or chosen by hand in the meter editor).
+// [key, label, svg body]; the order is the picker's.
+const METER_ICONS = [
+  ["m-hunger", "Hunger", '<path d="M4.5 2v3.6a1.5 1.5 0 0 0 3 0V2M6 2v12"/><path d="M11.5 14V2c-1.7.9-2.3 3.1-2.3 5.6h2.3"/>'],
+  ["m-meat", "Meat", '<path d="M7.3 8.7C5.5 6.9 5.6 4.2 7.5 2.9c1.9-1.3 4.5-1 5.8.8 1.3 1.7.9 4.2-.9 5.5-1.6 1.2-3.7 1-5.1-.5z" fill="currentColor" fill-opacity=".2"/><path d="M9 4.6c.9-.3 1.9 0 2.4.8" stroke-width="1"/><path d="M7.3 8.7L4.5 11.5"/><circle cx="3.4" cy="11.1" r="1.25"/><circle cx="4.9" cy="12.6" r="1.25"/>'],
+  ["m-thirst", "Thirst", '<path d="M3.6 3h8.8l-1.3 10.6a.9.9 0 0 1-.9.8H5.8a.9.9 0 0 1-.9-.8z"/><path d="M4.2 7.2c1.2-.7 2.4-.7 3.8 0s2.6.7 3.8 0" stroke-width="1.2"/>'],
+  ["m-brain", "Brain (sanity)", '<path d="M8 3.4C7.2 2.4 5.3 2.4 4.6 3.6 3.2 3.6 2.4 5 2.9 6.2 1.9 7 1.9 8.6 2.9 9.4 2.6 10.8 3.7 12 5.1 11.9 5.7 13.1 7.2 13.4 8 12.6"/><path d="M8 3.4c.8-1 2.7-1 3.4.2 1.4 0 2.2 1.4 1.7 2.6 1 .8 1 2.4 0 3.2.3 1.4-.8 2.6-2.2 2.5-.6 1.2-2.1 1.5-2.9.7"/><path d="M8 3.4v9.2"/><path d="M5 6c.9-.1 1.6.5 1.7 1.3M4.4 9.1c.8-.4 1.8-.1 2.2.7M11 6c-.9-.1-1.6.5-1.7 1.3M11.6 9.1c-.8-.4-1.8-.1-2.2.7" stroke-width="1.1"/>'],
+  ["m-energy", "Energy", '<path d="M9.2 1.6L3.8 9h3.8l-.9 5.4L12.2 7H8.4z"/>'],
+  ["m-heat", "Temperature", '<path d="M6.4 9.6V3.4a1.6 1.6 0 0 1 3.2 0v6.2a2.9 2.9 0 1 1-3.2 0z"/><path d="M8 6.2v5.4"/><circle cx="8" cy="12" r="1" fill="currentColor"/><path d="M11.4 4h1.4M11.4 6.2h1M11.4 8.4h1.4" stroke-width="1.1"/>'],
+  ["m-cold", "Cold", '<path d="M8 1.8v12.4M2.6 4.9l10.8 6.2M2.6 11.1l10.8-6.2"/><path d="M6.6 2.8L8 4.2l1.4-1.4M6.6 13.2L8 11.8l1.4 1.4M2.9 7.2l1.9-.5-.5-1.9M13.1 8.8l-1.9.5.5 1.9M2.9 8.8l1.9.5-.5 1.9M13.1 7.2l-1.9-.5.5-1.9" stroke-width="1.1"/>'],
+  ["m-corrupt", "Corruption", '<path d="M8.00 7.50 L8.15 7.42 L8.33 7.40 L8.54 7.43 L8.74 7.53 L8.93 7.70 L9.07 7.93 L9.14 8.22 L9.14 8.54 L9.04 8.86 L8.85 9.17 L8.57 9.44 L8.21 9.63 L7.78 9.72 L7.33 9.70 L6.87 9.56 L6.44 9.29 L6.09 8.90 L5.83 8.41 L5.70 7.86 L5.72 7.26 L5.89 6.66 L6.23 6.11 L6.71 5.65 L7.31 5.31 L8.00 5.12 L8.74 5.12 L9.48 5.31 L10.16 5.70 L10.75 6.26 L11.19 6.96 L11.44 7.78 L11.48 8.66 L11.29 9.55 L10.87 10.38 L10.25 11.09 L9.44 11.64 L8.50 11.98 L7.48 12.08 L6.45 11.91 L5.47 11.48 L4.61 10.80 L3.94 9.91 L3.50 8.86 L3.33 7.71 L3.46 6.52 L3.89 5.39 L4.60 4.38 L5.56 3.57 L6.72 3.01 L8.00 2.75 L9.33 2.82 L10.62 3.23 L11.79 3.97 L12.75 4.98 L13.44 6.23 L13.81 7.63 L13.81 9.11 L13.44 10.56 L12.70 11.89 L11.64 13.02"/>'],
+  ["m-rad", "Radiation", '<path d="M6.75 5.83L4.95 2.72A6.1 6.1 0 0 1 11.05 2.72L9.25 5.83A2.5 2.5 0 0 0 6.75 5.83zM10.50 8.00L14.10 8.00A6.1 6.1 0 0 1 11.05 13.28L9.25 10.17A2.5 2.5 0 0 0 10.50 8.00zM6.75 10.17L4.95 13.28A6.1 6.1 0 0 1 1.90 8.00L5.50 8.00A2.5 2.5 0 0 0 6.75 10.17z" fill="currentColor" fill-opacity=".25" stroke-width="1.1"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/>'],
+  ["m-poison", "Poison", '<path d="M6.2 2h3.6M6.9 2v4.2L3.4 12.4a1.2 1.2 0 0 0 1 1.8h7.2a1.2 1.2 0 0 0 1-1.8L9.1 6.2V2"/><path d="M4.6 10.4h6.8" stroke-width="1.1"/><circle cx="7" cy="12.2" r=".7" fill="currentColor"/><circle cx="9.4" cy="11.6" r=".5" fill="currentColor"/>'],
+  ["m-sick", "Infection", '<circle cx="8" cy="8" r="4.2" fill="currentColor" fill-opacity=".15"/><path d="M12.20 8.00L14.20 8.00M10.97 10.97L12.38 12.38M8.00 12.20L8.00 14.20M5.03 10.97L3.62 12.38M3.80 8.00L1.80 8.00M5.03 5.03L3.62 3.62M8.00 3.80L8.00 1.80M10.97 5.03L12.38 3.62" stroke-width="1.1"/><circle cx="14.60" cy="8.00" r=".7" fill="currentColor"/><circle cx="12.67" cy="12.67" r=".7" fill="currentColor"/><circle cx="8.00" cy="14.60" r=".7" fill="currentColor"/><circle cx="3.33" cy="12.67" r=".7" fill="currentColor"/><circle cx="1.40" cy="8.00" r=".7" fill="currentColor"/><circle cx="3.33" cy="3.33" r=".7" fill="currentColor"/><circle cx="8.00" cy="1.40" r=".7" fill="currentColor"/><circle cx="12.67" cy="3.33" r=".7" fill="currentColor"/><circle cx="7" cy="7.2" r=".8" fill="currentColor"/><circle cx="9.3" cy="9.2" r=".6" fill="currentColor"/>'],
+  ["m-air", "Oxygen", '<circle cx="5.6" cy="10.2" r="3.2"/><circle cx="11.1" cy="5.8" r="2.3"/><circle cx="11.6" cy="11.9" r="1.3"/><path d="M4.4 8.8a1.6 1.6 0 0 1 1.4-.9" stroke-width="1"/>'],
+  ["m-sleep", "Fatigue", '<path d="M2.6 4.2h4.6L2.6 9.8h4.6"/><path d="M9.2 8.4h4L9.2 13.2h4" stroke-width="1.4"/>'],
+  ["m-mood", "Mood", '<circle cx="8" cy="8" r="6"/><path d="M5.5 9.5c1.3 1.6 3.7 1.6 5 0"/><circle cx="6" cy="6.6" r=".8" fill="currentColor"/><circle cx="10" cy="6.6" r=".8" fill="currentColor"/>'],
+  ["m-stress", "Stress", '<circle cx="8" cy="8" r="6"/><path d="M5 10.9l1-.8 1 .8 1-.8 1 .8 1-.8 1 .8" stroke-width="1.1"/><circle cx="6" cy="6.6" r="1.1"/><circle cx="10" cy="6.6" r="1.1"/>'],
+  ["m-blood", "Blood", '<path d="M6.8 2.2c2.4 3 3.7 5 3.7 6.7a3.7 3.7 0 0 1-7.4 0c0-1.7 1.3-3.7 3.7-6.7z" fill="currentColor" fill-opacity=".2"/><path d="M12.4 8.8c.9 1.1 1.3 1.8 1.3 2.4a1.3 1.3 0 0 1-2.6 0c0-.6.4-1.3 1.3-2.4z"/>'],
+  ["bond", "Heart", null],
+  ["m-ward", "Barrier", '<path d="M8 1.8l5.4 3.1v6.2L8 14.2l-5.4-3.1V4.9z"/><path d="M8 4.6l2.9 1.7v3.4L8 11.4 5.1 9.7V6.3z" stroke-width="1" opacity=".7"/>'],
+  ["def", "Shield", null],
+  ["m-ammo", "Ammo", '<path d="M3.2 14V7.6c0-1.6.6-2.9 1.4-3.7.8.8 1.4 2.1 1.4 3.7V14zM7.6 14V6.4c0-1.6.6-2.9 1.4-3.7.8.8 1.4 2.1 1.4 3.7V14z"/><path d="M3.2 9h2.8M7.6 8h2.8" stroke-width="1"/><path d="M12 14v-3.6c0-.8.3-1.4.7-1.8.4.4.7 1 .7 1.8V14z" stroke-width="1.2"/>'],
+  ["m-battery", "Battery", '<rect x="1.8" y="4.8" width="11" height="6.4" rx="1.2"/><path d="M14.2 7v2"/><path d="M8.1 5.9L5.9 8.2h2.2L6.7 10.2" stroke-width="1.1"/>'],
+  ["m-xp", "Experience", '<path d="M8.00 2.20 9.53 6.30 13.90 6.48 10.47 9.20 11.64 13.42 8.00 11.00 4.36 13.42 5.53 9.20 2.10 6.48 6.47 6.30 z"/>'],
+  ["m-fame", "Reputation", '<path d="M2.6 11.6L2 4.8l3.3 3L8 3.4l2.7 4.4L14 4.8l-.6 6.8z"/><path d="M2.8 13.8h10.4"/>'],
+  ["m-eye", "Suspicion", '<path d="M1.6 8s2.4-4.4 6.4-4.4S14.4 8 14.4 8s-2.4 4.4-6.4 4.4S1.6 8 1.6 8z"/><circle cx="8" cy="8" r="2"/><circle cx="8" cy="8" r=".7" fill="currentColor"/>'],
+  ["m-focus", "Willpower", '<circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="3.4"/><circle cx="8" cy="8" r=".9" fill="currentColor"/>'],
+  ["m-zone", "The Zone", '<circle cx="8" cy="8" r="6.2" stroke-width="1.1" stroke-dasharray="2.2 1.6"/><path d="M9 3.6L5.6 8.6h2.6l-1 3.8 3.4-5H8z" fill="currentColor" fill-opacity=".3"/><path d="M1.8 3.4l1.4 1M14.2 3.4l-1.4 1M1.8 12.6l1.4-1M14.2 12.6l-1.4-1" stroke-width="1"/>'],
+  ["m-boost", "Boost", '<path d="M3.4 8.6L8 4l4.6 4.6"/><path d="M3.4 12.8L8 8.2l4.6 4.6"/><path d="M8 1.4v1" stroke-width="1.2"/>'],
+  ["m-divide", "Divide", '<circle cx="8" cy="8" r="6.2"/><path d="M4.6 8h6.8"/><circle cx="8" cy="5.1" r=".9" fill="currentColor"/><circle cx="8" cy="10.9" r=".9" fill="currentColor"/>'],
+  ["m-luck", "Luck", '<circle cx="8" cy="4.9" r="2.4" fill="currentColor" fill-opacity=".2"/><circle cx="11.1" cy="8" r="2.4" fill="currentColor" fill-opacity=".2"/><circle cx="8" cy="11.1" r="2.4" fill="currentColor" fill-opacity=".2"/><circle cx="4.9" cy="8" r="2.4" fill="currentColor" fill-opacity=".2"/><path d="M9.4 9.4l3.6 4.4" stroke-width="1.3"/>'],
+  ["m-faith", "Faith", '<path d="M8 1.8c1 1.1 1.4 1.9 1.4 2.6a1.4 1.4 0 0 1-2.8 0c0-.7.4-1.5 1.4-2.6z" fill="currentColor" fill-opacity=".3"/><path d="M5.6 7h4.8v7H5.6z"/><path d="M4 14.2h8"/>'],
+  ["satk", "Flame", null],
+  ["mp", "Mana", null],
+  ["sparkle", "Sparkle", null],
+  ["hourglass", "Time", null],
+  ["coin", "Coin", null],
+  ["hp", "Health", null],
+  ["meter", "Gauge", null],
+];
+const METER_ICON_PATHS = Object.fromEntries(METER_ICONS.filter(([, , d]) => d).map(([k, , d]) => [k, d]));
+// The first rule whose words appear in the name wins, so "temp hp" is health, not temperature.
+const METER_ICON_RULES = [
+  [/sanity|mind|mental|brain|psych|reason|lucid/, "m-brain"],
+  [/\btemp(orary)?\s*hp\b|\bhealth\b|\bvital/, "hp"],
+  [/hunger|hungry|food|satiat|starv|appetite|nourish/, "m-hunger"],
+  [/thirst|water|hydrat|dehydrat/, "m-thirst"],
+  [/stamina|energy|vigou?r|endurance|adrenal/, "m-energy"],
+  [/fatigue|sleep|tired|rest\b|exhaust|drows/, "m-sleep"],
+  [/cold|frost|freez|chill|hypotherm/, "m-cold"],
+  [/heat|temp(?!t)|warmth|fever|hypertherm/, "m-heat"],
+  [/corrupt|taint|madness|insanity|chaos|abyss|void|erosion/, "m-corrupt"],
+  [/radiat|\brads?\b|contamin/, "m-rad"],
+  [/poison|toxi|venom/, "m-poison"],
+  [/infect|disease|sick|plague|virus|illness/, "m-sick"],
+  [/oxygen|\bo2\b|\bair\b|breath|suffoc/, "m-air"],
+  [/stress|fear|terror|panic|anxi|dread|horror|trauma/, "m-stress"],
+  [/morale|mood|happi|joy|spirit|cheer|comfort/, "m-mood"],
+  [/blood|bleed|hemo|haemo/, "m-blood"],
+  [/lust|arous|love|affection|desire|libido|passion|romance/, "bond"],
+  [/shield|barrier|\bwards?\b|aegis/, "m-ward"],
+  [/armou?r|durab|integrity|hull|plating/, "def"],
+  [/ammo|bullet|\brounds?\b|magazine|\barrows?\b|shells?\b/, "m-ammo"],
+  [/\bzone\b|flow ?state|black ?flash/, "m-zone"],
+  [/\bboost/, "m-boost"],
+  [/\bdivid/, "m-divide"],
+  [/will|resolve|focus|concentr|determin|composure|discipline/, "m-focus"],
+  [/suspic|alert|aware|detect|notori|wanted|stealth|exposure/, "m-eye"],
+  [/fuel|battery|charge|power|\boil\b|\bgas\b|petrol/, "m-battery"],
+  [/\bxp\b|\bexp\b|experience|level|progress/, "m-xp"],
+  [/reput|fame|renown|honou?r|prestige|influence|favou?r/, "m-fame"],
+  [/luck|fortune/, "m-luck"],
+  [/faith|divin|holy|prayer|piety|devotion/, "m-faith"],
+  [/rage|anger|fury|wrath|burn|fire/, "satk"],
+  [/mana|\bki\b|chakra|\bqi\b|aether|ether|magic|essence/, "mp"],
+  [/time|clock|doom|countdown/, "hourglass"],
+  [/gold|money|coin|cash|credit/, "coin"],
+];
+function meterIconAuto(name) {
+  const k = String(name || "").toLowerCase();
+  for (const [re, icon] of METER_ICON_RULES) if (re.test(k)) return icon;
+  return "meter";
+}
+function meterIconFor(name) {
+  const own = uiSettings?.meterIcons?.[meterKey(name)];
+  return own && (METER_ICON_PATHS[own] || SYS_ICON_PATHS[own]) ? own : meterIconAuto(name);
+}
+const sysIcon = (k) => `<svg class="sys-svg" viewBox="0 0 16 16" aria-hidden="true">${(isFogSkin() && FOG_ICON_PATHS[k]) || SYS_ICON_PATHS[k] || METER_ICON_PATHS[k] || ""}</svg>`;
 
 // An analog face for the in-world time. "14:30", "2:30 PM", "02.30pm" all read.
 function sysClockSvg(clock) {
@@ -8805,7 +8955,7 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
   (Array.isArray(display.meters) ? display.meters : []).forEach((mt) => {
     if (!mt || typeof mt !== "object") return;
     const nm = mt.name ?? mt.label ?? "Meter";
-    bars += sysBar("meter", String(nm).toUpperCase(), mt.curr ?? mt.value ?? 0, mt.max ?? 100,
+    bars += sysBar(meterIconFor(nm), String(nm).toUpperCase(), mt.curr ?? mt.value ?? 0, mt.max ?? 100,
       { skipEmpty: true, tint: meterColorByName(nm), editMeters: true });
   });
   if (!(Array.isArray(display.meters) && display.meters.length) && !meterEditorHtml) {
@@ -9062,6 +9212,10 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-30.3", items: [
+    "Meter icons (System and Gray Fog): each meter gets an icon from its name: a brain for sanity, a fork and knife for hunger, a cup for thirst, a bolt for stamina, a thermometer, a snowflake, a spiral for corruption, radiation, poison, oxygen, fatigue, mood, stress, blood, ammo, fuel, reputation, suspicion, focus, the Zone, Boost and Divide, luck, faith and more. Tap a meter's icon to open the editor, then tap the icon at the start of its row to pick a different one; Auto goes back to the name's. Like colours, a chosen icon follows that meter's name across characters.",
+    "Meter bars get automatic colours for those names too (red for blood, pale blue for oxygen, indigo for fatigue, gold for mood, orange for stress, steel for armour and so on), in every skin. Colours you picked yourself stay as they are.",
+  ] },
   { build: "2026-10-28.1", items: [
     "Gray Fog: the round button the HUD folds into can be dragged anywhere on screen, and stays where you leave it. Tap it to open the HUD as before. Settings can lock it in place or put it back in its usual spot.",
   ] },
