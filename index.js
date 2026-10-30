@@ -423,7 +423,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-30.5";
+const HUD_BUILD = "2026-10-30.8";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -4178,7 +4178,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
    			 <select id="rpg-settings-clockfmt" style="background:#222; color:#ddd; border:1px solid #555; padding:3px;">${clockFormatOptions()}</select>
 		  </div>
 		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
-    			<span title="Editing Items, Skills or Passives (tap an icon) also rewrites this many earlier replies">Edits Rewrite Past Replies</span>
+    			<span title="Editing Items, Skills, Passives or meters also rewrites this many earlier replies">Edits Rewrite Past Replies</span>
    			 <input type="number" id="rpg-settings-edithist" min="0" max="20" step="1" value="${Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0))}" style="width:52px; background:#222; color:#ddd; border:1px solid #555; text-align:center;">
 		  </div>
 		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
@@ -6446,6 +6446,9 @@ function saoMetersSection(display) {
       <div class="rpg-sao-meditor">
         ${rows || `<p class="rpg-sao-empty">No meters. Add one below.</p>`}
         <button class="rpg-sao-mini" id="rpg-sao-m-add">+ Add meter</button>
+        ${(() => { const d = Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0));
+          return `<p class="rpg-sao-hint">${d ? `Renames, removals and new maximums can also go into ${d} earlier repl${d === 1 ? "y" : "ies"}; Save asks first (setting: Edits rewrite past replies).`
+            : "Saving updates the latest reply. To also update earlier ones, see the setting Edits rewrite past replies."}</p>`; })()}
         <div class="rpg-sao-medit-actions">
           <button class="rpg-sao-mini" id="rpg-sao-m-cancel">Cancel</button>
           <button class="rpg-sao-mini primary" id="rpg-sao-m-save">Save</button>
@@ -7144,13 +7147,13 @@ function saoStartMeterEdit() {
 }
 
 function saoSaveMeterEdit() {
-  const { display } = getActiveData();
+  const { display, isVehicle } = getActiveData();
   const before = Array.isArray(display.meters) ? display.meters : [];
   let draft = saoMeterEdit.filter((m) => String(m.name).trim());
 
   // Deleting asks first, and Cancel keeps them — same as bonds and timers.
   const kept = new Set(draft.map((m) => meterKey(m.orig || m.name)));
-  const removed = before.filter((m) => !kept.has(meterKey(m.name)));
+  let removed = before.filter((m) => !kept.has(meterKey(m.name)));
   if (removed.length) {
     const sure = confirm(`Remove ${removed.length === 1 ? "this meter" : "these meters"}?\n\n` +
       `${removed.map((m) => m.name).join(", ")}\n\nCancel keeps them.`);
@@ -7158,8 +7161,23 @@ function saoSaveMeterEdit() {
       draft = draft.concat(removed.map((m) => ({
         name: m.name, curr: m.curr, max: m.max, color: meterColorByName(m.name), custom: false,
       })));
+      removed = [];
     }
   }
+
+  // what earlier replies would need: renames, removals and new maximums (not current values,
+  // which are that turn's history)
+  const oldByKey = new Map(before.map((m) => [meterKey(m.name), m]));
+  const histEdits = [];
+  draft.forEach((m) => {
+    if (!m.orig) return;
+    const was = oldByKey.get(meterKey(m.orig));
+    const name = String(m.name).trim(), max = String(m.max).trim() || "100";
+    const renamed = meterKey(m.orig) !== meterKey(name);
+    const newMax = was && String(was.max).trim() !== max;
+    if (renamed || newMax) histEdits.push({ from: m.orig, to: name, max: newMax ? max : null });
+  });
+  removed.forEach((m) => histEdits.push({ from: m.name, to: null }));
 
   display.meters = draft.map((m) => ({
     name: String(m.name).trim(),
@@ -7193,6 +7211,91 @@ function saoSaveMeterEdit() {
   const ok = writeStateBackToChatMessage(rpgState);
   if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after meter edit");
   renderRPG();
+
+  // Like list edits: the same change goes into this many earlier replies
+  // (setting: Edits rewrite past replies), so the AI doesn't copy the old
+  // name or a removed meter back from history.
+  const depth = Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0));
+  const who = activeListOwner();
+  if (!depth || !histEdits.length || isVehicle || who === undefined) return;
+  const lines = histEdits.map((e) => e.to === null ? `\u2022 ${e.from}: removed`
+    : `\u2022 ${e.from}${meterKey(e.from) !== meterKey(e.to) ? ` \u2192 ${e.to}` : ""}${e.max ? ` (max ${e.max})` : ""}`);
+  const also = confirm(
+    `Also make this change in the ${depth} earlier repl${depth === 1 ? "y" : "ies"} before this one?\n\n${lines.join("\n")}\n\n` +
+    `OK: update ${depth === 1 ? "it" : "them"} too (setting: Edits rewrite past replies), so the AI doesn't bring the old version back. ` +
+    `Current values in those replies stay as they were.\n` +
+    `Cancel: change only the latest reply.`
+  );
+  if (!also) return;
+  const n = rewriteMeterHistory(who, histEdits, depth);
+  if (window.toastr) hudToast.info(n ? `Also updated ${n} earlier repl${n === 1 ? "y" : "ies"}.` : "No earlier replies needed changing.");
+  try { checkMessage(); } catch {}
+}
+
+// Carry meter renames, removals and new maximums into up to `depth` replies
+// before the latest, for one character (who: null for you, else { group, key }).
+// Current values stay as they were. Swipes too.
+function rewriteMeterHistory(who, edits, depth) {
+  if (!edits.length || depth <= 0) return 0;
+  let ctx;
+  try { ctx = SillyTavern.getContext(); } catch { return 0; }
+  const chat = ctx?.chat || [];
+  const ownerId = who ? `${who.group}:${who.key}` : "@player";
+  const plan = new Map(edits.map((e) => [meterKey(e.from), e]));
+  const fixBlock = (text) => String(text).replace(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/gi, (block) => {
+    const lines = block.split("\n");
+    let section = null, unit = null;
+    for (let li = 0; li < lines.length; li++) {
+      const ln = lines[li];
+      const h = ln.match(/^\s*\[([^\]]+)\]\s*$/);
+      if (h) { const t = h[1].toLowerCase(); section = /player/.test(t) ? "player" : /party/.test(t) ? "party" : /npc/.test(t) ? "npcs" : /enem/.test(t) ? "enemies" : null; unit = null; continue; }
+      const nm = ln.match(/\|\s*Name\s*:\s*([^|]*)\|/i);
+      if (nm && section && section !== "player" && !ln.trim().startsWith(">")) unit = normBondName(nm[1]);
+      if (ln.trim().startsWith(">")) continue;                       // a vehicle's own meters
+      const id = section === "player" ? "@player" : section && unit ? `${section}:${unit}` : null;
+      if (id !== ownerId) continue;
+      lines[li] = ln.replace(/(\|\s*Meters\s*:)([^|]*)(\|)/i, (m, a, val, z) => {
+        const out = [];
+        val.split(";").map((x) => x.trim()).filter(Boolean).forEach((item) => {
+          const ci = item.indexOf(":");
+          const name = (ci >= 0 ? item.slice(0, ci) : item).trim(), rest = ci >= 0 ? item.slice(ci + 1).trim() : "";
+          const e = plan.get(meterKey(name));
+          if (!e) { out.push(item); return; }
+          if (e.to === null) return;                                     // removed
+          let [curr, max] = rest.split("/").map((x) => (x ?? "").trim());
+          if (e.max) max = e.max;
+          out.push(`${e.to}:${curr || "0"}${max !== undefined && max !== "" ? `/${max}` : ""}`);
+        });
+        return a + out.join(";") + z;
+      });
+    }
+    return lines.join("\n");
+  });
+  let touched = 0, seen = 0;
+  for (let i = lastRpgMsgIndex - 1; i >= 0 && seen < depth; i--) {
+    const msg = chat[i];
+    if (!msg || msg.is_user || typeof msg.mes !== "string" || !rpgInnerFromMessage(msg.mes)) continue;
+    seen++;
+    const next = fixBlock(msg.mes);
+    let changed = next !== msg.mes;
+    if (changed) setMessageText(msg, next);
+    // the other swipes keep their own copy of the block
+    if (Array.isArray(msg.swipes)) {
+      msg.swipes = msg.swipes.map((sw) => {
+        if (typeof sw !== "string") return sw;
+        const f = fixBlock(sw);
+        if (f !== sw) changed = true;
+        return f;
+      });
+    }
+    if (changed) touched++;
+  }
+  if (touched) {
+    try { window.saveChat?.(); } catch {}
+    invalidateHistoryMemory();
+    turnLogCache = { sig: "", turns: [] };
+  }
+  return touched;
 }
 
 function saoBindMeterEditor() {
@@ -9212,8 +9315,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
-  { build: "2026-10-30.3", items: [
+  { build: "2026-10-30.8", items: [
     "Meter icons (System and Gray Fog): each meter gets an icon from its name: a brain for sanity, a fork and knife for hunger, a cup for thirst, a bolt for stamina, a thermometer, a snowflake, a spiral for corruption, radiation, poison, oxygen, fatigue, mood, stress, blood, ammo, fuel, reputation, suspicion, focus, the Zone, Boost and Divide, luck, faith and more. Tap a meter's icon to open the editor, then tap the icon at the start of its row to pick a different one; Auto goes back to the name's. Like colours, a chosen icon follows that meter's name across characters.",
+    "Meter edits can fix earlier replies too, as many as Edits Rewrite Past Replies is set to: after renaming or removing a meter, or changing its maximum, Save asks whether to make the same change in those replies for that character or only the latest one, so the AI doesn't bring the old version back. Current values in earlier replies are left alone.",
     "Meter bars get automatic colours for those names too (red for blood, pale blue for oxygen, indigo for fatigue, gold for mood, orange for stress, steel for armour and so on), in every skin. Colours you picked yourself stay as they are.",
   ] },
   { build: "2026-10-28.1", items: [
@@ -9367,10 +9471,10 @@ const CLASSIC_HELP = [
   ["The dot", "Top right. Green: the latest reply has a valid state. Yellow: the block is broken (tap for details). Grey: no block."],
   ["Tabs", "Party, Bonds, Timers, Items, Skills, Passive, Mastery, Quest, Environment and Log. Pick a character from the name dropdown to see their tabs."],
   ["Editing lists", "In Items, Skills and Passive, tap any icon to edit that list: change text, ✕ to delete, ▲▼ to reorder, + Add. Mastery and Quest have a ✎ button instead."],
-  ["Meters", "Tap a meter's name (in the System skin, its icon) to edit that character's meters, or + meter when they have none: rename, change values, pick a colour (↺ goes back to automatic), reorder, add or remove. Save writes them to the latest reply."],
+  ["Meters", "Tap a meter's name (in the System skin, its icon) to edit that character's meters, or + meter when they have none: rename, change values, pick a colour (↺ goes back to automatic), reorder, add or remove. Save writes them to the latest reply; after a rename, a removal or a new maximum it asks whether to make the same change in earlier replies too, as many as Edits Rewrite Past Replies is set to."],
   ["Your own icons", "In the list editor, tap a row's icon to pick a different one (Auto goes back to guessing from the name), then Save. It sticks to that name in every chat and on your other devices; a blue dot marks it in the editor."],
   ["Position locks", "In the item, skill and passive editor, the padlock under ✕ pins an entry to its place. If the AI reorders the list, locked entries are put back; the rest keep their order."],
-  ["Edits Rewrite Past Replies", "Settings. List edits also fix this many earlier replies, so the AI can't copy the old version back from history. 0 means the latest reply only."],
+  ["Edits Rewrite Past Replies", "Settings. List and meter edits also fix this many earlier replies, so the AI can't copy the old version back from history. 0 means the latest reply only."],
   ["Bonds", "✎ to edit, + to add. Deleting asks whether to also remove the name from earlier Bonds lists; characters' own Bond values are left alone."],
   ["Timers", "Turns (2/3), deadlines (Jan 6 1023,14:00) or uses (2/2x). Charge timers have a −1 button to spend one."],
   ["Log", "What changed each turn. Undo last turn reverts the newest turn; ↶ reverts a single change; the padlock keeps a change through Undo last turn. Redo puts it back."],
@@ -9741,7 +9845,7 @@ function saoSettingsHtml() {
     + toggle("rpg-sao-sw-weekday", "Fix weekdays", uiSettings.fixWeekdays !== false)
     + `<div class="rpg-sao-mrow toggle"><span title="How times are shown. 12- and 24-hour times in the story are both understood either way.">Clock</span>
         <select id="rpg-sao-clockfmt">${clockFormatOptions()}</select></div>`
-    + `<div class="rpg-sao-mrow toggle"><span title="Editing Items, Skills or Passives from the Status orb also rewrites this many earlier replies">Edits rewrite past replies</span>
+    + `<div class="rpg-sao-mrow toggle"><span title="Editing Items, Skills, Passives or meters also rewrites this many earlier replies">Edits rewrite past replies</span>
         <input id="rpg-sao-edithist" type="number" min="0" max="20" step="1" value="${Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0))}"></div>`
     + toggle("rpg-sao-sw-bars", "Keep bars when minimised", !!uiSettings.barsOnMin)
     + toggle("rpg-sao-sw-shadow", "Text shadow", !!uiSettings.saoTextShadow)
