@@ -423,7 +423,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-30.4";
+const HUD_BUILD = "2026-10-30.5";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -3241,7 +3241,7 @@ const METER_ICON_COLORS = {
   "m-stress": "#ff8a65", "m-mood": "#ffe082", bond: "#f48fb1", "m-ward": "#00bcd4", def: "#90a4ae",
   "m-ammo": "#c8a165", "m-focus": "#7986cb", "m-eye": "#ffb74d", "m-battery": "#9ccc65", "m-xp": "#b39ddb",
   "m-fame": "#ffc107", "m-luck": "#66bb6a", "m-faith": "#fff59d", satk: "#ff5252", mp: "#448aff",
-  hourglass: "#bcaaa4", coin: "#ffd700", sparkle: "#e1bee7",
+  hourglass: "#bcaaa4", coin: "#ffd700", "m-sparkle": "#e1bee7",
   "m-zone": "#d500f9", "m-boost": "#ff1744", "m-divide": "#a8ccff",
 };
 
@@ -8671,7 +8671,7 @@ const METER_ICONS = [
   ["m-xp", "Experience", '<path d="M8.00 2.20 9.53 6.30 13.90 6.48 10.47 9.20 11.64 13.42 8.00 11.00 4.36 13.42 5.53 9.20 2.10 6.48 6.47 6.30 z"/>'],
   ["m-fame", "Reputation", '<path d="M2.6 11.6L2 4.8l3.3 3L8 3.4l2.7 4.4L14 4.8l-.6 6.8z"/><path d="M2.8 13.8h10.4"/>'],
   ["m-eye", "Suspicion", '<path d="M1.6 8s2.4-4.4 6.4-4.4S14.4 8 14.4 8s-2.4 4.4-6.4 4.4S1.6 8 1.6 8z"/><circle cx="8" cy="8" r="2"/><circle cx="8" cy="8" r=".7" fill="currentColor"/>'],
-  ["m-focus", "Willpower", '<circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="3.4"/><circle cx="8" cy="8" r=".9" fill="currentColor"/>'],
+  ["m-focus", "Focus", '<circle cx="8" cy="8" r="4.6"/><path d="M8 1.4v3.2M8 11.4v3.2M1.4 8h3.2M11.4 8h3.2"/><circle cx="8" cy="8" r="1" fill="currentColor"/>'],
   ["m-zone", "The Zone", '<circle cx="8" cy="8" r="6.2" stroke-width="1.1" stroke-dasharray="2.2 1.6"/><path d="M9 3.6L5.6 8.6h2.6l-1 3.8 3.4-5H8z" fill="currentColor" fill-opacity=".3"/><path d="M1.8 3.4l1.4 1M14.2 3.4l-1.4 1M1.8 12.6l1.4-1M14.2 12.6l-1.4-1" stroke-width="1"/>'],
   ["m-boost", "Boost", '<path d="M3.2 7.6L8 2.8l4.8 4.8"/><path d="M3.2 12.6L8 7.8l4.8 4.8"/>'],
   ["m-divide", "Divide", '<circle cx="8" cy="8" r="6.2"/><path d="M4.6 8h6.8"/><circle cx="8" cy="5.1" r=".9" fill="currentColor"/><circle cx="8" cy="10.9" r=".9" fill="currentColor"/>'],
@@ -8679,7 +8679,7 @@ const METER_ICONS = [
   ["m-faith", "Faith", '<path d="M8 1.8c1 1.1 1.4 1.9 1.4 2.6a1.4 1.4 0 0 1-2.8 0c0-.7.4-1.5 1.4-2.6z" fill="currentColor" fill-opacity=".3"/><path d="M5.6 7h4.8v7H5.6z"/><path d="M4 14.2h8"/>'],
   ["satk", "Flame", null],
   ["mp", "Mana", null],
-  ["sparkle", "Sparkle", null],
+  ["m-sparkle", "Sparkle", '<path d="M6.4 2.6l1.1 3.7 3.7 1.1-3.7 1.1-1.1 3.7-1.1-3.7-3.7-1.1 3.7-1.1z"/><path d="M12.2 1.6l.5 1.5 1.5.5-1.5.5-.5 1.5-.5-1.5-1.5-.5 1.5-.5z" stroke-width="1"/><path d="M12 10.4l.6 1.8 1.8.6-1.8.6-.6 1.8-.6-1.8-1.8-.6 1.8-.6z" stroke-width="1"/>'],
   ["hourglass", "Time", null],
   ["coin", "Coin", null],
   ["hp", "Health", null],
