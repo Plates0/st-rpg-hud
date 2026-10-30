@@ -423,7 +423,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-30.3";
+const HUD_BUILD = "2026-10-30.4";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -8673,7 +8673,7 @@ const METER_ICONS = [
   ["m-eye", "Suspicion", '<path d="M1.6 8s2.4-4.4 6.4-4.4S14.4 8 14.4 8s-2.4 4.4-6.4 4.4S1.6 8 1.6 8z"/><circle cx="8" cy="8" r="2"/><circle cx="8" cy="8" r=".7" fill="currentColor"/>'],
   ["m-focus", "Willpower", '<circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="3.4"/><circle cx="8" cy="8" r=".9" fill="currentColor"/>'],
   ["m-zone", "The Zone", '<circle cx="8" cy="8" r="6.2" stroke-width="1.1" stroke-dasharray="2.2 1.6"/><path d="M9 3.6L5.6 8.6h2.6l-1 3.8 3.4-5H8z" fill="currentColor" fill-opacity=".3"/><path d="M1.8 3.4l1.4 1M14.2 3.4l-1.4 1M1.8 12.6l1.4-1M14.2 12.6l-1.4-1" stroke-width="1"/>'],
-  ["m-boost", "Boost", '<path d="M3.4 8.6L8 4l4.6 4.6"/><path d="M3.4 12.8L8 8.2l4.6 4.6"/><path d="M8 1.4v1" stroke-width="1.2"/>'],
+  ["m-boost", "Boost", '<path d="M3.2 7.6L8 2.8l4.8 4.8"/><path d="M3.2 12.6L8 7.8l4.8 4.8"/>'],
   ["m-divide", "Divide", '<circle cx="8" cy="8" r="6.2"/><path d="M4.6 8h6.8"/><circle cx="8" cy="5.1" r=".9" fill="currentColor"/><circle cx="8" cy="10.9" r=".9" fill="currentColor"/>'],
   ["m-luck", "Luck", '<circle cx="8" cy="4.9" r="2.4" fill="currentColor" fill-opacity=".2"/><circle cx="11.1" cy="8" r="2.4" fill="currentColor" fill-opacity=".2"/><circle cx="8" cy="11.1" r="2.4" fill="currentColor" fill-opacity=".2"/><circle cx="4.9" cy="8" r="2.4" fill="currentColor" fill-opacity=".2"/><path d="M9.4 9.4l3.6 4.4" stroke-width="1.3"/>'],
   ["m-faith", "Faith", '<path d="M8 1.8c1 1.1 1.4 1.9 1.4 2.6a1.4 1.4 0 0 1-2.8 0c0-.7.4-1.5 1.4-2.6z" fill="currentColor" fill-opacity=".3"/><path d="M5.6 7h4.8v7H5.6z"/><path d="M4 14.2h8"/>'],
