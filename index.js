@@ -399,6 +399,9 @@ let bondMemory = [];
 let timerMemory = [];
 let historyMemoryKey = null;
 let isMinimized = false;
+let fogDockOpen = false;     // Gray Fog: the centred menu button's buttons are fanned out
+let fogDockAnim = false;     // play the fan-out once, on the render right after a toggle
+let fogDockOpenedAt = 0;     // keeps the star's slow spin continuous across re-renders
 let scanTimer = null;
 let charIndex = 0;
 let tabStripScrollLeft = 0; 
@@ -420,7 +423,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-25.1";
+const HUD_BUILD = "2026-10-30.8";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -450,6 +453,12 @@ const defaultUiSettings = {
   sysBigSlot: "name",     // system skin: the big slot shows "name" or an analog "clock"
   sysNotices: true,       // system skin: "You have acquired..." popups when a reply adds things
   sysFont: "exo",         // system skin font: a SAO_FONTS key, or "preset" for the classic preset
+  fogNumber: "auto",      // Gray Fog's tarot number: "auto" (Sequence, else the day) | "day" | "sequence" | "none"
+  fogFold: true,          // Gray Fog: fold the panel into the round button and back
+  fogFoldSpeed: "normal", // "slow" | "normal" | "fast" | "instant"
+  fogOrbPos: null,        // Gray Fog: where the folded-away button was dragged to, { fx, fy } as screen fractions
+  fogOrbLock: false,      // Gray Fog: the folded-away button can't be dragged
+  meterIcons: {},         // System and Gray Fog: icons chosen for meters, by meter name (like meterColors)
   fontPreset: "retro_mono",
   fontFamily: "'Courier New', Courier, monospace",
   fontScale: 1.0,
@@ -528,7 +537,7 @@ function applyHudTypography(container) {
     uiSettings.fontFamily = fontPresetToFamily(uiSettings.fontPreset);
   }
 
-  container.style.fontFamily = uiSettings.skin === "system" ? sysFontStack() : uiSettings.fontFamily;
+  container.style.fontFamily = isSysSkin() ? sysFontStack() : uiSettings.fontFamily;
   container.style.fontSize = `${0.9 * scale}em`;
 }
 
@@ -966,7 +975,7 @@ function maybeReportListChanges() {
   if (!a || !b) return;
   // only for a reply that's just arrived: opening a chat, or the HUD tidying
   // an old block's format, is not something being acquired
-  if (uiSettings.skin === "system" && uiSettings.sysNotices !== false
+  if (isSysSkin() && uiSettings.sysNotices !== false
       && Date.now() - lastReplyAt < 120000 && idx === chat.length - 1) {
     try { sysShowNotices(sysNoticesFor(a, b), `${key}|${idx}|${chat[idx]?.swipe_id ?? 0}`); }
     catch (e) { console.warn("RPG HUD: system notice failed", e); }
@@ -1288,6 +1297,17 @@ function indicatorColor(status) {
   }
 }
 
+// Gray Fog's four-pointed star, used for the menu button, the folded-away button and the status mark
+const FOG_STAR_GLYPH = (fill) => `<path d="M12 2.5 L13.6 10.4 L21.5 12 L13.6 13.6 L12 21.5 L10.4 13.6 L2.5 12 L10.4 10.4 Z" fill="${fill}"/>
+  <circle cx="12" cy="12" r="6.3" fill="none" stroke="${fill}" stroke-width="1" opacity=".5"/>`;
+// the dot's colours; with no chat the dot's dark grey would vanish on the dark panel, so a softer grey
+function fogStatusTint(status) {
+  return ["valid", "invalid", "notag", "user"].includes(status) ? indicatorColor(status) : "#8a8c96";
+}
+function fogStatusStarHtml(status, title) {
+  return `<span class="fog-status" title="${escAttr(title || "")}" style="--orb-tint:${fogStatusTint(status)}">
+    <svg viewBox="0 0 24 24" aria-hidden="true">${FOG_STAR_GLYPH("var(--orb-tint)")}</svg></span>`;
+}
 function renderIndicatorDotHtml(status, title) {
   const c = indicatorColor(status);
   return `
@@ -2457,7 +2477,7 @@ function makeList(items, emptyText) {
 
 function renderEnemySummary() {
   if (!Array.isArray(rpgState.enemies) || rpgState.enemies.length === 0) return "";
-  if (uiSettings.skin === "system") {
+  if (isSysSkin()) {
     return `<div class="sys-foes">${sysUnitList(rpgState.enemies, { title: "HOSTILES", jumpType: "enemy", foe: true, hpOnly: true })}</div>`;
   }
 
@@ -2567,7 +2587,7 @@ function renderMiniUnitBars(list, options = {}) {
 function renderPartyTab() {
   const party = Array.isArray(rpgState.party) ? rpgState.party : [];
   const npcs = Array.isArray(rpgState.npcs) ? rpgState.npcs : [];
-  if (uiSettings.skin === "system") {
+  if (isSysSkin()) {
     return sysUnitList(party, { title: "PARTY", jumpType: "party", emptyText: "No party members" })
       + sysUnitList(npcs, { title: "NPCS", jumpType: "npc", emptyText: "No NPCs" });
   }
@@ -2615,7 +2635,7 @@ function renderBondsTab() {
     `<button id="${id}" style="background:#333; border:1px solid ${color}; color:${color};
       cursor:pointer; font-size:0.9em; padding:1px 7px; font-weight:bold;">${text}</button>`;
 
-  const SYS = uiSettings.skin === "system";
+  const SYS = isSysSkin();
   const header = `
     <div class="${SYS ? "sys-tabhead" : ""}" style="display:flex; justify-content:space-between; align-items:center; gap:4px; margin-bottom:4px;">
       ${SYS ? `<span>${sysIcon("bond")}BONDS</span>` : `<span style="color:#f06292; font-weight:bold;">❤️ Bonds</span>`}
@@ -2857,7 +2877,7 @@ function renderTimersTab() {
     `<button id="${id}" title="${escAttr(title || "")}" style="background:#333; border:1px solid ${color};
       color:${color}; cursor:pointer; font-size:0.9em; padding:1px 7px; font-weight:bold;">${text}</button>`;
 
-  const SYS = uiSettings.skin === "system";
+  const SYS = isSysSkin();
   const header = `
     <div class="${SYS ? "sys-tabhead" : ""}" style="display:flex; justify-content:space-between; align-items:center; gap:4px; margin-bottom:4px;">
       ${SYS ? `<span>${sysIcon("timer")}TIMERS</span>` : `<span style="color:#90caf9; font-weight:bold;">⏱️ Timers</span>`}
@@ -2929,13 +2949,13 @@ function renderTimersTab() {
         const use = info.mode === "charges" && !info.done
           ? `<button class="rpg-c-tuse" data-key="${escAttr(timerKey(t))}" title="Use one charge"
                style="margin-left:2px; padding:0 5px; font-size:0.85em; line-height:1.4; cursor:pointer;
-                      background:rgba(10,26,48,.9); color:#dff1ff; border:1px solid rgba(143,208,255,.55);">\u22121</button>` : "";
+                      background:rgba(var(--t-10_26_48, 10,26,48),.9); color:var(--t-dff1ff, #dff1ff); border:1px solid rgba(var(--t-143_208_255, 143,208,255),.55);">\u22121</button>` : "";
         return `
         <div class="sys-unit${dim ? " dim" : ""}">
           <div class="sys-unit-head">
             <span class="sys-tkind" style="--tc:${st.color}">${sysIcon(SYS_TIMER_ICON[info.kind] || "hourglass")}</span>
             <span class="nm">${ownerTag}${escHtml(t.name)}${mark}${keptMark}</span>
-            <span class="sys-unit-val" style="color:${st.color};">${escHtml(info.label)}${delta ? `<span class="d" style="color:#8aa3b8;">${escHtml(delta)}</span>` : ""}${use}</span>
+            <span class="sys-unit-val" style="color:${st.color};">${escHtml(info.label)}${delta ? `<span class="d" style="color:var(--t-8aa3b8, #8aa3b8);">${escHtml(delta)}</span>` : ""}${use}</span>
           </div>
           ${info.pct === null ? "" : `<div class="sys-cap sm tint" style="--mc:${st.color}"><i style="width:${info.pct}%"></i></div>`}
         </div>`;
@@ -3210,8 +3230,20 @@ function meterAutoColor(name) {
   if (k.includes("heat") || k.includes("temp")) return "#ff7043";
   if (k.includes("corrupt") || k.includes("taint")) return "#ba68c8";
   if (k.includes("rad") || k.includes("toxin") || k.includes("poison")) return "#cddc39";
-  return "#26a69a";
+  // everything else takes the colour of the icon its name gets
+  return METER_ICON_COLORS[meterIconAuto(name)] || "#26a69a";
 }
+// a bar colour for each meter icon, for names the rules above don't cover
+const METER_ICON_COLORS = {
+  hp: "#e57373", "m-blood": "#e53935", "m-brain": "#64b5f6", "m-hunger": "#81c784", "m-meat": "#a1887f",
+  "m-thirst": "#4dd0e1", "m-energy": "#ffd54f", "m-sleep": "#9fa8da", "m-cold": "#81d4fa", "m-heat": "#ff7043",
+  "m-corrupt": "#ba68c8", "m-rad": "#cddc39", "m-poison": "#8bc34a", "m-sick": "#afb42b", "m-air": "#b3e5fc",
+  "m-stress": "#ff8a65", "m-mood": "#ffe082", bond: "#f48fb1", "m-ward": "#00bcd4", def: "#90a4ae",
+  "m-ammo": "#c8a165", "m-focus": "#7986cb", "m-eye": "#ffb74d", "m-battery": "#9ccc65", "m-xp": "#b39ddb",
+  "m-fame": "#ffc107", "m-luck": "#66bb6a", "m-faith": "#fff59d", satk: "#ff5252", mp: "#448aff",
+  hourglass: "#bcaaa4", coin: "#ffd700", "m-sparkle": "#e1bee7",
+  "m-zone": "#d500f9", "m-boost": "#ff1744", "m-divide": "#a8ccff",
+};
 
 function renderMeters(meters, editable = false) {
   if (!Array.isArray(meters) || meters.length === 0) return "";
@@ -3449,9 +3481,181 @@ function resetRPG(e) {
     renderRPG();
   }
 }
+// Gray Fog folds the panel away like a paper accordion (and unfolds it) instead of
+// swapping it instantly. The panel is copied into horizontal strips that hinge
+// against each other; the folded stack then shrinks into the round button.
+const FOG_FOLD_MS = 560, FOG_UNFOLD_MS = 660, FOG_ORB_MS = 280;
+let fogFold = null;          // { dir: "orb", at, k } while the round button pops in
+let fogFolding = false;      // the accordion is running; the real panel stays hidden under it
+const fogMotionOk = () => uiSettings.fogFold !== false && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+const FOG_FOLD_SPEEDS = { slow: 1.6, normal: 1, fast: .6, instant: .35 };
+const fogFoldK = () => FOG_FOLD_SPEEDS[uiSettings.fogFoldSpeed] || 1;
+// Re-renders mid-animation keep the panel hidden under the fold, and let the button's pop-in carry on.
+function fogFoldClasses(container, minimized) {
+  if (fogFolding && !minimized) container.style.visibility = "hidden";
+  if (!fogFold || !minimized) return;
+  const t = Date.now() - fogFold.at, ms = FOG_ORB_MS * fogFold.k;
+  if (t >= ms) return;
+  container.classList.add("fog-orb-in");
+  container.style.animationDuration = `${Math.round(ms)}ms`;
+  container.style.animationDelay = `-${t}ms`;
+}
+// The folded-away button can be dragged anywhere; where it was left is kept as a
+// fraction of the screen (its centre), so it stays in the same spot after a resize.
+const FOG_ORB_HALF = 22, FOG_ORB_EDGE = 8;
+function fogOrbPlaceCss() {
+  const p = uiSettings.fogOrbPos;
+  if (!p || !Number.isFinite(p.fx) || !Number.isFinite(p.fy))
+    return `right: 12px; top: clamp(calc(env(safe-area-inset-top, 0px) + 50px), 20vh, calc(100vh - env(safe-area-inset-bottom, 0px) - 50px));
+      transform: translateY(-50%);`;
+  return "left: 0px; top: 0px;";            // placed exactly by fogOrbPlace() once it's laid out
+}
+// How the button's style position maps to where it shows on screen (screen = a + k * style).
+// Measured rather than assumed, so a zoomed or scaled page still puts it right under the finger.
+function fogOrbMap(container) {
+  const r = container.getBoundingClientRect();
+  const k = r.width && container.offsetWidth ? r.width / container.offsetWidth : 1;
+  const cs = getComputedStyle(container);
+  return { r, k, ax: r.left - k * (parseFloat(cs.left) || 0), ay: r.top - k * (parseFloat(cs.top) || 0) };
+}
+// Put the button's centre at (cx, cy) on screen, kept inside the screen.
+function fogOrbPlace(container, cx, cy) {
+  let m = fogOrbMap(container);
+  if (container.style.transform || container.style.right) {          // switch from the default spot to left/top
+    Object.assign(container.style, { left: `${m.r.left / m.k}px`, top: `${m.r.top / m.k}px`, right: "auto", transform: "none" });
+    m = fogOrbMap(container);
+  }
+  const hw = m.r.width / 2, hh = m.r.height / 2;
+  const vw = window.visualViewport?.width || window.innerWidth, vh = window.visualViewport?.height || window.innerHeight;
+  cx = Math.max(FOG_ORB_EDGE + hw, Math.min(vw - FOG_ORB_EDGE - hw, cx));
+  cy = Math.max(FOG_ORB_EDGE + hh, Math.min(vh - FOG_ORB_EDGE - hh, cy));
+  container.style.left = `${((cx - hw - m.ax) / m.k).toFixed(1)}px`;
+  container.style.top = `${((cy - hh - m.ay) / m.k).toFixed(1)}px`;
+  return { cx, cy, vw, vh };
+}
+function fogBindOrbDrag(container) {
+  const btn = container.querySelector(".fog-orb");
+  if (!btn) return;
+  const p = uiSettings.fogOrbPos;
+  if (p && Number.isFinite(p.fx) && Number.isFinite(p.fy)) {
+    const vw = window.visualViewport?.width || window.innerWidth, vh = window.visualViewport?.height || window.innerHeight;
+    fogOrbPlace(container, p.fx * vw, p.fy * vh);
+  }
+  const locked = !!uiSettings.fogOrbLock;
+  container.classList.toggle("locked", locked);
+  let start = null, dragged = false;
+  btn.onpointerdown = (e) => {
+    if (locked || (e.button !== undefined && e.button !== 0)) return;
+    const r = container.getBoundingClientRect();
+    // where on the button it was picked up, so that point stays under the finger
+    start = { x: e.clientX, y: e.clientY, gx: e.clientX - (r.left + r.width / 2), gy: e.clientY - (r.top + r.height / 2), id: e.pointerId };
+    dragged = false;
+    btn.setPointerCapture?.(e.pointerId);
+  };
+  btn.onpointermove = (e) => {
+    if (!start || e.pointerId !== start.id) return;
+    if (!dragged && Math.hypot(e.clientX - start.x, e.clientY - start.y) < 6) return;     // a tap, not a drag (yet)
+    dragged = true;
+    container.classList.add("dragging");
+    const at = fogOrbPlace(container, e.clientX - start.gx, e.clientY - start.gy);
+    // kept live, so a re-render mid-drag doesn't throw it back
+    uiSettings.fogOrbPos = { fx: at.cx / at.vw, fy: at.cy / at.vh };
+  };
+  const end = (e) => {
+    if (!start || e.pointerId !== start.id) return;
+    start = null;
+    container.classList.remove("dragging");
+    if (dragged) saveUiSettings();
+  };
+  btn.onpointerup = end;
+  btn.onpointercancel = end;
+  btn.oncontextmenu = (e) => e.preventDefault();            // a long press shouldn't pop up a menu
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    if (dragged) { dragged = false; return; }               // the end of a drag isn't a tap
+    toggleMinimize(e);
+  };
+  container.onclick = null;
+}
+function fogAccordion(container, opening, ms, done) {
+  const r = container.getBoundingClientRect();
+  const W = r.width, H = r.height;
+  if (!W || !H) { done(); return; }
+  const N = Math.max(3, Math.min(6, Math.round(H / 120))), h = H / N;
+  const el = (css) => { const d = document.createElement("div"); Object.assign(d.style, css); return d; };
+  const stage = el({ position: "fixed", left: `${r.left}px`, top: `${r.top}px`, width: `${W}px`, height: `${H}px`,
+    zIndex: "100001", pointerEvents: "none", perspective: "900px", perspectiveOrigin: "50% 0" });
+  const holder = el({ position: "absolute", left: "0", top: "0", width: "100%", height: "100%", transformStyle: "preserve-3d", transformOrigin: "100% 0" });
+  stage.appendChild(holder);
+  const strips = [], shades = [];
+  let parent = holder;
+  for (let i = 0; i < N; i++) {
+    const strip = el({ position: "absolute", left: "0", top: i ? "100%" : "0", width: `${W}px`, height: `${h}px`,
+      transformOrigin: "50% 0", transformStyle: "preserve-3d" });
+    const face = el({ position: "absolute", left: "0", top: "0", width: "100%", height: "100%", overflow: "hidden" });
+    const copy = container.cloneNode(true);
+    copy.id = "";
+    Object.assign(copy.style, { position: "absolute", left: "0", top: `${-i * h}px`, right: "auto", bottom: "auto", margin: "0",
+      width: `${W}px`, height: `${H}px`, transform: "none", animation: "none", visibility: "visible", zIndex: "0" });
+    // the strips facing away darken and the ones facing up catch a little light, so the creases read
+    const shade = el({ position: "absolute", left: "0", top: "0", width: "100%", height: "100%", opacity: "0", zIndex: "1",
+      background: i % 2 ? "linear-gradient(#000c, #0006)" : "linear-gradient(#ffffff00, #ffffff40)" });
+    face.append(copy, shade);
+    strip.appendChild(face);
+    parent.appendChild(strip);
+    parent = strip;
+    strips.push(strip); shades.push(shade);
+  }
+  const ease = (x) => (x < .5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2);
+  const SPLIT = .74;                       // most of the time folds; the rest shrinks into the button
+  const pose = (q) => {                    // q: 0 = lying open, 1 = folded away
+    const a = ease(Math.min(1, q / SPLIT)), b = ease(Math.max(0, (q - SPLIT) / (1 - SPLIT)));
+    const th = a * 86, sin = Math.sin(th * Math.PI / 180);
+    strips.forEach((st, i) => { st.style.transform = `rotateX(${i === 0 ? -th : i % 2 ? 2 * th : -2 * th}deg)`; });
+    shades.forEach((sh, i) => { sh.style.opacity = String((i % 2 ? .75 : .5) * sin); });
+    holder.style.transform = `scaleX(${1 - .9 * b})`;
+    holder.style.opacity = String(1 - b);
+  };
+  pose(opening ? 1 : 0);
+  document.body.appendChild(stage);
+  container.style.visibility = "hidden";
+  const t0 = performance.now();
+  const frame = (now) => {
+    const p = Math.min(1, (now - t0) / ms);
+    pose(opening ? 1 - p : p);
+    if (p < 1) requestAnimationFrame(frame);
+    else { stage.remove(); done(); }
+  };
+  requestAnimationFrame(frame);
+}
 function toggleMinimize(e) {
   if (e) e.stopPropagation();
   flushInlineEdits();
+  if (fogFolding) return;                                   // mid-fold: let it finish
+  if (isFogSkin() && fogMotionOk()) {
+    const k = fogFoldK(), c = document.getElementById("rpg-hud-container");
+    if (!isMinimized && c) {
+      fogFolding = true;
+      fogAccordion(c, false, FOG_FOLD_MS * k, () => {
+        fogFolding = false;
+        isMinimized = true; isSettingsOpen = false;
+        fogFold = { dir: "orb", at: Date.now(), k };
+        renderRPG();
+      });
+      return;
+    }
+    if (isMinimized && c) {
+      isMinimized = false; isSettingsOpen = false;
+      fogFolding = true;
+      renderRPG();                                          // lay the panel out (hidden), then unfold a copy of it
+      const c2 = document.getElementById("rpg-hud-container");
+      fogAccordion(c2, true, FOG_UNFOLD_MS * k, () => {
+        fogFolding = false;
+        c2.style.visibility = "";
+      });
+      return;
+    }
+  }
   isMinimized = !isMinimized;
   isSettingsOpen = false;
   renderRPG();
@@ -3677,7 +3881,8 @@ function renderClassicSkin() {
   saoSaveScroll(container);
   queueMicrotask(() => saoRestoreScroll(container));
 
-  const SYS = uiSettings.skin === "system";   // the System skin is this panel, restyled
+  const SYS = isSysSkin();   // the System and Gray Fog skins are this panel, restyled
+  const FOG = isFogSkin();
   const ico = (emoji, k) => (SYS ? sysIcon(k) : emoji);   // emoji in classic, line icons in System
   if (SYS) { sysEnsureCss(); sysEnsureWebFont(); }
   const BOX_RADIUS = "0px";
@@ -3697,13 +3902,24 @@ function renderClassicSkin() {
       const latestTitle = latest?.detail ? `${latest.label}\n${latest.detail}` : (latest?.label || "");
 
       container.className = "";
+      if (FOG) {
+        // Gray Fog: a floating round button with the slowly turning star, coloured like the status dot
+        const tint = fogStatusTint(latest?.status);
+        container.className = "rpg-fog-orb";
+        container.style.cssText = `position: fixed; ${fogOrbPlaceCss()} z-index: 99999; --orb-tint: ${tint};`;
+        fogFoldClasses(container, true);
+        container.innerHTML = `<button class="fog-orb" title="${escAttr(latestTitle || "Open the HUD")}${"\n"}(drag to move)" aria-label="Open the HUD">
+          <svg viewBox="0 0 24 24" aria-hidden="true" style="animation-delay:-${Date.now() % 14000}ms">${FOG_STAR_GLYPH("var(--orb-tint)")}</svg></button>`;
+        fogBindOrbDrag(container);
+        return;
+      }
       container.style.cssText = SYS ? `
         position: fixed; right: 0;
         top: clamp(calc(env(safe-area-inset-top, 0px) + 50px), 20vh, calc(100vh - env(safe-area-inset-bottom, 0px) - 50px));
         transform: translateY(-50%);
         width: 26px; height: 58px;
-        background: rgba(5,12,24,0.92);
-        border: 1px solid #8fd0ff; border-right: 0;
+        background: ${FOG ? "rgba(26,26,32,0.94)" : "rgba(5,12,24,0.92)"};
+        border: 1px solid ${FOG ? "#c9ccd6" : "#8fd0ff"}; border-right: 0;
         z-index: 99999; cursor: pointer; box-sizing: border-box;
         box-shadow: 0 0 10px rgba(90,180,255,0.55), inset 0 0 8px rgba(90,180,255,0.25);
         display: flex; align-items: center; justify-content: center;
@@ -3766,7 +3982,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
   ${SYS ? `background: var(--sys-bg); border: 1px solid var(--sc); color: #e4f3ff;` : `
   background: rgba(10, 10, 15, 0.95);
   border: 2px solid #C0A040; color: #E0E0E0;`}
-  padding: 10px 10px 46px 10px;
+  padding: 10px 10px ${FOG ? 53 : 46}px 10px;
   z-index: 9999;
   font-family: ${FONT_FAMILY};
   font-size: ${FONT_SIZE};
@@ -3779,12 +3995,14 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
   applyHudTypography(container);
   if (SYS) container.style.fontFamily = sysFontStack();
-  container.className = SYS ? "rpg-sys" : "";
+  container.className = SYS ? `rpg-sys${FOG ? " rpg-fog" : ""}` : "";
+  if (FOG) fogFoldClasses(container, false);
   container.onclick = null;
 
   try {
     const { root, display, type, isVehicle } = getActiveData();
-    if (SYS) container.className = `rpg-sys rpg-sys-${isVehicle ? "veh" : type}`;
+    if (SYS) container.className = `rpg-sys${FOG ? " rpg-fog" : ""} rpg-sys-${isVehicle ? "veh" : type}`;
+    if (FOG) fogFoldClasses(container, false);
     const context = SillyTavern.getContext();
     const chat = context?.chat;
     latest = updateLatestStatusAndToast(chat);
@@ -3877,7 +4095,11 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
     if (saoMeterEdit && meterEditIdx !== charIndex) saoMeterEdit = null;   // switched character: drop the draft
     const meterEditorHtml = saoMeterEdit ? `${CLASSIC_ED_CSS}<div class="rpg-c-ed rpg-c-medit">${saoMetersSection(display)}</div>` : "";
-    const metersHtml = saoMeterEdit ? meterEditorHtml : renderMeters(display.meters, true);
+    const hasMeters = Array.isArray(display.meters) && display.meters.length > 0;
+    const metersHtml = saoMeterEdit ? meterEditorHtml
+      : hasMeters ? renderMeters(display.meters, true)
+      : `<div style="text-align:right; margin-top:2px;"><span data-meter-edit data-meter-add title="Add a meter"
+          style="cursor:pointer; font-size:0.72em; color:#888;">+ meter</span></div>`;
 
     const coin = toNumberOr(display.dankcoin ?? root.dankcoin ?? 0, 0);
 
@@ -3886,8 +4108,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     const tabStyle = (name) => SYS
       ? `flex:0 0 auto; min-width:52px; text-align:center; cursor:pointer; padding:4px 8px; font-size:0.74em; letter-spacing:0.1em; text-transform:uppercase; user-select:none; ` +
         (activeTab === name
-          ? "border:1px solid var(--sc); color:#fff; background:rgba(90,170,255,0.16); text-shadow:0 0 6px var(--sg); box-shadow:inset 0 0 6px var(--sg);"
-          : "border:1px solid transparent; color:#8fb6d8;")
+          ? "border:1px solid var(--sc); color:#fff; background:rgba(var(--t-90_170_255, 90,170,255),0.16); text-shadow:0 0 6px var(--sg); box-shadow:inset 0 0 6px var(--sg);"
+          : "border:1px solid transparent; color:var(--t-8fb6d8, #8fb6d8);")
       :
       `flex:0 0 auto; min-width:56px; text-align:center; cursor:pointer; padding:5px 8px; font-size:0.8em; border-radius:3px; user-select:none; ` +
       `${activeTab === name ? "background:#C0A040; color:#000; font-weight:bold;" : "background:transparent; color:#ddd;"}`;
@@ -3956,7 +4178,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
    			 <select id="rpg-settings-clockfmt" style="background:#222; color:#ddd; border:1px solid #555; padding:3px;">${clockFormatOptions()}</select>
 		  </div>
 		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
-    			<span title="Editing Items, Skills or Passives (tap an icon) also rewrites this many earlier replies">Edits Rewrite Past Replies</span>
+    			<span title="Editing Items, Skills, Passives or meters also rewrites this many earlier replies">Edits Rewrite Past Replies</span>
    			 <input type="number" id="rpg-settings-edithist" min="0" max="20" step="1" value="${Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0))}" style="width:52px; background:#222; color:#ddd; border:1px solid #555; text-align:center;">
 		  </div>
 		  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; background:rgba(255,255,255,0.05); padding:8px; border-radius:4px; grid-column:1 / span 2;">
@@ -3998,6 +4220,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         <select id="rpg-skin-select" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px;">
             <option value="classic">Classic panel</option>
             <option value="system">System window</option>
+            <option value="fog">Gray Fog</option>
             <option value="sao">SAO overlay</option>
         </select>
 
@@ -4047,6 +4270,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
 
     container.innerHTML = `
+    ${SYS ? emblemLayersHtml() : ""}
     ${SYS ? sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLabel, coin, time, meterEditorHtml }) : `
 	<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; padding-bottom:5px; border-bottom:1px solid ${borderColor}; min-height:24px;">
 	  <div style="display:flex; align-items:center; gap:6px; min-width:0;">
@@ -4108,7 +4332,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       </div>
     `}
 
-      <div id="rpg-tab-strip" data-scroll-key="c:strip" style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid ${SYS ? "rgba(143,208,255,0.35)" : "#555"}; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
+      <div id="rpg-tab-strip" data-scroll-key="c:strip" style="display:flex; overflow-x:auto; white-space:nowrap; gap:2px; border-bottom:1px solid ${SYS ? "rgba(var(--t-143_208_255, 143,208,255),0.35)" : "#555"}; margin-bottom:5px; padding-bottom:2px; scrollbar-gutter:stable;">
         <div id="tab-party" style="${tabStyle("party")}">Party</div>
 		<div id="tab-bonds" style="${tabStyle("bonds")}">Bonds</div>
 	    <div id="tab-timers" style="${tabStyle("timers")}">Timers</div>
@@ -4122,7 +4346,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       </div>
 
       ${CLASSIC_ED_CSS}
-      <div data-scroll-key="c:body:${activeTab}" style="height: ${classicEditorOpen() ? 240 : 110}px; overflow-y: auto; font-size: 0.8em; padding:5px; background:${SYS ? "rgba(4,12,24,0.55); border:1px solid rgba(143,208,255,0.22)" : "rgba(0,0,0,0.3)"}; scrollbar-gutter:${activeTab === "log" ? "auto" : "stable"};">
+      <div data-scroll-key="c:body:${activeTab}" style="height: ${classicEditorOpen() ? 240 : 110}px; overflow-y: auto; font-size: 0.8em; padding:5px; background:${SYS ? "rgba(var(--t-4_12_24, 4,12,24),0.55); border:1px solid rgba(var(--t-143_208_255, 143,208,255),0.22)" : "rgba(0,0,0,0.3)"}; scrollbar-gutter:${activeTab === "log" ? "auto" : "stable"};">
         ${activeTab === "party" ? renderPartyTab() : ""}
         ${activeTab === "log" ? classicLogHtml() : ""}
 		${activeTab === "bonds" ? renderBondsTab() : ""}
@@ -4137,7 +4361,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
       ${renderEnemySummary()}
 
-    <div class="rpg-c-btns" style="
+    <div class="rpg-c-btns${FOG ? ` fog-dock${fogDockOpen || isSettingsOpen || classicInfo ? " open" : ""}${fogDockAnim ? " anim" : ""}` : ""}" style="
 	  position:absolute; left:10px; bottom:8px;
 	  display:flex; gap:6px;
 	">
@@ -4154,6 +4378,11 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    display:flex; align-items:center; justify-content:center;
 	    box-sizing:border-box;
 	  ">↻</button>
+	  ${FOG ? `<button id="rpg-fog-dock" title="${fogDockOpen ? "Close the menu" : "Menu"}" aria-expanded="${fogDockOpen}">
+	    <svg viewBox="0 0 24 24" aria-hidden="true"${fogDockOpen ? ` style="animation-delay:-${Date.now() - fogDockOpenedAt}ms"` : ""}><g class="fog-star">
+	      <path d="M12 2.5 L13.6 10.4 L21.5 12 L13.6 13.6 L12 21.5 L10.4 13.6 L2.5 12 L10.4 10.4 Z" fill="currentColor"/>
+	      <circle cx="12" cy="12" r="6.3" fill="none" stroke="currentColor" stroke-width="1" opacity=".55"/></g></svg>
+	    ${!fogDockOpen && changelogUnseen() ? `<span class="fog-dock-badge"></span>` : ""}</button>` : ""}
 	  <button id="rpg-help-btn" title="Help" style="
 	    position:relative; background:#333; border:1px solid #777; color:#fff;
 	    cursor:pointer; width:34px; height:26px;
@@ -4175,6 +4404,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         style="position:absolute; left:-8px; top:0; bottom:0; width:16px;
           cursor:ew-resize; z-index:200000; background:transparent; touch-action:none;"></div>
 
+      ${SYS && emblemEditOpen && !isSettingsOpen ? `<div id="rpg-emblem-drag" title="Drag to move the picture. Pinch or scroll to resize; twist with two fingers (or Shift+scroll) to rotate."></div><div class="em-guide"></div>` + emblemEditorHtml() : ""}
       ${settingsPanelHtml}
       ${errorPanelHtml}
       ${classicInfoHtml()}
@@ -4235,6 +4465,15 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     };
 
     bind("rpg-min-btn", toggleMinimize);
+    bind("rpg-fog-dock", (e) => {
+      e?.stopPropagation();
+      fogDockOpen = !(fogDockOpen || isSettingsOpen || classicInfo);
+      if (fogDockOpen) fogDockOpenedAt = Date.now();
+      if (!fogDockOpen) { if (isSettingsOpen) { flushInlineEdits(); isSettingsOpen = false; } classicInfo = null; }
+      fogDockAnim = true;
+      renderRPG();
+      fogDockAnim = false;
+    });
     bind("rpg-settings-btn", (e) => { classicInfo = null; toggleSettings(e); });
     bind("rpg-error-close", closePipeErrorPanel);
     
@@ -4317,8 +4556,21 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     classicBindLog();
     classicBindEditors();
     classicBindInfo();
+    if (SYS) { applyEmblem(container); if (emblemEditOpen) bindEmblemEditor(container); }
     container.querySelectorAll("[data-meter-edit]").forEach((el) => {
-      el.onclick = (e) => { e.stopPropagation(); meterEditIdx = charIndex; saoStartMeterEdit(); renderRPG(); };
+      el.onclick = (e) => {
+        e.stopPropagation();
+        meterEditIdx = charIndex;
+        saoStartMeterEdit();
+        // "+ meter" opens straight onto a new, empty row
+        if (el.hasAttribute("data-meter-add")) {
+          saoMeterEdit.push({ name: "", curr: "0", max: "100", color: "#26a69a", custom: false, icon: "", orig: "" });
+        }
+        renderRPG();
+        if (el.hasAttribute("data-meter-add")) {
+          requestAnimationFrame(() => { const n = document.querySelectorAll(".rpg-sao-m-name"); n[n.length - 1]?.focus(); });
+        }
+      };
     });
     if (saoMeterEdit) saoBindMeterEditor();
 	  
@@ -4577,6 +4829,28 @@ function tDiffVitals(out, label, a, b, who) {
       text: `${pre}${eb.label || "MP"} ${e0} \u2192 ${e1}${eb.max ? "/" + splitMathValue(String(eb.max)).val : ""} (${tSigned(e1 - e0)})` });
   }
 
+  // the stats themselves: max HP and MP, then ATK, MATK and the rest
+  const stat = (label, raw0, raw1, u) => {
+    const s0 = String(raw0 ?? "").trim(), s1 = String(raw1 ?? "").trim();
+    if (s0 === s1 || (!s0 && !s1)) return;
+    const n0 = tNum(raw0), n1 = tNum(raw1);
+    const show = (v) => splitMathValue(String(v ?? "")).val || "\u2013";
+    if (n0 !== null && n1 !== null) {
+      if (n0 === n1) return;                       // only the breakdown in brackets moved
+      out.push({ tone: n1 > n0 ? "good" : "bad", u, text: `${pre}${label} ${n0} \u2192 ${n1} (${tSigned(n1 - n0)})` });
+    } else {
+      out.push({ tone: "neutral", u, text: `${pre}${label} ${show(raw0)} \u2192 ${show(raw1)}` });
+    }
+  };
+  stat("Max HP", a?.hp_max, b?.hp_max, { f: "hpmax", who });
+  stat(`Max ${eb.label || "MP"}`, ea.max, eb.max, { f: "mpmax", who });
+  const st0 = a?.stats || {}, st1 = b?.stats || {};
+  const order = ["atk", "matk", "def", "satk", "sdef"];
+  [...new Set([...order, ...Object.keys(st0), ...Object.keys(st1)])].forEach((k) => {
+    if (!(k in st0) && !(k in st1)) return;
+    stat(k.toUpperCase(), st0[k], st1[k], { f: "stat", who, key: k });
+  });
+
   // "Healthy", "None" and the like mean no status, so going from Poisoned to
   // Healthy is logged as losing Poisoned, not also as gaining Healthy
   const realStatus = (list) => new Set((list || []).map((x) => String(x).trim())
@@ -4712,13 +4986,28 @@ function applyTurnUndo(b, a, u) {
     case "combat": b.combat = tClone(a.combat); break;
     case "coin": b.dankcoin = a.dankcoin; break;
     case "hp":
-      if (tb && ta) { tb.hp_curr = ta.hp_curr; tb.hp_max = ta.hp_max; }
+      if (tb && ta) tb.hp_curr = ta.hp_curr;
       break;
     case "mp":
-      if (tb && ta) ["mp_curr", "mp_max", "mp", "en_curr", "en_max", "en"].forEach((k) => {
+      if (tb && ta) ["mp_curr", "mp", "en_curr", "en"].forEach((k) => {
         if (k in ta) tb[k] = ta[k]; else delete tb[k];
       });
       break;
+    case "hpmax":
+      if (tb && ta) tb.hp_max = ta.hp_max;
+      break;
+    case "mpmax":
+      if (tb && ta) ["mp_max", "en_max"].forEach((k) => {
+        if (k in ta) tb[k] = ta[k]; else delete tb[k];
+      });
+      break;
+    case "stat": {
+      if (!tb || !ta) break;
+      const sa = ta.stats || {};
+      tb.stats = { ...(tb.stats || {}) };
+      if (u.key in sa) tb.stats[u.key] = sa[u.key]; else delete tb.stats[u.key];
+      break;
+    }
     case "status": {
       if (!tb) break;
       const list = Array.isArray(tb.status_effects) ? tb.status_effects : (tb.status_effects = []);
@@ -4807,11 +5096,16 @@ function buildTurnLog(chat) {
 // calls the same handlers the classic skin does.
 // =====================================================================
 
+// System and Gray Fog share one layout; Gray Fog is a theme over it
+function isSysSkin(name = uiSettings.skin) { return name === "system" || name === "fog"; }
+function isFogSkin(name = uiSettings.skin) { return name === "fog"; }
+
 function setSkin(name) {
   flushInlineEdits();
-  uiSettings.skin = name === "sao" || name === "system" ? name : "classic";
+  uiSettings.skin = ["sao", "system", "fog"].includes(name) ? name : "classic";
   saveUiSettings();
   isSettingsOpen = false;
+  emblemEditOpen = false;
   saoPanel = null;
   const c = document.getElementById("rpg-hud-container");
   if (c) { c.innerHTML = ""; c.style.cssText = ""; c.className = ""; c.onclick = null; }
@@ -4832,6 +5126,7 @@ let saoQuestTab = "quests";   // "quests" | "log"
 const saoScroll = new Map();  // scroll key -> {top, left}
 let saoLogShown = 20;         // turns rendered before "show older"
 let saoMeterEdit = null;
+let meterIconPick = null;    // which meter editor row has its icon grid open (System and Gray Fog)
 let meterEditIdx = -1;       // classic/System: whose meters the open editor belongs to
 let saoMasteryEdit = null;   // null, or a draft: [{name, curr, max, tail, orig}]     // null, or a draft: [{name, curr, max, color, custom}]
 let saoLayoutMode = false;   // drag clusters around instead of using them
@@ -6127,9 +6422,16 @@ function saoMetersSection(display) {
   const meters = Array.isArray(display.meters) ? display.meters : [];
 
   if (saoMeterEdit) {
+    const icons = isSysSkin();       // only these skins show a meter's icon
+    if (meterIconPick !== null && !saoMeterEdit[meterIconPick]) meterIconPick = null;
+    const grid = (i, m) => `<div class="rpg-sao-m-icons" data-i="${i}">
+        <button class="rpg-sao-m-ic auto${m.icon ? "" : " on"}" data-i="${i}" data-icon="" title="Pick from the name">Auto</button>
+        ${METER_ICONS.map(([k, label]) => `<button class="rpg-sao-m-ic${m.icon === k ? " on" : ""}" data-i="${i}" data-icon="${k}" title="${escAttr(label)}">${sysIcon(k)}</button>`).join("")}
+      </div>`;
     const rows = saoMeterEdit.map((m, i) => `
       <div class="rpg-sao-mrow-edit" data-i="${i}">
         ${reorderBtns("meter", i, saoMeterEdit.length)}
+        ${icons ? `<button class="rpg-sao-m-icon${meterIconPick === i ? " on" : ""}" data-i="${i}" title="Icon${m.icon ? "" : " (from the name)"}">${sysIcon(m.icon || meterIconAuto(m.name))}</button>` : ""}
         <input type="color" class="rpg-sao-m-color" data-i="${i}" value="${escAttr(m.color)}"
           title="Colour${m.custom ? "" : " (automatic)"}">
         <input type="text" class="rpg-sao-m-name" data-i="${i}" value="${escAttr(m.name)}" placeholder="Name">
@@ -6138,12 +6440,15 @@ function saoMetersSection(display) {
         <input type="text" class="rpg-sao-m-max" data-i="${i}" value="${escAttr(m.max)}" inputmode="decimal">
         <button class="rpg-sao-m-auto${m.custom ? "" : " off"}" data-i="${i}" title="Back to automatic colour">&#8634;</button>
         <button class="rpg-sao-m-del" data-i="${i}" title="Remove">&#10005;</button>
-      </div>`).join("");
+      </div>${icons && meterIconPick === i ? grid(i, m) : ""}`).join("");
 
     return `<div class="rpg-sao-subhead"><span class="rpg-sao-sub">Meters</span></div>
       <div class="rpg-sao-meditor">
         ${rows || `<p class="rpg-sao-empty">No meters. Add one below.</p>`}
         <button class="rpg-sao-mini" id="rpg-sao-m-add">+ Add meter</button>
+        ${(() => { const d = Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0));
+          return `<p class="rpg-sao-hint">${d ? `Renames, removals and new maximums can also go into ${d} earlier repl${d === 1 ? "y" : "ies"}; Save asks first (setting: Edits rewrite past replies).`
+            : "Saving updates the latest reply. To also update earlier ones, see the setting Edits rewrite past replies."}</p>`; })()}
         <div class="rpg-sao-medit-actions">
           <button class="rpg-sao-mini" id="rpg-sao-m-cancel">Cancel</button>
           <button class="rpg-sao-mini primary" id="rpg-sao-m-save">Save</button>
@@ -6835,18 +7140,20 @@ function saoStartMeterEdit() {
     max: m.max ?? 100,
     color: meterColorByName(m.name),
     custom: !!uiSettings.meterColors?.[meterKey(m.name)],
+    icon: uiSettings.meterIcons?.[meterKey(m.name)] || "",
     orig: m.name ?? "",
   }));
+  meterIconPick = null;
 }
 
 function saoSaveMeterEdit() {
-  const { display } = getActiveData();
+  const { display, isVehicle } = getActiveData();
   const before = Array.isArray(display.meters) ? display.meters : [];
   let draft = saoMeterEdit.filter((m) => String(m.name).trim());
 
   // Deleting asks first, and Cancel keeps them — same as bonds and timers.
   const kept = new Set(draft.map((m) => meterKey(m.orig || m.name)));
-  const removed = before.filter((m) => !kept.has(meterKey(m.name)));
+  let removed = before.filter((m) => !kept.has(meterKey(m.name)));
   if (removed.length) {
     const sure = confirm(`Remove ${removed.length === 1 ? "this meter" : "these meters"}?\n\n` +
       `${removed.map((m) => m.name).join(", ")}\n\nCancel keeps them.`);
@@ -6854,8 +7161,23 @@ function saoSaveMeterEdit() {
       draft = draft.concat(removed.map((m) => ({
         name: m.name, curr: m.curr, max: m.max, color: meterColorByName(m.name), custom: false,
       })));
+      removed = [];
     }
   }
+
+  // what earlier replies would need: renames, removals and new maximums (not current values,
+  // which are that turn's history)
+  const oldByKey = new Map(before.map((m) => [meterKey(m.name), m]));
+  const histEdits = [];
+  draft.forEach((m) => {
+    if (!m.orig) return;
+    const was = oldByKey.get(meterKey(m.orig));
+    const name = String(m.name).trim(), max = String(m.max).trim() || "100";
+    const renamed = meterKey(m.orig) !== meterKey(name);
+    const newMax = was && String(was.max).trim() !== max;
+    if (renamed || newMax) histEdits.push({ from: m.orig, to: name, max: newMax ? max : null });
+  });
+  removed.forEach((m) => histEdits.push({ from: m.name, to: null }));
 
   display.meters = draft.map((m) => ({
     name: String(m.name).trim(),
@@ -6873,12 +7195,107 @@ function saoSaveMeterEdit() {
     if (m.orig && meterKey(m.orig) !== k) delete colors[meterKey(m.orig)];   // renamed
   });
   uiSettings.meterColors = colors;
+  // icons the same way; a meter left on Auto follows its name
+  const icons = { ...(uiSettings.meterIcons || {}) };
+  draft.forEach((m) => {
+    const k = meterKey(m.name);
+    if (m.orig && meterKey(m.orig) !== k) delete icons[meterKey(m.orig)];
+    if (m.icon) icons[k] = m.icon;
+    else delete icons[k];
+  });
+  uiSettings.meterIcons = icons;
+  meterIconPick = null;
   saveUiSettings();
 
   saoMeterEdit = null;
   const ok = writeStateBackToChatMessage(rpgState);
   if (!ok) console.warn("RPG HUD: couldn't write back <rpg_state> after meter edit");
   renderRPG();
+
+  // Like list edits: the same change goes into this many earlier replies
+  // (setting: Edits rewrite past replies), so the AI doesn't copy the old
+  // name or a removed meter back from history.
+  const depth = Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0));
+  const who = activeListOwner();
+  if (!depth || !histEdits.length || isVehicle || who === undefined) return;
+  const lines = histEdits.map((e) => e.to === null ? `\u2022 ${e.from}: removed`
+    : `\u2022 ${e.from}${meterKey(e.from) !== meterKey(e.to) ? ` \u2192 ${e.to}` : ""}${e.max ? ` (max ${e.max})` : ""}`);
+  const also = confirm(
+    `Also make this change in the ${depth} earlier repl${depth === 1 ? "y" : "ies"} before this one?\n\n${lines.join("\n")}\n\n` +
+    `OK: update ${depth === 1 ? "it" : "them"} too (setting: Edits rewrite past replies), so the AI doesn't bring the old version back. ` +
+    `Current values in those replies stay as they were.\n` +
+    `Cancel: change only the latest reply.`
+  );
+  if (!also) return;
+  const n = rewriteMeterHistory(who, histEdits, depth);
+  if (window.toastr) hudToast.info(n ? `Also updated ${n} earlier repl${n === 1 ? "y" : "ies"}.` : "No earlier replies needed changing.");
+  try { checkMessage(); } catch {}
+}
+
+// Carry meter renames, removals and new maximums into up to `depth` replies
+// before the latest, for one character (who: null for you, else { group, key }).
+// Current values stay as they were. Swipes too.
+function rewriteMeterHistory(who, edits, depth) {
+  if (!edits.length || depth <= 0) return 0;
+  let ctx;
+  try { ctx = SillyTavern.getContext(); } catch { return 0; }
+  const chat = ctx?.chat || [];
+  const ownerId = who ? `${who.group}:${who.key}` : "@player";
+  const plan = new Map(edits.map((e) => [meterKey(e.from), e]));
+  const fixBlock = (text) => String(text).replace(/<rpg_state\b[^>]*>[\s\S]*?<\/rpg_state>/gi, (block) => {
+    const lines = block.split("\n");
+    let section = null, unit = null;
+    for (let li = 0; li < lines.length; li++) {
+      const ln = lines[li];
+      const h = ln.match(/^\s*\[([^\]]+)\]\s*$/);
+      if (h) { const t = h[1].toLowerCase(); section = /player/.test(t) ? "player" : /party/.test(t) ? "party" : /npc/.test(t) ? "npcs" : /enem/.test(t) ? "enemies" : null; unit = null; continue; }
+      const nm = ln.match(/\|\s*Name\s*:\s*([^|]*)\|/i);
+      if (nm && section && section !== "player" && !ln.trim().startsWith(">")) unit = normBondName(nm[1]);
+      if (ln.trim().startsWith(">")) continue;                       // a vehicle's own meters
+      const id = section === "player" ? "@player" : section && unit ? `${section}:${unit}` : null;
+      if (id !== ownerId) continue;
+      lines[li] = ln.replace(/(\|\s*Meters\s*:)([^|]*)(\|)/i, (m, a, val, z) => {
+        const out = [];
+        val.split(";").map((x) => x.trim()).filter(Boolean).forEach((item) => {
+          const ci = item.indexOf(":");
+          const name = (ci >= 0 ? item.slice(0, ci) : item).trim(), rest = ci >= 0 ? item.slice(ci + 1).trim() : "";
+          const e = plan.get(meterKey(name));
+          if (!e) { out.push(item); return; }
+          if (e.to === null) return;                                     // removed
+          let [curr, max] = rest.split("/").map((x) => (x ?? "").trim());
+          if (e.max) max = e.max;
+          out.push(`${e.to}:${curr || "0"}${max !== undefined && max !== "" ? `/${max}` : ""}`);
+        });
+        return a + out.join(";") + z;
+      });
+    }
+    return lines.join("\n");
+  });
+  let touched = 0, seen = 0;
+  for (let i = lastRpgMsgIndex - 1; i >= 0 && seen < depth; i--) {
+    const msg = chat[i];
+    if (!msg || msg.is_user || typeof msg.mes !== "string" || !rpgInnerFromMessage(msg.mes)) continue;
+    seen++;
+    const next = fixBlock(msg.mes);
+    let changed = next !== msg.mes;
+    if (changed) setMessageText(msg, next);
+    // the other swipes keep their own copy of the block
+    if (Array.isArray(msg.swipes)) {
+      msg.swipes = msg.swipes.map((sw) => {
+        if (typeof sw !== "string") return sw;
+        const f = fixBlock(sw);
+        if (f !== sw) changed = true;
+        return f;
+      });
+    }
+    if (changed) touched++;
+  }
+  if (touched) {
+    try { window.saveChat?.(); } catch {}
+    invalidateHistoryMemory();
+    turnLogCache = { sig: "", turns: [] };
+  }
+  return touched;
 }
 
 function saoBindMeterEditor() {
@@ -6893,6 +7310,14 @@ function saoBindMeterEditor() {
     el.onclick = (e) => e.stopPropagation();
   });
   field(".rpg-sao-m-name", "name");
+  // a meter on Auto shows the icon its name would get, as you type
+  body.querySelectorAll(".rpg-sao-m-name").forEach((el) => {
+    el.addEventListener("input", () => {
+      const m = saoMeterEdit[+el.dataset.i];
+      const b = body.querySelector(`.rpg-sao-m-icon[data-i="${el.dataset.i}"]`);
+      if (m && b && !m.icon) b.innerHTML = sysIcon(meterIconAuto(m.name));
+    });
+  });
   field(".rpg-sao-m-curr", "curr");
   field(".rpg-sao-m-max", "max");
 
@@ -6909,7 +7334,17 @@ function saoBindMeterEditor() {
   const btn = (sel, fn) => body.querySelectorAll(sel).forEach((el) => {
     el.onclick = (e) => { e.stopPropagation(); fn(+el.dataset.i); };
   });
-  btn(".rpg-sao-m-del", (i) => { saoMeterEdit.splice(i, 1); renderRPG(); });
+  btn(".rpg-sao-m-del", (i) => { saoMeterEdit.splice(i, 1); meterIconPick = null; renderRPG(); });
+  btn(".rpg-sao-m-icon", (i) => { meterIconPick = meterIconPick === i ? null : i; renderRPG(); });
+  body.querySelectorAll(".rpg-sao-m-ic").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const m = saoMeterEdit[+el.dataset.i];
+      if (m) m.icon = el.dataset.icon || "";
+      meterIconPick = null;
+      renderRPG();
+    };
+  });
   btn(".rpg-sao-m-auto", (i) => {
     const m = saoMeterEdit[i]; if (!m) return;
     m.custom = false; m.color = meterAutoColor(m.name); renderRPG();
@@ -6917,14 +7352,14 @@ function saoBindMeterEditor() {
 
   const one = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
   one("rpg-sao-m-add", () => {
-    saoMeterEdit.push({ name: "", curr: "0", max: "100", color: "#26a69a", custom: false, orig: "" });
+    saoMeterEdit.push({ name: "", curr: "0", max: "100", color: "#26a69a", custom: false, icon: "", orig: "" });
     renderRPG();
     requestAnimationFrame(() => {
       const names = document.querySelectorAll(".rpg-sao-m-name");
       names[names.length - 1]?.focus();
     });
   });
-  one("rpg-sao-m-cancel", () => { saoMeterEdit = null; renderRPG(); });
+  one("rpg-sao-m-cancel", () => { saoMeterEdit = null; meterIconPick = null; renderRPG(); });
   one("rpg-sao-m-save", saoSaveMeterEdit);
 }
 
@@ -7390,11 +7825,11 @@ function classicBindEditors() {
 
 const SYS_CSS = `
 .rpg-sys{--sc:#8fd0ff; --sg:rgba(90,180,255,.55); --st:rgba(50,120,210,.22);
-  --sys-bg:repeating-linear-gradient(115deg, rgba(140,200,255,.045) 0 1px, transparent 1px 13px),
+  --sys-bg:repeating-linear-gradient(115deg, rgba(var(--t-140_200_255, 140,200,255),.045) 0 1px, transparent 1px 13px),
     radial-gradient(120% 60% at 20% 0%, var(--st), transparent 60%),
-    radial-gradient(100% 50% at 90% 100%, rgba(40,90,180,.16), transparent 60%), rgba(4,9,18,.94);
-  --sys-shadow:0 0 0 1px rgba(0,0,0,.55), 0 0 16px var(--sg), inset 0 0 0 3px rgba(4,9,18,.85),
-    inset 0 0 0 4px rgba(143,208,255,.28), inset 0 0 26px rgba(60,140,230,.14)}
+    radial-gradient(100% 50% at 90% 100%, rgba(var(--t-40_90_180, 40,90,180),.16), transparent 60%), rgba(var(--t-4_9_18, 4,9,18),.94);
+  --sys-shadow:0 0 0 1px rgba(0,0,0,.55), 0 0 16px var(--sg), inset 0 0 0 3px rgba(var(--t-4_9_18, 4,9,18),.85),
+    inset 0 0 0 4px rgba(var(--t-143_208_255, 143,208,255),.28), inset 0 0 26px rgba(var(--t-60_140_230, 60,140,230),.14)}
 .rpg-sys-enemy{--sc:#ff8080; --sg:rgba(255,80,80,.5); --st:rgba(200,50,60,.24)}
 .rpg-sys-veh{--sc:#d6a2ff; --sg:rgba(190,120,255,.5); --st:rgba(140,70,210,.22)}
 .rpg-sys::before,.rpg-sys::after{content:""; position:absolute; width:14px; height:14px; pointer-events:none;
@@ -7403,21 +7838,21 @@ const SYS_CSS = `
 .rpg-sys::after{bottom:5px; right:5px; border-bottom-width:2px; border-right-width:2px}
 .rpg-sys .sys-svg{fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round;
   width:1.1em; height:1.1em; vertical-align:-0.18em; flex:0 0 auto}
-.rpg-sys .rpg-c-btns .sys-svg{width:16px; height:16px; color:#dff1ff; filter:drop-shadow(0 0 3px var(--sg))}
+.rpg-sys .rpg-c-btns .sys-svg{width:16px; height:16px; color:var(--t-dff1ff, #dff1ff); filter:drop-shadow(0 0 3px var(--sg))}
 .rpg-sys .sys-tabhead{display:flex; justify-content:space-between; align-items:center; gap:4px; margin-bottom:5px;
-  padding-bottom:3px; border-bottom:1px solid rgba(143,208,255,.25)}
+  padding-bottom:3px; border-bottom:1px solid rgba(var(--t-143_208_255, 143,208,255),.25)}
 .rpg-sys .sys-tabhead > span:first-child{display:flex; align-items:center; gap:6px; font-size:1.02em; letter-spacing:.18em;
   color:var(--sc); text-shadow:0 0 6px var(--sg)}
 .rpg-sys .sys-tabhead button{display:inline-flex; align-items:center; justify-content:center; min-width:24px;
-  background:rgba(10,26,48,.9) !important; border:1px solid rgba(143,208,255,.55) !important; color:#dff1ff !important}
-.rpg-sys .sys-unit-head .sys-dot{flex:0 0 auto; width:6px; height:6px; border-radius:50%; border:1px solid #6d8aa5}
+  background:rgba(var(--t-10_26_48, 10,26,48),.9) !important; border:1px solid rgba(var(--t-143_208_255, 143,208,255),.55) !important; color:var(--t-dff1ff, #dff1ff) !important}
+.rpg-sys .sys-unit-head .sys-dot{flex:0 0 auto; width:6px; height:6px; border-radius:50%; border:1px solid var(--t-6d8aa5, #6d8aa5)}
 .rpg-sys .sys-unit-head .sys-dot.on{border-color:#7ef0c0; background:#7ef0c0; box-shadow:0 0 6px rgba(126,240,192,.8)}
 .rpg-sys .sys-unit-val{margin-left:auto; flex:0 0 auto; white-space:nowrap; display:flex; align-items:center; gap:4px}
 .rpg-sys .sys-unit-val .d{font-size:.8em}
 .rpg-sys .sys-track{position:relative; height:100%}
 .rpg-sys .sys-track s{position:absolute; top:0; height:100%; opacity:.5; border-radius:3px; text-decoration:none}
 .rpg-sys .sys-unit.dim{opacity:.55}
-.rpg-sys .sys-unit-head .nm{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#d6e8f7}
+.rpg-sys .sys-unit-head .nm{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--t-d6e8f7, #d6e8f7)}
 .rpg-sys .sys-tkind{display:inline-grid; place-items:center; color:var(--tc); filter:drop-shadow(0 0 3px var(--tc))}
 .rpg-sys .sys-tkind .sys-svg{width:13px; height:13px}
 
@@ -7426,20 +7861,20 @@ const SYS_CSS = `
   color:var(--sc); opacity:.9; text-shadow:0 0 6px var(--sg)}
 .rpg-sys .sys-ctl{position:absolute; right:0; top:50%; transform:translateY(-50%); display:flex; align-items:center; gap:6px}
 .rpg-sys .sys-plate{border:1px solid var(--sc); padding:3px 18px 2px calc(18px + .22em); font-size:1.2em; font-weight:600;
-  letter-spacing:.22em; color:#f2faff; text-shadow:0 0 8px var(--sg),0 0 2px #fff; background:rgba(12,30,56,.55);
-  box-shadow:0 0 10px var(--sg), inset 0 0 10px rgba(90,170,255,.18)}
-.rpg-sys #rpg-min-btn{width:28px !important; height:20px !important; background:rgba(10,26,48,.9) !important;
-  border:1px solid rgba(143,208,255,.6) !important; color:#dff1ff !important}
+  letter-spacing:.22em; color:var(--t-f2faff, #f2faff); text-shadow:0 0 8px var(--sg),0 0 2px #fff; background:rgba(var(--t-12_30_56, 12,30,56),.55);
+  box-shadow:0 0 10px var(--sg), inset 0 0 10px rgba(var(--t-90_170_255, 90,170,255),.18)}
+.rpg-sys #rpg-min-btn{width:28px !important; height:20px !important; background:rgba(var(--t-10_26_48, 10,26,48),.9) !important;
+  border:1px solid rgba(var(--t-143_208_255, 143,208,255),.6) !important; color:var(--t-dff1ff, #dff1ff) !important}
 
 .rpg-sys .sys-hero{margin:2px 0 8px}
 .rpg-sys .sys-hero.name{text-align:center}
-.rpg-sys .sys-big{font-size:1.9em; font-weight:700; line-height:1.1; color:#f4fbff; letter-spacing:.02em;
+.rpg-sys .sys-big{font-size:1.9em; font-weight:700; line-height:1.1; color:var(--t-f4fbff, #f4fbff); letter-spacing:.02em;
   text-shadow:0 0 10px var(--sg), 0 0 2px rgba(255,255,255,.8); overflow-wrap:anywhere}
 .rpg-sys .sys-big.m{font-size:1.6em} .rpg-sys .sys-big.s{font-size:1.3em}
 .rpg-sys .sys-rule{height:1px; margin:6px 8%; background:linear-gradient(90deg,transparent,var(--sc),transparent); opacity:.6}
 .rpg-sys .sys-info{display:grid; grid-template-columns:auto minmax(0,1fr); gap:1px 8px; font-size:.8em; text-align:left; align-items:baseline}
-.rpg-sys .sys-info .k{color:#8fb6d8; letter-spacing:.08em; font-size:.82em; white-space:nowrap}
-.rpg-sys .sys-info .v{color:#eaf6ff; font-weight:600; overflow-wrap:anywhere; min-width:0}
+.rpg-sys .sys-info .k{color:var(--t-8fb6d8, #8fb6d8); letter-spacing:.08em; font-size:.82em; white-space:nowrap}
+.rpg-sys .sys-info .v{color:var(--t-eaf6ff, #eaf6ff); font-weight:600; overflow-wrap:anywhere; min-width:0}
 .rpg-sys .sys-info .v.bad{color:#ff9a9a; text-shadow:0 0 6px rgba(255,80,80,.5)}
 .rpg-sys .sys-info .v.ok{color:#a6ecd0}
 .rpg-sys .sys-hero.clock{display:flex; align-items:center; gap:12px}
@@ -7447,115 +7882,820 @@ const SYS_CSS = `
 .rpg-sys .sys-clock svg{display:block; width:100%; height:100%}
 .rpg-sys .sys-clock.hat{width:76px; height:84px; filter:drop-shadow(0 0 5px rgba(150,190,255,.45))}
 .rpg-sys .sys-clock.hat.system{filter:drop-shadow(0 0 4px var(--sg))}
+.rpg-sys .sys-clock.pocket{filter:drop-shadow(0 0 4px var(--sg)) drop-shadow(0 2px 3px rgba(0,0,0,.5))}
 .rpg-sys .sys-hero.clock .sys-info{flex:1; min-width:0}
 .rpg-sys .sys-pick{position:relative; display:inline-block; max-width:100%; cursor:pointer}
 .rpg-sys .sys-pick select{position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; font-size:16px;
   -webkit-appearance:none; appearance:none; border:0; margin:0}
 .rpg-sys .sys-caret{font-size:.5em; opacity:.7; margin-left:.35em; vertical-align:middle; text-shadow:none}
+/* in the big name the caret hangs off to the right, so the name itself stays centred */
+.rpg-sys .sys-big .sys-pick{max-width:calc(100% - 1.6em)}
+.rpg-sys .sys-big .sys-pick select{width:calc(100% + 1.6em)}   /* the caret still opens the picker */
+.rpg-sys .sys-big .sys-caret{position:absolute; left:100%; top:50%; transform:translateY(-50%); margin-left:.35em; line-height:1}
 
 .rpg-sys .sys-panels{display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:8px; margin-bottom:8px}
-.rpg-sys .sys-box{border:1px solid rgba(143,208,255,.42); padding:7px 10px; background:rgba(8,20,38,.45);
-  box-shadow:inset 0 0 12px rgba(60,140,230,.10); min-width:0}
+.rpg-sys .sys-box{border:1px solid rgba(var(--t-143_208_255, 143,208,255),.42); padding:7px 10px; background:rgba(var(--t-8_20_38, 8,20,38),.45);
+  box-shadow:inset 0 0 12px rgba(var(--t-60_140_230, 60,140,230),.10); min-width:0}
 .rpg-sys .sys-bar + .sys-bar{margin-top:6px}
-.rpg-sys .sys-bar-lab{display:flex; align-items:center; gap:5px; font-size:.72em; letter-spacing:.08em; color:#a9cbe8}
-.rpg-sys .sys-bar-lab .sys-svg{width:12px; height:12px; color:#e6f5ff; flex:0 0 auto}
-.rpg-sys .sys-bar-num{margin-left:auto; color:#dff1ff; letter-spacing:0; font-size:1.05em; white-space:nowrap}
-.rpg-sys .sys-cap{height:8px; margin-top:3px; border:1px solid rgba(190,230,255,.75); border-radius:6px; padding:1px;
-  box-sizing:border-box; box-shadow:0 0 6px var(--sg), inset 0 0 4px rgba(90,170,255,.3)}
-.rpg-sys .sys-cap i{display:block; height:100%; border-radius:4px; background:linear-gradient(90deg,#a9dcff,#f4fbff);
-  box-shadow:0 0 6px rgba(190,230,255,.9)}
+.rpg-sys .sys-bar-lab{display:flex; align-items:center; gap:5px; font-size:.72em; letter-spacing:.08em; color:var(--t-a9cbe8, #a9cbe8)}
+.rpg-sys .sys-bar-lab .sys-svg{width:12px; height:12px; color:var(--t-e6f5ff, #e6f5ff); flex:0 0 auto}
+.rpg-sys .sys-bar-num{margin-left:auto; color:var(--t-dff1ff, #dff1ff); letter-spacing:0; font-size:1.05em; white-space:nowrap}
+.rpg-sys .sys-cap{height:8px; margin-top:3px; border:1px solid rgba(var(--t-190_230_255, 190,230,255),.75); border-radius:6px; padding:1px;
+  box-sizing:border-box; box-shadow:0 0 6px var(--sg), inset 0 0 4px rgba(var(--t-90_170_255, 90,170,255),.3)}
+.rpg-sys .sys-cap i{display:block; height:100%; border-radius:4px; background:linear-gradient(90deg,var(--t-a9dcff, #a9dcff),var(--t-f4fbff, #f4fbff));
+  box-shadow:0 0 6px rgba(var(--t-190_230_255, 190,230,255),.9)}
 .rpg-sys .sys-cap.low i{background:linear-gradient(90deg,#ff6b6b,#ffb3b3); box-shadow:0 0 6px rgba(255,90,90,.9)}
 .rpg-sys .sys-cap.tint i{background:var(--mc); box-shadow:0 0 6px var(--mc)}
 .rpg-sys .sys-stats{display:grid; grid-template-columns:1fr 1fr; gap:6px 12px; align-content:center}
-.rpg-sys .sys-stat{display:flex; align-items:center; gap:5px; font-size:.78em; color:#a9cbe8; letter-spacing:.06em; min-width:0}
-.rpg-sys .sys-stat .sys-svg{width:14px; height:14px; color:#e6f5ff; filter:drop-shadow(0 0 3px var(--sg)); flex:0 0 auto}
-.rpg-sys .sys-stat b{margin-left:auto; font-size:1.3em; color:#f4fbff; text-shadow:0 0 8px var(--sg); letter-spacing:0; font-weight:600;
+.rpg-sys .sys-stat{display:flex; align-items:center; gap:5px; font-size:.78em; color:var(--t-a9cbe8, #a9cbe8); letter-spacing:.06em; min-width:0}
+.rpg-sys .sys-stat .sys-svg{width:14px; height:14px; color:var(--t-e6f5ff, #e6f5ff); filter:drop-shadow(0 0 3px var(--sg)); flex:0 0 auto}
+.rpg-sys .sys-stat b{margin-left:auto; font-size:1.3em; color:var(--t-f4fbff, #f4fbff); text-shadow:0 0 8px var(--sg); letter-spacing:0; font-weight:600;
   white-space:nowrap}
 
 .rpg-sys .sys-units + .sys-units{margin-top:8px}
 .rpg-sys .sys-sec{font-size:.82em; letter-spacing:.18em; color:var(--sc); text-shadow:0 0 6px var(--sg); margin:1px 0 5px;
-  padding-bottom:3px; border-bottom:1px solid rgba(143,208,255,.25)}
+  padding-bottom:3px; border-bottom:1px solid rgba(var(--t-143_208_255, 143,208,255),.25)}
 .rpg-sys .sys-sec.foe{color:#ff9a9a; text-shadow:0 0 6px rgba(255,80,80,.5); border-bottom-color:rgba(255,128,128,.3)}
 .rpg-sys .sys-unit{padding:3px 0 6px}
-.rpg-sys .sys-unit + .sys-unit{border-top:1px solid rgba(143,208,255,.12); padding-top:5px}
+.rpg-sys .sys-unit + .sys-unit{border-top:1px solid rgba(var(--t-143_208_255, 143,208,255),.12); padding-top:5px}
 .rpg-sys .sys-unit-head{display:flex; align-items:center; gap:8px; margin-bottom:3px}
-.rpg-sys .sys-unit-head .rpg-jump{cursor:pointer; color:#eaf6ff; font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis;
+.rpg-sys .sys-unit-head .rpg-jump{cursor:pointer; color:var(--t-eaf6ff, #eaf6ff); font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; text-shadow:0 0 6px var(--sg)}
 .rpg-sys .sys-unit-tag{margin-left:auto; display:flex; align-items:center; gap:3px; color:#f7b3cc; font-size:.9em; white-space:nowrap}
 .rpg-sys .sys-unit-tag .sys-svg{width:11px; height:11px}
 .rpg-sys .sys-mini{display:grid; grid-template-columns:30px minmax(0,1fr) auto; align-items:center; gap:6px; margin-top:2px}
-.rpg-sys .sys-mini .l{font-size:.78em; letter-spacing:.08em; color:#a9cbe8}
-.rpg-sys .sys-mini .n{font-size:.85em; color:#dff1ff; white-space:nowrap; min-width:58px; text-align:right}
+.rpg-sys .sys-mini .l{font-size:.78em; letter-spacing:.08em; color:var(--t-a9cbe8, #a9cbe8)}
+.rpg-sys .sys-mini .n{font-size:.85em; color:var(--t-dff1ff, #dff1ff); white-space:nowrap; min-width:58px; text-align:right}
 .rpg-sys .sys-cap.sm{height:7px; margin-top:0}
 .rpg-sys .sys-cap.foe{border-color:rgba(255,170,170,.75); box-shadow:0 0 6px rgba(255,80,80,.45)}
 .rpg-sys .sys-cap.foe i{background:linear-gradient(90deg,#ff6b6b,#ffc2c2); box-shadow:0 0 6px rgba(255,90,90,.85)}
 .rpg-sys .sys-foes{margin-top:6px; padding:6px 8px 2px; font-size:.8em; border:1px solid rgba(255,128,128,.35);
   background:rgba(40,8,14,.35); max-height:96px; overflow-y:auto}
-.rpg-sys .rpg-c-btns button{background:rgba(10,26,48,.9) !important; border:1px solid rgba(143,208,255,.55) !important;
-  color:#dff1ff !important; box-shadow:0 0 6px rgba(90,170,255,.2)}
-.rpg-sys #rpg-settings-overlay,.rpg-sys #rpg-info-overlay{background:#04090f !important; border-color:var(--sc) !important}
-.rpg-sys .rpg-c-li{border-bottom-color:rgba(143,208,255,.15)}
-.rpg-sys .rpg-c-ed .rpg-sao-ico{border-color:rgba(143,208,255,.45); background:rgba(10,26,48,.85); color:#dff1ff;
-  box-shadow:0 0 5px rgba(90,170,255,.18)}
+.rpg-sys .rpg-c-btns button{background:rgba(var(--t-10_26_48, 10,26,48),.9) !important; border:1px solid rgba(var(--t-143_208_255, 143,208,255),.55) !important;
+  color:var(--t-dff1ff, #dff1ff) !important; box-shadow:0 0 6px rgba(var(--t-90_170_255, 90,170,255),.2)}
+.rpg-sys #rpg-settings-overlay,.rpg-sys #rpg-info-overlay{background:var(--t-04090f, #04090f) !important; border-color:var(--sc) !important}
+.rpg-sys .rpg-c-li{border-bottom-color:rgba(var(--t-143_208_255, 143,208,255),.15)}
+.rpg-sys .rpg-c-ed .rpg-sao-ico{border-color:rgba(var(--t-143_208_255, 143,208,255),.45); background:rgba(var(--t-10_26_48, 10,26,48),.85); color:var(--t-dff1ff, #dff1ff);
+  box-shadow:0 0 5px rgba(var(--t-90_170_255, 90,170,255),.18)}
 .rpg-sys .rpg-c-ed button.rpg-sao-ico:hover{border-color:var(--sc); color:#fff}
-.rpg-sys .rpg-c-ed .rpg-sao-icopick{border-color:rgba(143,208,255,.35)}
+.rpg-sys .rpg-c-ed .rpg-sao-icopick{border-color:rgba(var(--t-143_208_255, 143,208,255),.35)}
 .rpg-sys .rpg-c-ed .rpg-sao-icopick .on,.rpg-sys .rpg-c-ed .rpg-sao-ledit-ico.picking{border-color:var(--sc); color:#fff;
   box-shadow:inset 0 0 0 1px var(--sc), 0 0 6px var(--sg)}
-.rpg-sys .rpg-c-ed .rpg-sao-ledit-ico.custom::after{background:var(--sc); box-shadow:0 0 0 1.5px #04090f, 0 0 5px var(--sg)}
-.rpg-sys .rpg-c-ed .rpg-sao-mini{background:rgba(10,26,48,.9); border-color:rgba(143,208,255,.5); color:#dff1ff}
+.rpg-sys .rpg-c-ed .rpg-sao-ledit-ico.custom::after{background:var(--sc); box-shadow:0 0 0 1.5px var(--t-04090f, #04090f), 0 0 5px var(--sg)}
+.rpg-sys .rpg-c-ed .rpg-sao-mini{background:rgba(var(--t-10_26_48, 10,26,48),.9); border-color:rgba(var(--t-143_208_255, 143,208,255),.5); color:var(--t-dff1ff, #dff1ff)}
 .rpg-sys .sys-ibtn{display:inline-grid; place-items:center; padding:0; margin:0; border:0; background:none; color:inherit;
   cursor:pointer; -webkit-tap-highlight-color:transparent; font:inherit; line-height:0}
 .rpg-sys .sys-ibtn:hover .sys-svg{color:#fff; filter:drop-shadow(0 0 4px var(--sg))}
 .rpg-sys .sys-medit{margin:-2px 0 8px}
-.rpg-sys .rpg-c-ed .rpg-sao-mini.primary{background:rgba(40,110,190,.55); border-color:var(--sc); color:#fff; box-shadow:0 0 6px var(--sg)}
+.rpg-sys .sys-addmeter-row{display:flex; justify-content:flex-end; margin-top:5px}
+.rpg-sys .sys-addmeter{padding:0; border:0; background:none; cursor:pointer; font:inherit; font-size:.62em; letter-spacing:.12em;
+  color:var(--t-6f93b5, #6f93b5); -webkit-tap-highlight-color:transparent}
+.rpg-sys .sys-addmeter:hover{color:var(--sc); text-shadow:0 0 6px var(--sg)}
+.rpg-sys .rpg-c-ed .rpg-sao-mini.primary{background:rgba(var(--t-40_110_190, 40,110,190),.55); border-color:var(--sc); color:#fff; box-shadow:0 0 6px var(--sg)}
 .rpg-sys .sys-medit .rpg-c-medit{margin:0; padding:0; border:0; font-size:.8em}
-.rpg-sys .rpg-c-ed .rpg-sao-mrow-edit{border-bottom-color:rgba(143,208,255,.15)}
-.rpg-sys .rpg-c-ed .rpg-sao-mrow-edit input[type=text]{background:rgba(6,16,30,.9); border-color:rgba(143,208,255,.35); color:#eaf6ff}
-.rpg-sys .rpg-c-ed .rpg-sao-m-auto,.rpg-sys .rpg-c-ed .rpg-sao-m-del,.rpg-sys .rpg-c-ed .rpg-sao-m-color{background:rgba(10,26,48,.9);
-  border-color:rgba(143,208,255,.4); color:#cfe6f8}
-.rpg-sys .rpg-c-ed .rpg-sao-ledit-text,.rpg-sys .rpg-c-ed .rpg-sao-mast-edit input[type=text]{background:rgba(6,16,30,.9);
-  border-color:rgba(143,208,255,.35); color:#eaf6ff}
+.rpg-sys .rpg-c-ed .rpg-sao-mrow-edit{border-bottom-color:rgba(var(--t-143_208_255, 143,208,255),.15)}
+.rpg-sys .rpg-c-ed .rpg-sao-mrow-edit input[type=text]{background:rgba(var(--t-6_16_30, 6,16,30),.9); border-color:rgba(var(--t-143_208_255, 143,208,255),.35); color:var(--t-eaf6ff, #eaf6ff)}
+.rpg-sys .rpg-c-ed .rpg-sao-m-icon{flex:0 0 26px; width:26px; height:22px; padding:0; cursor:pointer; display:grid; place-items:center; border-radius:2px}
+.rpg-sys .rpg-c-ed .rpg-sao-m-icon .sys-svg{width:14px; height:14px}
+.rpg-sys .rpg-c-ed .rpg-sao-m-icon.on{border-color:var(--sc); box-shadow:0 0 6px var(--sg); color:#fff}
+.rpg-sys .rpg-c-ed .rpg-sao-m-icons{display:grid; grid-template-columns:repeat(auto-fill, minmax(28px, 1fr)); gap:4px; margin:-2px 0 8px; padding:6px;
+  border:1px solid rgba(var(--t-143_208_255, 143,208,255),.3); background:rgba(var(--t-4_9_18, 4,9,18),.6)}
+.rpg-sys .rpg-c-ed .rpg-sao-m-ic{height:28px; padding:0; cursor:pointer; display:grid; place-items:center; border-radius:2px;
+  background:rgba(var(--t-10_26_48, 10,26,48),.9); border:1px solid rgba(var(--t-143_208_255, 143,208,255),.25); color:var(--t-cfe6f8, #cfe6f8)}
+.rpg-sys .rpg-c-ed .rpg-sao-m-ic .sys-svg{width:16px; height:16px}
+.rpg-sys .rpg-c-ed .rpg-sao-m-ic.auto{grid-column:span 2; font:inherit; font-size:.85em; letter-spacing:.08em}
+.rpg-sys .rpg-c-ed .rpg-sao-m-ic.on{border-color:var(--sc); box-shadow:inset 0 0 6px var(--sg), 0 0 6px var(--sg); color:#fff}
+.rpg-sys .rpg-c-ed .rpg-sao-m-ic:hover{border-color:var(--sc)}
+.rpg-sys .rpg-c-ed .rpg-sao-m-icon,.rpg-sys .rpg-c-ed .rpg-sao-m-auto,.rpg-sys .rpg-c-ed .rpg-sao-m-del,.rpg-sys .rpg-c-ed .rpg-sao-m-color{background:rgba(var(--t-10_26_48, 10,26,48),.9);
+  border-color:rgba(var(--t-143_208_255, 143,208,255),.4); color:var(--t-cfe6f8, #cfe6f8)}
+.rpg-sys .rpg-c-ed .rpg-sao-ledit-text,.rpg-sys .rpg-c-ed .rpg-sao-mast-edit input[type=text]{background:rgba(var(--t-6_16_30, 6,16,30),.9);
+  border-color:rgba(var(--t-143_208_255, 143,208,255),.35); color:var(--t-eaf6ff, #eaf6ff)}
 .rpg-sys .rpg-c-ed .rpg-sao-ledit-del,.rpg-sys .rpg-c-ed .rpg-sao-ms-del,.rpg-sys .rpg-c-ed .rpg-sao-ledit-lock,
-.rpg-sys .rpg-c-ed .rpg-sao-mv{background:rgba(10,26,48,.9); border-color:rgba(143,208,255,.4); color:#cfe6f8}
+.rpg-sys .rpg-c-ed .rpg-sao-mv{background:rgba(var(--t-10_26_48, 10,26,48),.9); border-color:rgba(var(--t-143_208_255, 143,208,255),.4); color:var(--t-cfe6f8, #cfe6f8)}
 
 #rpg-sys-notices{position:fixed; top:calc(env(safe-area-inset-top, 0px) + 14px); left:50%; transform:translateX(-50%);
   z-index:100003; display:flex; flex-direction:column; gap:8px; width:min(330px, calc(100vw - 24px)); pointer-events:none;
   font-size:15px}
 .rpg-sys-note{--sc:#8fd0ff; --sg:rgba(90,180,255,.55); pointer-events:auto; position:relative; cursor:pointer;
-  padding:10px 14px 12px; text-align:center; color:#e4f3ff; border:1px solid var(--sc);
-  background:repeating-linear-gradient(115deg, rgba(140,200,255,.05) 0 1px, transparent 1px 13px),
-    radial-gradient(120% 70% at 50% 0%, rgba(50,120,210,.28), transparent 65%), rgba(4,9,18,.95);
-  box-shadow:0 0 0 1px rgba(0,0,0,.5), 0 0 18px var(--sg), inset 0 0 0 3px rgba(4,9,18,.85), inset 0 0 0 4px rgba(143,208,255,.28);
+  padding:10px 14px 12px; text-align:center; color:var(--t-e4f3ff, #e4f3ff); border:1px solid var(--sc);
+  background:repeating-linear-gradient(115deg, rgba(var(--t-140_200_255, 140,200,255),.05) 0 1px, transparent 1px 13px),
+    radial-gradient(120% 70% at 50% 0%, rgba(50,120,210,.28), transparent 65%), rgba(var(--t-4_9_18, 4,9,18),.95);
+  box-shadow:0 0 0 1px rgba(0,0,0,.5), 0 0 18px var(--sg), inset 0 0 0 3px rgba(var(--t-4_9_18, 4,9,18),.85), inset 0 0 0 4px rgba(var(--t-143_208_255, 143,208,255),.28);
   transform-origin:50% 50%; animation:rpgSysIn .38s ease-out}
 .rpg-sys-note.warn{--sc:#ff8080; --sg:rgba(255,80,80,.5)}
 .rpg-sys-note .plate{display:inline-block; border:1px solid var(--sc); padding:2px 14px 1px calc(14px + .2em); margin-bottom:7px;
-  font-size:.78em; font-weight:600; letter-spacing:.2em; color:#f2faff; text-shadow:0 0 6px var(--sg); box-shadow:0 0 8px var(--sg)}
+  font-size:.78em; font-weight:600; letter-spacing:.2em; color:var(--t-f2faff, #f2faff); text-shadow:0 0 6px var(--sg); box-shadow:0 0 8px var(--sg)}
 .rpg-sys-note .msg{font-size:.92em; line-height:1.4; overflow-wrap:anywhere}
-.rpg-sys-note .msg b{color:#cfeaff; text-shadow:0 0 6px var(--sg); font-weight:600}
+.rpg-sys-note .msg b{color:var(--t-cfeaff, #cfeaff); text-shadow:0 0 6px var(--sg); font-weight:600}
 .rpg-sys-note.out{animation:rpgSysOut .3s ease-in forwards}
 @keyframes rpgSysIn{0%{opacity:0; transform:scale(.6,.05)} 55%{opacity:1; transform:scale(1.02,1.04)} 100%{transform:none}}
 @keyframes rpgSysOut{to{opacity:0; transform:scale(.9,.05)}}
 @media (prefers-reduced-motion: reduce){ .rpg-sys-note,.rpg-sys-note.out{animation-duration:.01s} }
 `;
 
+
+// ---- Gray Fog: a theme over the System layout ----------------------------
+// Charcoal fog, a pewter double frame with small flourishes at the corners,
+// a faint sigil behind the title and a scatter of stars. The sigil is our own
+// (rings, a long eight-point star and clock ticks), not any book's emblem.
+const FOG_FONT = "'EB Garamond','Cormorant Garamond',Georgia,'Times New Roman',serif";
+const FOG_WEBFONTS = "family=Cinzel:wght@500;600&family=EB+Garamond:wght@400;500;600&family=Grenze+Gotisch:wght@500;600";
+const fogSvgUrl = (svg) => `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+// The star, from your tracing (pixel units of that tracing, mirrored so both
+// sides match):
+//   K1     a wide kite: the upper diagonal points, meeting low in the middle
+//   H      a long level diamond: the left and right points
+//   K2     the lower diagonal points, rising towards the middle and dropping
+//          into the long bottom spike
+//   spike  the top spike, standing on the circle, with a second, inner spike
+//          nested in it that runs down to the empty ring in the middle
+// Every crossing is woven: one line goes over and the other breaks. By default
+// K1 lies over H, and H over K2, but K2's rising edges go over K1's long ones,
+// so the three interlace. The circle goes over or under each edge as traced.
+// Everything is drawn at full strength inside one faded group, so where lines
+// meet they don't add up to a brighter spot.
+const FOG_STAR_AXIS = 603;
+const FOG_STAR = {
+  K1: { pts: [[185, 410], [603, 530], [1021, 410], [603, 877]], closed: true, rank: 4 },
+  H: { pts: [[95, 635], [603, 475], [1111, 635], [603, 807]], closed: true, rank: 3 },
+  K2: { pts: [[358, 880], [603, 444], [848, 880], [728, 848], [603, 1140], [478, 848]], closed: true, rank: 2 },
+  spike: { pts: [[525, 258], [603, 32], [681, 258]], closed: false, rank: 6 },
+  inner: { pts: [[465, 488], [603, 98], [741, 488]], closed: false, rank: 5 },
+};
+const FOG_STAR_CIRCLE = { x: 603, y: 580, r: 340 };
+const FOG_STAR_HUB = { x: 603, y: 565, r: 112 };
+// edges the circle passes OVER, named by their left-hand end (mirrored edges share it)
+const FOG_CIRCLE_OVER = new Set(["95,635>603,807", "358,880>603,444"]);
+// the circle meets the side kites' upper wings edge-on (joined, not woven) and stops inside them
+const FOG_CIRCLE_JOIN = new Set(["185,410>603,530", "185,410>603,877"]);
+// crossings that break the default order: [upper edge, lower edge], same naming
+const FOG_OVER = [["358,880>603,444", "185,410>603,877"]];
+const FOG_STAR_K = 190 / 1108, fogSX = (x) => 100 + (x - FOG_STAR_AXIS) * FOG_STAR_K, fogSY = (y) => 100 + (y - 586) * FOG_STAR_K;
+
+function fogStarSvgBody() {
+  const f = (v) => v.toFixed(2);
+  const P = (pts, close) => `M${pts.map(([x, y]) => `${f(fogSX(x))} ${f(fogSY(y))}`).join(" L")}${close ? " Z" : ""}`;
+  const mirX = (x) => Math.min(x, 2 * FOG_STAR_AXIS - x);
+  const edgeName = (p, q) => { const [l, m] = p[0] <= q[0] ? [p, q] : [q, p]; return [`${mirX(l[0])},${l[1]}>${mirX(m[0])},${m[1]}`, `${mirX(m[0])},${m[1]}>${mirX(l[0])},${l[1]}`]; };
+  const named = (names, set) => names.some((n) => (set.has ? set.has(n) : set.includes(n)));
+  const unit = (dx, dy) => { const n = Math.hypot(dx, dy) || 1; return [dx / n, dy / n]; };
+  const { x: cx, y: cy, r } = FOG_STAR_CIRCLE;
+
+  // where lines end on other lines, they end exactly on them
+  const shapes = JSON.parse(JSON.stringify(FOG_STAR));
+  const meet = (p, q, a, b) => {                       // where line p-q meets line a-b
+    const r1 = [q[0] - p[0], q[1] - p[1]], r2 = [b[0] - a[0], b[1] - a[1]], den = r1[0] * r2[1] - r1[1] * r2[0];
+    const t = ((a[0] - p[0]) * r2[1] - (a[1] - p[1]) * r2[0]) / den;
+    return [p[0] + r1[0] * t, p[1] + r1[1] * t];
+  };
+  const K1 = shapes.K1.pts, apex = shapes.inner.pts[1];
+  shapes.inner.pts[0] = meet(apex, shapes.inner.pts[0], K1[0], K1[1]);
+  shapes.inner.pts[2] = meet(apex, shapes.inner.pts[2], K1[2], K1[1]);
+  const top = shapes.spike.pts[1];
+  [0, 2].forEach((i) => {                               // the top spike's feet land on the circle
+    const [ux, uy] = unit(shapes.spike.pts[i][0] - top[0], shapes.spike.pts[i][1] - top[1]);
+    const fx = top[0] - cx, fy = top[1] - cy, B = 2 * (fx * ux + fy * uy), C = fx * fx + fy * fy - r * r;
+    const t0 = (-B - Math.sqrt(B * B - 4 * C)) / 2, t = t0 + 2 / FOG_STAR_K;    // a little past it; trimmed below
+    shapes.spike.pts[i] = [top[0] + ux * t, top[1] + uy * t];
+  });
+
+  const edges = [];
+  Object.entries(shapes).forEach(([shape, { pts, closed, rank }]) => {
+    const n = closed ? pts.length : pts.length - 1;
+    for (let i = 0; i < n; i++) {
+      const p = pts[i], q = pts[(i + 1) % pts.length];
+      edges.push({ shape, rank, p, q, names: edgeName(p, q), dir: unit(q[0] - p[0], q[1] - p[1]) });
+    }
+  });
+  // A break is cut along the line that passes over, so the broken ends run
+  // parallel to it instead of ending square. { at, along, sin } per break.
+  const cuts = { circle: [] };
+  Object.keys(shapes).forEach((k) => { cuts[k] = []; });
+  const segX = (a, b) => {
+    const r1 = [a.q[0] - a.p[0], a.q[1] - a.p[1]], r2 = [b.q[0] - b.p[0], b.q[1] - b.p[1]];
+    const den = r1[0] * r2[1] - r1[1] * r2[0];
+    if (Math.abs(den) < 1e-9) return null;
+    const t = ((b.p[0] - a.p[0]) * r2[1] - (b.p[1] - a.p[1]) * r2[0]) / den;
+    const u = ((b.p[0] - a.p[0]) * r1[1] - (b.p[1] - a.p[1]) * r1[0]) / den;
+    if (t <= .01 || t >= .99 || u <= .01 || u >= .99) return null;     // shared corners and end-on meetings aren't crossings
+    return [a.p[0] + r1[0] * t, a.p[1] + r1[1] * t];
+  };
+  const sinOf = (d1, d2) => Math.abs(d1[0] * d2[1] - d1[1] * d2[0]);
+  for (let i = 0; i < edges.length; i++) for (let j = i + 1; j < edges.length; j++) {
+    const a = edges[i], b = edges[j];
+    if (a.shape === b.shape) continue;
+    const x = segX(a, b);
+    if (!x) continue;
+    const aOver = FOG_OVER.some(([o, u]) => named(a.names, [o]) && named(b.names, [u]))
+      || (!FOG_OVER.some(([o, u]) => named(b.names, [o]) && named(a.names, [u])) && a.rank > b.rank);
+    const [over, under] = aOver ? [a, b] : [b, a];
+    cuts[under.shape].push({ at: x, along: over.dir, under: under.dir });
+  }
+  edges.forEach((e) => {
+    if (e.shape === "spike" || e.shape === "inner") return;      // those sit on, or inside, the circle
+    const dx = e.q[0] - e.p[0], dy = e.q[1] - e.p[1], fx = e.p[0] - cx, fy = e.p[1] - cy;
+    const A = dx * dx + dy * dy, B = 2 * (fx * dx + fy * dy), C = fx * fx + fy * fy - r * r, D = B * B - 4 * A * C;
+    if (D <= 0) return;
+    [(-B - Math.sqrt(D)) / (2 * A), (-B + Math.sqrt(D)) / (2 * A)].forEach((t) => {
+      if (t < 0 || t > 1) return;
+      const pt = [e.p[0] + dx * t, e.p[1] + dy * t], tan = [-(pt[1] - cy) / r, (pt[0] - cx) / r];
+      if (named(e.names, FOG_CIRCLE_JOIN)) return;
+      if (named(e.names, FOG_CIRCLE_OVER)) cuts[e.shape].push({ at: pt, along: tan, under: e.dir });
+      else cuts.circle.push({ at: pt, along: e.dir, under: tan, curved: true });
+    });
+  });
+  // two breaks in the circle close together leave a sliver: clear the arc between them
+  const arcs = [];
+  cuts.circle.forEach((a, i) => cuts.circle.slice(i + 1).forEach((b) => {
+    if (Math.hypot(a.at[0] - b.at[0], a.at[1] - b.at[1]) * FOG_STAR_K >= 17 || a.at[1] > cy + 40 || b.at[1] > cy + 40) return;
+    let a1 = Math.atan2(a.at[1] - cy, a.at[0] - cx), a2 = Math.atan2(b.at[1] - cy, b.at[0] - cx);
+    if (Math.abs(a2 - a1) > Math.PI) a2 += a2 < a1 ? 2 * Math.PI : -2 * Math.PI;
+    arcs.push([Math.min(a1, a2), Math.max(a1, a2)]);
+  }));
+
+  const GAP = 5.4;                                      // width of a break, in the 200-unit drawing
+  const R = r * FOG_STAR_K, CX = fogSX(cx), CY = fogSY(cy);
+  // The cut is a parallelogram: its sides run along the line passing over (so the
+  // broken ends are slanted to match it) and along the broken line itself (so it
+  // never nicks a neighbouring line, however shallow the crossing).
+  const cutEl = ({ at, along: o, under: u, curved }) => {
+    const c = Math.max(.12, Math.abs(o[0] * u[1] - o[1] * u[0])), t = GAP / 2 / c;
+    const w = 1.15 + .7 + (curved ? t * t / (2 * R) : 0), sI = w / c;
+    const x = fogSX(at[0]), y = fogSY(at[1]);
+    const pt = (a, b) => `${f(x + o[0] * a + u[0] * b)} ${f(y + o[1] * a + u[1] * b)}`;
+    return `<path d="M${pt(sI, t)} L${pt(sI, -t)} L${pt(-sI, -t)} L${pt(-sI, t)} Z" fill="#000" stroke="none"/>`;
+  };
+  const arcEl = ([a1, a2]) => `<path d="M${f(CX + R * Math.cos(a1))} ${f(CY + R * Math.sin(a1))} A${f(R)} ${f(R)} 0 0 1 ${f(CX + R * Math.cos(a2))} ${f(CY + R * Math.sin(a2))}"
+      stroke="#000" stroke-width="${GAP}" stroke-linecap="butt" fill="none"/>`;
+  const hub = FOG_STAR_HUB, hubR = hub.r * FOG_STAR_K;
+  const clearHub = `<circle cx="${f(fogSX(hub.x))}" cy="${f(fogSY(hub.y))}" r="${f(hubR + 4.4)}" fill="#000" stroke="none"/>`;
+  // the inner spike stops along the far side of the kite's edge it lands on
+  const off = 1.15 / FOG_STAR_K, k1 = shapes.K1.pts;
+  const belowK1 = `<path d="${P([[k1[0][0], k1[0][1] + off], [k1[1][0], k1[1][1] + off], [k1[2][0], k1[2][1] + off], [k1[2][0] + 400, 2000], [k1[0][0] - 400, 2000]], true)}" fill="#000" stroke="none"/>`;
+  const mask = (id, inner) => `<mask id="${id}" maskUnits="userSpaceOnUse" x="0" y="0" width="200" height="200"><rect width="200" height="200" fill="#fff" stroke="none"/>${inner}</mask>`;
+  const area = (pts) => `<path d="${P(pts, true)}" fill="#000" stroke="none"/>`;
+  // the circle stops at the outside of a spike's edge, so the two meet cleanly
+  const areaAndEdge = (pts) => `<path d="${P(pts, true)}" fill="#000" stroke="#000" stroke-width="2.3" stroke-linejoin="miter"/>`;
+  // the top spike's feet end along the inside of the circle's line, following its curve
+  const insideCircle = `<circle cx="${f(fogSX(cx))}" cy="${f(fogSY(cy))}" r="${f(r * FOG_STAR_K - 1.15)}" fill="#000" stroke="none"/>`;
+  const masks = Object.keys(shapes).map((k) => mask(`m-${k}`,
+      cuts[k].map(cutEl).join("") + (k === "spike" ? insideCircle : clearHub) + (k === "inner" ? belowK1 : ""))).join("")
+    // the circle doesn't show inside either spike
+    + mask("m-circle", cuts.circle.map(cutEl).join("") + arcs.map(arcEl).join("")
+      + area(shapes.spike.pts) + area(shapes.K1.pts) + areaAndEdge([[478, 848], [603, 1140], [728, 848]]));
+  const lines = Object.entries(shapes).map(([k, { pts, closed }]) => `<path d="${P(pts, closed)}" mask="url(#m-${k})"/>`).join("");
+  return `<defs>${masks}</defs>
+    <g opacity=".27" stroke-width="2.3">
+      <circle cx="${f(CX)}" cy="${f(CY)}" r="${f(R)}" mask="url(#m-circle)"/>
+      ${lines}
+      <circle cx="${f(fogSX(hub.x))}" cy="${f(fogSY(hub.y))}" r="${f(hubR)}" stroke-width="2.1"/>
+    </g>`;
+}
+const FOG_SIGIL = fogSvgUrl(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" fill="none" stroke="#e6e8ef" stroke-linejoin="miter" stroke-miterlimit="20">
+  ${fogStarSvgBody()}
+</svg>`);
+const fogStar = (x, y, r, o) => `<path d="M${x} ${y - r} L${x + r * .22} ${y - r * .22} L${x + r} ${y} L${x + r * .22} ${y + r * .22} L${x} ${y + r} L${x - r * .22} ${y + r * .22} L${x - r} ${y} L${x - r * .22} ${y - r * .22} Z" fill="#fff" fill-opacity="${o}"/>`;
+const FOG_STARS = fogSvgUrl(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 600" preserveAspectRatio="none">
+  ${fogStar(38, 70, 5, .55)}${fogStar(262, 46, 4, .5)}${fogStar(214, 132, 3, .45)}${fogStar(70, 188, 2.5, .35)}
+  ${fogStar(280, 250, 3.5, .35)}${fogStar(22, 330, 3, .3)}${fogStar(246, 420, 2.5, .3)}${fogStar(120, 22, 2.5, .4)}
+  <circle cx="160" cy="92" r="1" fill="#fff" fill-opacity=".5"/><circle cx="96" cy="120" r=".8" fill="#fff" fill-opacity=".4"/>
+  <circle cx="232" cy="208" r=".9" fill="#fff" fill-opacity=".35"/><circle cx="48" cy="262" r=".8" fill="#fff" fill-opacity=".3"/>
+</svg>`);
+// one corner, drawn top-left; the others are this flipped
+const fogCorner = (t) => fogSvgUrl(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 30" fill="none" stroke="#d3d5de" stroke-linecap="round">
+  <g transform="${t}">
+    <path d="M3 22 V3 H22" stroke-opacity=".55" stroke-width="1"/>
+    <path d="M7 15 V7 H15" stroke-opacity=".45" stroke-width=".9"/>
+    <path d="M7 7 L11 11" stroke-opacity=".6" stroke-width=".9"/>
+    <path d="M3 3 L6 6" stroke-opacity=".6" stroke-width=".9"/>
+    <path d="M11 11 l2.2 -2.2 l2.2 2.2 l-2.2 2.2 Z" fill="#d3d5de" fill-opacity=".55" stroke-opacity=".7" stroke-width=".7" transform="translate(-1 1)"/>
+    <path d="M3 22 q0 4 3 5" stroke-opacity=".45" stroke-width=".9"/><path d="M22 3 q4 0 5 3" stroke-opacity=".45" stroke-width=".9"/>
+  </g></svg>`);
+const FOG_CORNERS = {
+  tl: fogCorner(""), tr: fogCorner("translate(30 0) scale(-1 1)"),
+  bl: fogCorner("translate(0 30) scale(1 -1)"), br: fogCorner("translate(30 30) scale(-1 -1)"),
+};
+
+const FOG_VARS = `
+  --sc:#cfd2dc; --sg:rgba(200,205,225,.28); --st:rgba(190,195,215,.14);
+  --t-143_208_255:200,204,214; --t-10_26_48:30,30,37; --t-4_9_18:16,16,20; --t-90_170_255:168,156,205;
+  --t-140_200_255:210,214,225; --t-60_140_230:120,112,150; --t-190_230_255:222,224,232; --t-6_16_30:20,20,26;
+  --t-40_90_180:80,74,108; --t-12_30_56:34,34,42; --t-8_20_38:26,26,32; --t-40_110_190:104,88,146; --t-4_12_24:18,18,23;
+  --t-dff1ff:#e9e8ee; --t-eaf6ff:#efeef3; --t-f4fbff:#f6f5f8; --t-a9cbe8:#b3b1bf; --t-f2faff:#f3f2f6; --t-e6f5ff:#e7e6ec;
+  --t-04090f:#0e0e12; --t-cfe6f8:#d4d3dc; --t-6d8aa5:#7d7b88; --t-d6e8f7:#dbdae2; --t-8fb6d8:#a4a2b0; --t-a9dcff:#a9a7b6;
+  --t-6f93b5:#8a8898; --t-e4f3ff:#e7e6ec; --t-cfeaff:#dcdae5; --t-8aa3b8:#8f8d9b;
+  --t-0d1a2c:#1d1d24; --t-3d6a94:#5c5a6a; --t-9fc6e6:#aeacba;`;
+
+const FOG_CSS = `
+.rpg-sys.rpg-fog, .rpg-sys-note.fog {${FOG_VARS}}
+.rpg-sys.rpg-fog.rpg-sys-enemy{--sc:#d0767c; --sg:rgba(200,60,70,.32)}
+.rpg-sys.rpg-fog.rpg-sys-veh{--sc:#b9a3dc; --sg:rgba(160,130,210,.32)}
+.rpg-sys.rpg-fog{
+  --sys-bg:${FOG_STARS} 0 0 / 100% 600px no-repeat,
+    radial-gradient(55% 30% at 50% 10%, rgba(214,218,232,.17), transparent 72%),
+    radial-gradient(75% 35% at 12% 88%, rgba(150,150,166,.13), transparent 70%),
+    radial-gradient(60% 40% at 92% 58%, rgba(112,92,152,.14), transparent 70%),
+    linear-gradient(180deg, #2c2e35 0%, #1f2026 42%, #141418 100%);
+  --sys-shadow:0 0 0 1px rgba(0,0,0,.6), 0 4px 22px rgba(0,0,0,.55), 0 0 12px var(--sg),
+    inset 0 0 0 4px rgba(20,20,25,.85), inset 0 0 0 5px rgba(205,208,218,.30), inset 0 0 40px rgba(0,0,0,.35);
+  font-family:${FOG_FONT}}
+.rpg-sys.rpg-fog::before,.rpg-sys.rpg-fog::after{border:0; filter:none; width:auto; height:26px; left:3px; right:3px; z-index:-1;
+  background-repeat:no-repeat; background-size:26px 26px}
+/* the corner buttons sit just inside the corner ornaments rather than on top of them */
+.rpg-fog .sys-ctl{right:7px; gap:6px}   /* the minimize button's corner sits on the corner flourish's diagonal */
+.rpg-fog #rpg-min-btn{width:24px !important}
+/* the bottom buttons tuck behind one centred button and fan out from it */
+.rpg-sys.rpg-fog .rpg-c-btns.fog-dock{left:50% !important; bottom:13.5px !important; transform:translateX(-50%); align-items:center; gap:7px !important}
+.rpg-fog .fog-dock:not(.open) > button:not(#rpg-fog-dock){display:none !important}
+.rpg-fog #rpg-fog-dock{position:relative; width:32px; height:32px; border-radius:50%; padding:0; cursor:pointer; display:grid; place-items:center;
+  color:#eceef3; background:radial-gradient(circle at 35% 28%, #4a4c56, #1b1b21 70%);
+  border:1px solid rgba(214,217,226,.75); box-shadow:0 0 0 3px rgba(18,18,23,.8), 0 0 0 4px rgba(214,217,226,.28), 0 0 12px var(--sg)}
+.rpg-fog #rpg-fog-dock svg{width:20px; height:20px; overflow:visible; filter:drop-shadow(0 0 3px var(--sg))}
+.rpg-fog #rpg-fog-dock .fog-star{transform-origin:12px 12px}
+.rpg-fog .fog-dock.open #rpg-fog-dock .fog-star{transform:rotate(45deg) scale(.9)}
+.rpg-fog .fog-dock.open #rpg-fog-dock svg{animation:fogDockSpin 14s linear infinite}
+.rpg-fog .fog-dock.open.anim #rpg-fog-dock .fog-star{animation:fogDockTurn .35s ease-out both}
+.rpg-fog .fog-dock.anim:not(.open) #rpg-fog-dock .fog-star{animation:fogDockUnturn .3s ease-out both}
+@keyframes fogDockSpin{to{transform:rotate(360deg)}}
+/* the HUD folded away: a floating round button, its star tinted by the status */
+.rpg-fog-orb .fog-orb{width:44px; height:44px; border-radius:50%; padding:0; cursor:pointer; display:grid; place-items:center;
+  touch-action:none; user-select:none; -webkit-tap-highlight-color:transparent;
+  background:radial-gradient(circle at 35% 28%, #4a4c56, #1b1b21 70%); border:1px solid rgba(214,217,226,.75);
+  box-shadow:0 0 0 3px rgba(18,18,23,.85), 0 0 0 4px rgba(214,217,226,.3), 0 2px 12px rgba(0,0,0,.6), 0 0 14px rgba(200,205,225,.25);
+  transition:transform .15s}
+@media (hover:hover){ .rpg-fog-orb:not(.dragging) .fog-orb:hover{transform:scale(1.06)} }
+.rpg-fog-orb .fog-orb{-webkit-touch-callout:none; -webkit-user-select:none}
+.rpg-fog-orb.dragging .fog-orb{cursor:grabbing; transition:none}
+.rpg-fog-orb.locked .fog-orb{touch-action:manipulation}
+.rpg-fog-orb .fog-orb svg{width:26px; height:26px; overflow:visible; animation:fogDockSpin 14s linear infinite;
+  filter:drop-shadow(0 0 3px var(--orb-tint)) drop-shadow(0 0 1px rgba(0,0,0,.8))}
+@media (prefers-reduced-motion: reduce){.rpg-fog-orb .fog-orb svg{animation:none}}
+.rpg-fog-orb.fog-orb-in .fog-orb{animation:fogOrbIn ${FOG_ORB_MS}ms cubic-bezier(.3,1.4,.5,1) both; animation-delay:inherit; animation-duration:inherit}
+@keyframes fogOrbIn{from{opacity:0; transform:scale(.3) rotate(-60deg)} to{opacity:1; transform:none}}
+/* the status mark in the header: the star, still, in the status colour */
+.rpg-fog .fog-status{display:inline-grid; place-items:center; width:20px; height:20px; vertical-align:middle}
+.rpg-fog .fog-status svg{width:20px; height:20px; overflow:visible; filter:drop-shadow(0 0 3px var(--orb-tint)) drop-shadow(0 0 1px rgba(0,0,0,.9))}
+@keyframes fogDockTurn{from{transform:none} to{transform:rotate(45deg) scale(.9)}}
+@keyframes fogDockUnturn{from{transform:rotate(45deg) scale(.9)} to{transform:none}}
+@media (prefers-reduced-motion: reduce){.rpg-fog .fog-dock.open #rpg-fog-dock svg{animation:none}}
+.rpg-fog #rpg-fog-dock:hover{border-color:#fff}
+.rpg-fog .fog-dock-badge{position:absolute; top:-2px; right:-2px; width:8px; height:8px; border-radius:50%; background:#ff5252; box-shadow:0 0 0 2px #111}
+.rpg-fog .fog-dock.anim > #rpg-settings-btn,.rpg-fog .fog-dock.anim > #rpg-scan-btn{animation:fogDockL .3s cubic-bezier(.2,.8,.3,1.2) both}
+.rpg-fog .fog-dock.anim > #rpg-help-btn,.rpg-fog .fog-dock.anim > #rpg-log-btn{animation:fogDockR .3s cubic-bezier(.2,.8,.3,1.2) both}
+.rpg-fog .fog-dock.anim > #rpg-settings-btn,.rpg-fog .fog-dock.anim > #rpg-log-btn{animation-delay:.06s}
+@keyframes fogDockL{from{opacity:0; transform:translateX(24px) scale(.6)} to{opacity:1; transform:none}}
+@keyframes fogDockR{from{opacity:0; transform:translateX(-24px) scale(.6)} to{opacity:1; transform:none}}
+.rpg-sys.rpg-fog::before{top:3px; bottom:auto; background-image:${FOG_CORNERS.tl},${FOG_CORNERS.tr}; background-position:left top, right top}
+.rpg-sys.rpg-fog::after{bottom:3px; top:auto; background-image:${FOG_CORNERS.bl},${FOG_CORNERS.br}; background-position:left bottom, right bottom}
+
+.rpg-fog .sys-plate{font-family:Cinzel,${FOG_FONT}; font-weight:600; font-size:1.05em; letter-spacing:.32em;
+  padding:4px 11px 3px calc(11px + .32em); background:rgba(18,18,23,.6); border-color:rgba(214,217,226,.7);
+  box-shadow:0 0 0 3px rgba(18,18,23,.75), 0 0 0 4px rgba(214,217,226,.25), 0 0 14px var(--sg); text-shadow:0 0 8px var(--sg)}
+.rpg-fog .sys-plate::before,.rpg-fog .sys-plate::after{content:"\\2726"; font-size:.6em; opacity:.75; letter-spacing:0; vertical-align:.15em}
+.rpg-fog .sys-plate::before{margin-right:.6em} .rpg-fog .sys-plate::after{margin-left:.3em}
+.rpg-fog .sys-kind{font-family:Cinzel,${FOG_FONT}; letter-spacing:.2em}
+.rpg-fog .fog-num{font-family:Cinzel,${FOG_FONT}; font-weight:600; text-align:center; font-size:.86em; letter-spacing:.3em; color:#d6d4de;
+  margin:-2px 0 2px; text-shadow:0 0 4px #000, 0 0 10px rgba(0,0,0,.8), 0 0 8px var(--sg)}
+.rpg-fog .sys-big{font-family:'Grenze Gotisch','UnifrakturMaguntia',Cinzel,${FOG_FONT}; font-weight:500; letter-spacing:.03em;
+  text-shadow:0 0 6px rgba(0,0,0,.9), 0 0 14px rgba(0,0,0,.6), 0 0 12px var(--sg)}
+.rpg-fog .sys-rule{background:linear-gradient(90deg,transparent,var(--sc) 30%,var(--sc) 70%,transparent); opacity:.45; position:relative}
+.rpg-fog .sys-info .k,.rpg-fog .sys-bar-lab,.rpg-fog .sys-stat,.rpg-fog .sys-sec,.rpg-fog .sys-tabhead > span:first-child,
+.rpg-fog .sys-mini .l{font-family:Cinzel,${FOG_FONT}}
+.rpg-fog .sys-info{font-size:.86em}
+.rpg-fog .sys-info .v{font-weight:500}
+.rpg-fog .sys-info .v.ok{color:#b9d6c4}
+.rpg-fog .sys-box{border-color:rgba(205,208,218,.32); background:rgba(14,14,18,.38);
+  box-shadow:inset 0 0 0 2px rgba(14,14,18,.6), inset 0 0 0 3px rgba(205,208,218,.12)}
+.rpg-fog .sys-stat b{font-family:${FOG_FONT}; font-weight:600}
+.rpg-fog .sys-cap{border-radius:1px; border-color:rgba(214,217,226,.6); box-shadow:0 0 4px var(--sg)}
+.rpg-fog .sys-cap i{border-radius:0; background:linear-gradient(90deg,#8d8a9a,#eceaf2); box-shadow:0 0 5px rgba(225,225,235,.55)}
+.rpg-fog .sys-cap.mp i{background:linear-gradient(90deg,#5d4a8c,#b6a3dc); box-shadow:0 0 6px rgba(150,120,210,.6)}
+.rpg-fog .sys-cap.low i{background:linear-gradient(90deg,#7c1d29,#d4636c); box-shadow:0 0 6px rgba(190,50,60,.7)}
+.rpg-fog .sys-cap.foe i{background:linear-gradient(90deg,#7c1d29,#d4636c); box-shadow:0 0 6px rgba(190,50,60,.7)}
+.rpg-fog .sys-cap.foe{border-color:rgba(220,140,145,.65)}
+.rpg-fog .sys-foes{border-color:rgba(200,110,115,.35); background:rgba(40,12,16,.35)}
+.rpg-fog .sys-svg{stroke-width:1.4}
+.rpg-fog .sys-clock{filter:drop-shadow(0 0 4px var(--sg))}
+
+#rpg-sys-notices .rpg-sys-note.fog{font-family:${FOG_FONT}; border-color:rgba(214,217,226,.75); border-radius:0;
+  background:radial-gradient(90% 70% at 50% 0%, rgba(214,218,232,.16), transparent 70%), linear-gradient(180deg,#2a2b31,#18181c);
+  box-shadow:0 0 0 1px rgba(0,0,0,.5), 0 6px 22px rgba(0,0,0,.5), inset 0 0 0 3px rgba(20,20,25,.85), inset 0 0 0 4px rgba(205,208,218,.28)}
+#rpg-sys-notices .rpg-sys-note.fog.warn{--sc:#d0767c; --sg:rgba(200,60,70,.35); border-color:rgba(208,118,124,.8)}
+.rpg-sys-note.fog .plate{font-family:Cinzel,${FOG_FONT}; letter-spacing:.28em; border-color:rgba(214,217,226,.6); box-shadow:0 0 10px var(--sg)}
+.rpg-sys-note.fog .msg{font-size:1em}
+.rpg-sys-note.fog .msg b{color:#f1eff6; font-weight:600}
+`;
+
+// ---- the tarot number under the title ----
+function toRoman(n) {
+  n = Math.floor(Number(n));
+  if (!Number.isFinite(n) || n < 0 || n > 3999) return "";
+  if (n === 0) return "0";                     // the Fool's card is 0, there's no Roman zero
+  const map = [[1000, "M"], [900, "CM"], [500, "D"], [400, "CD"], [100, "C"], [90, "XC"], [50, "L"], [40, "XL"], [10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"]];
+  let out = "";
+  for (const [v, r] of map) while (n >= v) { out += r; n -= v; }
+  return out;
+}
+// a Sequence the card tracks: a meter or a stat called Sequence (or Seq)
+function fogSequenceOf(display) {
+  const m = (Array.isArray(display?.meters) ? display.meters : []).find((x) => /^seq(uence)?$/i.test(String(x?.name || "").trim()));
+  if (m) return tNum(m.curr);
+  const st = display?.stats || {};
+  const k = Object.keys(st).find((x) => /^seq(uence)?$/i.test(x));
+  return k ? tNum(st[k]) : null;
+}
+function fogNumberHtml(display, time) {
+  const mode = uiSettings.fogNumber || "auto";
+  if (mode === "none") return "";
+  const seq = mode === "day" ? null : fogSequenceOf(display);
+  let n = seq;
+  let title = seq !== null ? `Sequence ${seq}` : "";
+  if (n === null && mode !== "sequence") { n = parseInt(time?.day, 10); title = `Day ${n} of the month`; }
+  const r = n === null || !Number.isFinite(n) ? "" : toRoman(n);
+  return r ? `<div class="fog-num" title="${escAttr(title)}">\u2014 ${r} \u2014</div>` : "";
+}
+
+function fogEnsureWebFont() {
+  const href = `https://fonts.googleapis.com/css2?${FOG_WEBFONTS}&display=swap`;
+  let link = document.getElementById("rpg-fog-webfont");
+  if (link && link.getAttribute("href") === href) return;
+  if (!link) {
+    link = document.createElement("link");
+    link.id = "rpg-fog-webfont";
+    link.rel = "stylesheet";
+    document.head.appendChild(link);
+  }
+  link.href = href;
+}
+
+
+// ---- background images (System and Gray Fog) -----------------------------
+// Up to six pictures stacked behind the top of the panel, bottom to top: Gray
+// Fog's built-in star, images from links, images you upload. Each layer
+// has its own size, position, angle, opacity, shape, soft edges, colour and
+// blend, adjusted live from a small editor at the bottom of the panel so the
+// top stays in view. Layers are per skin. An uploaded picture is shrunk and
+// kept on this device (a link works on every device you paste it into).
+const EMBLEM_MAX = 6;
+const EMBLEM_LAYER_DEFAULT = { src: "upload", url: "", size: 55, x: 0, y: 0, rot: 0, op: 60, shape: "none", soft: false, tone: "original", blend: "normal" };
+const EMBLEM_BUILTIN_DEFAULT = { src: "builtin", url: "", size: 77, x: 0, y: -13, rot: 0, op: 100, shape: "none", soft: false, tone: "original", blend: "normal" };
+const emblemImgKey = (skin, id) => id === "legacy" ? `rpgHud:emblemImg:${skin}` : `rpgHud:emblemImg:${skin}:${id}`;
+const emblemImgCache = {};
+let emblemEditOpen = false;
+let emblemEdMin = false;     // the editor folded down to its header, to see more of the panel
+let emblemSel = 0;
+
+// the layer list for a skin; older single-image settings are read as one layer
+function emblemLayers(skin = uiSettings.skin) {
+  const saved = uiSettings.emblemLayers?.[skin];
+  if (Array.isArray(saved)) return saved.map((l) => ({ ...EMBLEM_LAYER_DEFAULT, ...l }));
+  const old = uiSettings.emblems?.[skin];
+  if (old) {
+    const base = skin === "fog" ? EMBLEM_BUILTIN_DEFAULT : { ...EMBLEM_LAYER_DEFAULT, src: "none", size: 70, y: -8, op: 30, soft: true };
+    const l = { ...base, ...old, id: "legacy" };
+    return l.src === "none" ? [] : [l];
+  }
+  return skin === "fog" ? [{ ...EMBLEM_BUILTIN_DEFAULT, id: "builtin" }] : [];
+}
+function saveEmblemLayers(layers, save = true, skin = uiSettings.skin) {
+  uiSettings.emblemLayers = { ...(uiSettings.emblemLayers || {}), [skin]: layers };
+  if (uiSettings.emblems?.[skin]) { uiSettings.emblems = { ...uiSettings.emblems }; delete uiSettings.emblems[skin]; }
+  if (save) saveUiSettings();
+}
+function setEmblemLayer(i, patch, save = true, skin = uiSettings.skin) {
+  const layers = emblemLayers(skin);
+  if (!layers[i]) return;
+  layers[i] = { ...layers[i], ...patch };
+  saveEmblemLayers(layers, save, skin);
+}
+function emblemUpload(skin, id) {
+  const k = emblemImgKey(skin, id);
+  if (!(k in emblemImgCache)) {
+    try { emblemImgCache[k] = localStorage.getItem(k) || ""; } catch { emblemImgCache[k] = ""; }
+  }
+  return emblemImgCache[k];
+}
+// a CSS url() that can't be broken out of, whatever the link contains
+const cssUrl = (u) => `url("${String(u).replace(/["\\\n\r]/g, (c) => "\\" + c.charCodeAt(0).toString(16) + " ")}")`;
+function emblemBackground(l, skin) {
+  if (l.src === "builtin") return FOG_SIGIL;
+  if (l.src === "url") return /^https?:\/\/\S+$/i.test(String(l.url).trim()) ? cssUrl(l.url.trim()) : "";
+  if (l.src === "upload") { const d = emblemUpload(skin, l.id); return d ? cssUrl(d) : ""; }
+  return "";
+}
+const EMBLEM_SHAPES = {
+  circle: "circle(50%)", rounded: "inset(0 round 16%)",
+  diamond: "polygon(50% 0, 100% 50%, 50% 100%, 0 50%)",
+  hexagon: "polygon(25% 4%, 75% 4%, 100% 50%, 75% 96%, 25% 96%, 0 50%)",
+};
+function emblemLayersHtml() {
+  return emblemLayers().map((_, i) => `<div class="sys-emblem" data-layer="${i}"></div>`).join("");
+}
+function applyEmblem(container) {
+  if (!container) return;
+  const skin = uiSettings.skin, layers = emblemLayers(skin);
+  const W = container.clientWidth || 300;
+  container.querySelectorAll(".sys-emblem[data-layer]").forEach((el) => {
+    const l = layers[+el.dataset.layer];
+    const bg = l ? emblemBackground(l, skin) : "";
+    if (!bg) { el.style.display = "none"; return; }
+    const size = W * l.size / 100, clip = EMBLEM_SHAPES[l.shape] || "none";
+    const mask = l.soft ? "radial-gradient(closest-side, #000 55%, transparent 100%)" : "none";
+    Object.assign(el.style, {
+      display: "block", width: `${size}px`, height: `${size}px`, top: `${(W * l.y / 100).toFixed(1)}px`,
+      left: `calc(50% + ${(W * l.x / 100).toFixed(1)}px)`, transform: `translateX(-50%) rotate(${l.rot}deg)`,
+      backgroundImage: bg, backgroundSize: l.shape === "none" ? "contain" : "cover",
+      opacity: String(l.op / 100), clipPath: clip, webkitClipPath: clip, maskImage: mask, webkitMaskImage: mask,
+      filter: l.tone === "silver" ? "grayscale(1) brightness(1.05) contrast(.95)" : l.tone === "dim" ? "grayscale(.5) brightness(.75)" : "none",
+      mixBlendMode: l.blend === "screen" ? "screen" : l.blend === "soft" ? "soft-light" : "normal",
+    });
+  });
+  // while editing, a dashed outline shows the selected layer's box
+  const guide = container.querySelector(".em-guide"), g = layers[emblemSel];
+  if (guide) {
+    if (!g) { guide.style.display = "none"; return; }
+    const size = W * g.size / 100;
+    Object.assign(guide.style, { display: "block", width: `${size}px`, height: `${size}px`, top: `${(W * g.y / 100).toFixed(1)}px`,
+      left: `calc(50% + ${(W * g.x / 100).toFixed(1)}px)`, transform: `translateX(-50%) rotate(${g.rot}deg)`,
+      borderRadius: g.shape === "circle" ? "50%" : g.shape === "rounded" ? "18%" : "0" });
+  }
+}
+
+// Move, resize and turn the selected layer by dragging on the panel itself.
+function bindEmblemDrag(container) {
+  const pad = container.querySelector("#rpg-emblem-drag");
+  if (!pad) return;
+  const skin = uiSettings.skin, i = emblemSel;
+  const lim = Object.fromEntries(EMBLEM_SLIDERS.map(([k, , min, max]) => [k, [min, max]]));
+  const clamp = (k, v) => Math.max(lim[k][0], Math.min(lim[k][1], Math.round(v)));
+  const W = () => container.clientWidth || 300;
+  const set = (patch) => {
+    const l = emblemLayers(skin)[i];
+    if (!l) return;
+    const out = {};
+    for (const k of Object.keys(patch)) out[k] = k === "rot" ? ((Math.round(patch[k]) + 540) % 360) - 180 : clamp(k, patch[k]);
+    setEmblemLayer(i, out, false);
+    applyEmblem(container);
+    for (const k of Object.keys(out)) {
+      const el = container.querySelector(`.em-slide[data-k="${k}"]`);
+      if (el) { el.value = out[k]; el.nextElementSibling.textContent = out[k] + el.dataset.unit; }
+    }
+  };
+  const pts = new Map();
+  let start = null;
+  const snapshot = () => {
+    const l = emblemLayers(skin)[i];
+    const p = [...pts.values()];
+    const g = p.length > 1 ? { d: Math.hypot(p[1].x - p[0].x, p[1].y - p[0].y), a: Math.atan2(p[1].y - p[0].y, p[1].x - p[0].x),
+      cx: (p[0].x + p[1].x) / 2, cy: (p[0].y + p[1].y) / 2 } : { cx: p[0].x, cy: p[0].y };
+    start = { l: { ...l }, ...g, n: p.length };
+  };
+  pad.onpointerdown = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (!emblemLayers(skin)[i]) return;
+    pad.setPointerCapture?.(e.pointerId);
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    snapshot();
+  };
+  pad.onpointermove = (e) => {
+    if (!pts.has(e.pointerId) || !start) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const p = [...pts.values()], w = W(), L = start.l;
+    if (p.length === 1 && start.n === 1) {
+      set({ x: L.x + (p[0].x - start.cx) / w * 100, y: L.y + (p[0].y - start.cy) / w * 100 });
+    } else if (p.length > 1 && start.n > 1) {
+      const d = Math.hypot(p[1].x - p[0].x, p[1].y - p[0].y), a = Math.atan2(p[1].y - p[0].y, p[1].x - p[0].x);
+      const cx = (p[0].x + p[1].x) / 2, cy = (p[0].y + p[1].y) / 2;
+      set({ size: L.size * d / Math.max(1, start.d), rot: L.rot + (a - start.a) * 180 / Math.PI,
+        x: L.x + (cx - start.cx) / w * 100, y: L.y + (cy - start.cy) / w * 100 });
+    }
+  };
+  const lift = (e) => {
+    if (!pts.delete(e.pointerId)) return;
+    if (pts.size) snapshot(); else { start = null; saveUiSettings(); }
+  };
+  pad.onpointerup = lift; pad.onpointercancel = lift;
+  pad.onclick = (e) => e.stopPropagation();
+  let wheelSave = 0;
+  pad.onwheel = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const l = emblemLayers(skin)[i];
+    if (!l) return;
+    const step = e.deltaY < 0 ? 1 : -1;
+    set(e.shiftKey ? { rot: l.rot + step * 3 } : { size: l.size + step * 2 });
+    clearTimeout(wheelSave); wheelSave = setTimeout(saveUiSettings, 400);
+  };
+}
+
+const EMBLEM_SLIDERS = [
+  ["size", "Size", 10, 200, "%"], ["x", "Left / right", -60, 60, ""], ["y", "Up / down", -60, 140, ""],
+  ["rot", "Rotate", -180, 180, "°"], ["op", "Opacity", 5, 100, "%"],
+];
+const EMBLEM_SRC_LABEL = { builtin: "Star", url: "Link", upload: "Upload" };
+function emblemEditorHtml() {
+  const skin = uiSettings.skin, layers = emblemLayers(skin);
+  if (emblemSel >= layers.length) emblemSel = Math.max(0, layers.length - 1);
+  const l = layers[emblemSel];
+  const opt = (v, t, cur) => `<option value="${v}"${cur === v ? " selected" : ""}>${t}</option>`;
+  const sel = (id, label, cur, opts) => `<label class="em-row"><span>${label}</span><select id="${id}">${opts.map(([v, t]) => opt(v, t, cur)).join("")}</select></label>`;
+  const chips = layers.map((x, i) => `<button class="em-chip${i === emblemSel ? " on" : ""}" data-i="${i}" title="Layer ${i + 1}">${i + 1} · ${EMBLEM_SRC_LABEL[x.src] || x.src}</button>`).join("");
+  const tools = `<div class="em-row em-layers">${chips || `<span class="em-none">No images.</span>`}
+      ${layers.length < EMBLEM_MAX ? `<button id="em-add" title="Add a layer on top">+ Add</button>` : ""}</div>`;
+  const head = `<div class="em-head"><span>BACKGROUND IMAGES</span><span class="em-headbtns">
+      <button id="em-fold" title="${emblemEdMin ? "Show the controls" : "Fold the controls down to see the panel"}">${emblemEdMin ? "▴" : "▾"}</button><button id="em-done">Done</button></span></div>`;
+  if (emblemEdMin) return `<div id="rpg-emblem-ed" class="rpg-emblem-ed min">${head}${l ? tools : ""}
+      <p class="em-hint">Drag the panel to move layer ${emblemSel + 1}; pinch or scroll to resize, twist or Shift+scroll to rotate.</p></div>`;
+  if (!l) return `<div id="rpg-emblem-ed" class="rpg-emblem-ed">
+      ${head}${tools}
+      <p class="em-hint">Add a layer to use the star, a picture from a link, or one from this device. Layers stack bottom to top.</p></div>`;
+  return `<div id="rpg-emblem-ed" class="rpg-emblem-ed">
+      ${head}
+      ${tools}
+      <div class="em-row em-btns">
+        <button id="em-down" ${emblemSel === 0 ? "disabled" : ""} title="Move this layer down">◀ Lower</button>
+        <button id="em-up" ${emblemSel >= layers.length - 1 ? "disabled" : ""} title="Move this layer up">Raise ▶</button>
+        <button id="em-remove" title="Remove this layer">✕ Remove</button>
+      </div>
+      ${sel("em-src", "Image", l.src, [["builtin", "Star (built in)"], ["url", "From a link"], ["upload", "Upload from this device"]])}
+      ${l.src === "url" ? `<div class="em-row"><input id="em-url" type="url" inputmode="url" placeholder="https://example.com/image.png" value="${escAttr(l.url)}"><button id="em-url-go">Use</button></div>` : ""}
+      ${l.src === "upload" ? `<div class="em-row"><button id="em-pick">${emblemUpload(skin, l.id) ? "Replace image…" : "Choose image…"}</button>
+        <input id="em-file" type="file" accept="image/*" style="display:none"></div>` : ""}
+      ${EMBLEM_SLIDERS.map(([k, label, min, max, unit]) => `<label class="em-row"><span>${label}</span>
+        <input type="range" class="em-slide" data-k="${k}" data-unit="${unit}" min="${min}" max="${max}" step="1" value="${l[k]}"><b>${l[k]}${unit}</b></label>`).join("")}
+      ${sel("em-shape", "Shape", l.shape, [["none", "As it is"], ["circle", "Circle"], ["rounded", "Rounded square"], ["diamond", "Diamond"], ["hexagon", "Hexagon"]])}
+      ${sel("em-soft", "Edges", l.soft ? "soft" : "hard", [["hard", "Sharp"], ["soft", "Fade out"]])}
+      ${sel("em-tone", "Colour", l.tone, [["original", "Original"], ["silver", "Silver (greyscale)"], ["dim", "Dimmed"]])}
+      ${sel("em-blend", "Blend", l.blend, [["normal", "Normal"], ["screen", "Glow (dark parts vanish)"], ["soft", "Soft light"]])}
+      <div class="em-row em-btns"><button id="em-reset">Reset this layer's position and look</button></div>
+      <p class="em-hint">Drag on the panel above to move this layer; pinch or scroll to resize, twist or Shift+scroll to rotate. Fold the controls (▾) to see more. Layers stack bottom to top. ${l.src === "url" ? "Any public image link; some sites block showing their images elsewhere, and if yours stays blank, save it and use Upload. "
+        : l.src === "upload" ? "Kept on this device only, shrunk to keep it light. For every device, use a link instead. " : ""}Glow suits a light picture on a black background.</p>
+    </div>`;
+}
+
+function bindEmblemEditor(container) {
+  const box = container.querySelector("#rpg-emblem-ed");
+  if (!box) return;
+  box.onclick = (e) => e.stopPropagation();
+  box.onkeydown = (e) => e.stopPropagation();
+  const skin = uiSettings.skin, i = emblemSel;
+  const layer = () => emblemLayers(skin)[emblemSel];
+  box.querySelectorAll(".em-slide").forEach((el) => {
+    // while a slider is held, the editor turns see-through except for that slider
+    el.onpointerdown = () => {
+      box.classList.add("peek");
+      el.closest(".em-row")?.classList.add("em-active");
+      const end = () => { box.classList.remove("peek"); el.closest(".em-row")?.classList.remove("em-active");
+        window.removeEventListener("pointerup", end); window.removeEventListener("pointercancel", end); };
+      window.addEventListener("pointerup", end); window.addEventListener("pointercancel", end);
+    };
+    el.oninput = () => {
+      setEmblemLayer(i, { [el.dataset.k]: Number(el.value) }, false);
+      el.nextElementSibling.textContent = el.value + el.dataset.unit;
+      applyEmblem(container);
+    };
+    el.onchange = () => saveUiSettings();
+  });
+  const onSel = (id, fn) => { const el = box.querySelector("#" + id); if (el) el.onchange = () => fn(el.value); };
+  onSel("em-src", (v) => { setEmblemLayer(i, { src: v }); renderRPG(); });
+  onSel("em-shape", (v) => { setEmblemLayer(i, { shape: v }); applyEmblem(container); });
+  onSel("em-soft", (v) => { setEmblemLayer(i, { soft: v === "soft" }); applyEmblem(container); });
+  onSel("em-tone", (v) => { setEmblemLayer(i, { tone: v }); applyEmblem(container); });
+  onSel("em-blend", (v) => { setEmblemLayer(i, { blend: v }); applyEmblem(container); });
+  const btn = (id, fn) => { const el = box.querySelector("#" + id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
+  box.querySelectorAll(".em-chip").forEach((el) => { el.onclick = (e) => { e.stopPropagation(); emblemSel = +el.dataset.i; renderRPG(); }; });
+  btn("em-done", () => { emblemEditOpen = false; emblemEdMin = false; renderRPG(); });
+  btn("em-fold", () => { emblemEdMin = !emblemEdMin; renderRPG(); });
+  bindEmblemDrag(container);
+  btn("em-add", () => {
+    const layers = emblemLayers(skin);
+    if (layers.length >= EMBLEM_MAX) return;
+    layers.push({ ...EMBLEM_LAYER_DEFAULT, id: `l${Date.now().toString(36)}` });
+    saveEmblemLayers(layers);
+    emblemSel = layers.length - 1;
+    renderRPG();
+  });
+  btn("em-remove", () => {
+    const layers = emblemLayers(skin), gone = layers.splice(i, 1)[0];
+    if (gone?.src === "upload" || gone?.id) {
+      try { localStorage.removeItem(emblemImgKey(skin, gone.id)); } catch {}
+      delete emblemImgCache[emblemImgKey(skin, gone.id)];
+    }
+    saveEmblemLayers(layers);
+    emblemSel = Math.max(0, Math.min(i, layers.length - 1));
+    renderRPG();
+  });
+  const move = (d) => {
+    const layers = emblemLayers(skin), j = i + d;
+    if (j < 0 || j >= layers.length) return;
+    [layers[i], layers[j]] = [layers[j], layers[i]];
+    saveEmblemLayers(layers);
+    emblemSel = j;
+    renderRPG();
+  };
+  btn("em-down", () => move(-1));
+  btn("em-up", () => move(1));
+  btn("em-reset", () => {
+    const l = layer();
+    const base = l.src === "builtin" ? EMBLEM_BUILTIN_DEFAULT : EMBLEM_LAYER_DEFAULT;
+    setEmblemLayer(i, { ...base, src: l.src, url: l.url, id: l.id });
+    renderRPG();
+  });
+  btn("em-url-go", () => {
+    const url = String(box.querySelector("#em-url")?.value || "").trim();
+    if (!/^https?:\/\/\S+$/i.test(url)) { hudToast.warning("That doesn't look like a web link (it should start with https://)."); return; }
+    setEmblemLayer(i, { url });
+    applyEmblem(container);
+    const probe = new Image();
+    probe.onerror = () => hudToast.warning("That link didn't give an image. The site may block showing it elsewhere; try saving it and using Upload.");
+    probe.src = url;
+  });
+  const file = box.querySelector("#em-file");
+  btn("em-pick", () => file?.click());
+  if (file) file.onchange = () => {
+    const f = file.files?.[0], l = layer();
+    if (!f || !l) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        // shrink to at most 640px on the long side, so it fits in browser storage
+        const k = Math.min(1, 640 / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(img.naturalWidth * k));
+        c.height = Math.max(1, Math.round(img.naturalHeight * k));
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        let data = c.toDataURL("image/webp", 0.9);
+        if (!data.startsWith("data:image/webp")) data = c.toDataURL("image/png");
+        const key = emblemImgKey(skin, l.id);
+        try { localStorage.setItem(key, data); }
+        catch { hudToast.warning("That image is too big to keep on this device. Try a smaller one, or use a link."); return; }
+        emblemImgCache[key] = data;
+        renderRPG();
+      };
+      img.onerror = () => hudToast.warning("Couldn't read that file as an image.");
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(f);
+  };
+}
+
+const EMBLEM_CSS = `
+.rpg-sys .sys-emblem{position:absolute; z-index:-1; pointer-events:none; display:none;
+  background-position:center; background-repeat:no-repeat}
+.rpg-emblem-ed{position:absolute; left:8px; right:8px; bottom:8px; max-height:60%; overflow:auto; z-index:100000; box-sizing:border-box;
+  padding:8px 10px; font-size:.8em; color:var(--t-dff1ff, #dff1ff);
+  background:rgba(var(--t-4_9_18, 4,9,18),.96); border:1px solid var(--sc); box-shadow:0 0 12px var(--sg);
+  transition:background .15s, border-color .15s, box-shadow .15s}
+.rpg-emblem-ed .em-head{display:flex; justify-content:space-between; align-items:center; letter-spacing:.18em; color:var(--sc);
+  margin-bottom:6px; text-shadow:0 0 6px var(--sg)}
+.rpg-emblem-ed .em-row{display:flex; align-items:center; gap:8px; margin:5px 0}
+.rpg-emblem-ed .em-row > span{flex:0 0 78px; color:var(--t-8fb6d8, #8fb6d8)}
+.rpg-emblem-ed .em-row input[type=range]{flex:1; min-width:0; accent-color:var(--sc)}
+.rpg-emblem-ed .em-row b{flex:0 0 38px; text-align:right; font-weight:500}
+.rpg-emblem-ed select, .rpg-emblem-ed input[type=url]{flex:1; min-width:0; box-sizing:border-box; font:inherit; font-size:16px; padding:3px 5px;
+  color:inherit; background:var(--t-0d1a2c, #0d1a2c); border:1px solid var(--t-3d6a94, #3d6a94)}
+@media (pointer:fine){ .rpg-emblem-ed select, .rpg-emblem-ed input[type=url]{font-size:inherit} }
+.rpg-emblem-ed button{font:inherit; padding:3px 10px; cursor:pointer; color:inherit;
+  background:rgba(var(--t-10_26_48, 10,26,48),.9); border:1px solid rgba(var(--t-143_208_255, 143,208,255),.55)}
+.rpg-emblem-ed .em-btns{justify-content:flex-end; flex-wrap:wrap}
+.rpg-emblem-ed .em-layers{flex-wrap:wrap; gap:5px}
+.rpg-emblem-ed .em-chip.on{border-color:var(--sc); box-shadow:inset 0 0 6px var(--sg); color:#fff}
+.rpg-emblem-ed button:disabled{opacity:.35; cursor:default}
+.rpg-emblem-ed .em-none{color:var(--t-8fb6d8, #8fb6d8); flex:1}
+.rpg-emblem-ed .em-hint{margin:6px 0 0; color:var(--t-8fb6d8, #8fb6d8); font-size:.92em; line-height:1.35}
+.rpg-emblem-ed .em-headbtns{display:flex; gap:6px}
+.rpg-emblem-ed.min{max-height:none}
+.rpg-emblem-ed.min .em-hint{margin-top:4px}
+/* holding a slider: only that slider stays visible, so the picture behind can be seen */
+.rpg-emblem-ed.peek{background:transparent; border-color:transparent; box-shadow:none; overflow:hidden}
+.rpg-emblem-ed.peek > *:not(.em-active){opacity:0; transition:opacity .15s}
+.rpg-emblem-ed.peek .em-active{background:rgba(var(--t-4_9_18, 4,9,18),.88); outline:1px solid var(--sc); padding:4px 6px; margin:0 -6px}
+#rpg-emblem-drag{position:absolute; inset:0; z-index:99998; cursor:move; touch-action:none; background:transparent}
+.rpg-sys .em-guide{position:absolute; z-index:99997; pointer-events:none; display:none; box-sizing:border-box;
+  border:1px dashed var(--sc); box-shadow:0 0 0 1px rgba(0,0,0,.5), 0 0 8px var(--sg)}
+`;
+
 function sysEnsureCss() {
+  const css = SYS_CSS + FOG_CSS + EMBLEM_CSS;
   let el = document.getElementById("rpg-sys-css");
-  if (el && el.textContent === SYS_CSS) return;
+  if (el && el.textContent === css) return;
   if (!el) {
     el = document.createElement("style");
     el.id = "rpg-sys-css";
     document.head.appendChild(el);
   }
-  el.textContent = SYS_CSS;
+  el.textContent = css;
 }
 
 function sysFontStack() {
+  if (isFogSkin()) return FOG_FONT;
   const k = uiSettings.sysFont || "exo";
   if (k === "preset") return uiSettings.fontFamily || SAO_FONTS.sans;
   return SAO_FONTS[k] || SAO_FONTS.exo;
 }
 
 function sysEnsureWebFont() {
+  if (isFogSkin()) { fogEnsureWebFont(); return; }
   const family = SAO_WEBFONTS[uiSettings.sysFont || "exo"];
   if (!family) return;
   const href = `https://fonts.googleapis.com/css2?family=${family}&display=swap`;
@@ -7597,7 +8737,105 @@ const SYS_ICON_PATHS = {
 };
 // timer kinds, matching timerKindStyle's emoji
 const SYS_TIMER_ICON = { DOOM: "skull", EVENT: "calendar", DEBUFF: "warn", BUFF: "sparkle" };
-const sysIcon = (k) => `<svg class="sys-svg" viewBox="0 0 16 16" aria-hidden="true">${SYS_ICON_PATHS[k] || ""}</svg>`;
+// Gray Fog swaps a few for tarot-flavoured ones: a cup for health, a star for
+// spirituality, a crescent for SDEF and a pentacle for coin
+const FOG_ICON_PATHS = {
+  hp: '<path d="M4.3 2.5h7.4c0 3.8-1.5 5.8-3.7 5.8S4.3 6.3 4.3 2.5z"/><path d="M8 8.3v4M5.4 13.6h5.2"/>',
+  mp: '<path d="M8 1.6l1.35 5.05L14.4 8l-5.05 1.35L8 14.4l-1.35-5.05L1.6 8l5.05-1.35z"/>',
+  sdef: '<path d="M11.2 2.2a6 6 0 1 0 2.7 11A4.1 4.1 0 0 1 11.2 2.2z" fill="currentColor" fill-opacity=".3" stroke-width="1.5"/>',
+  atk: '<path d="M8 .8l1.3 2.1v7.6H6.7V2.9z" fill="currentColor" fill-opacity=".18"/><path d="M8 3.4v6.4" stroke-width=".8"/><path d="M3.9 10.6h8.2M3.9 10.6l-.6-.9M12.1 10.6l.6-.9" stroke-width="1.4"/><path d="M8 11v2.4"/><path d="M8 13.3l1 1-1 1-1-1z" fill="currentColor"/>',
+  matk: '<path d="M2.3 13.1L9 6.4l1.1 1.1-6.7 6.7z" fill="currentColor" fill-opacity=".18"/><path d="M4.3 10.1l1.1 1.1M6.3 8.1l1.1 1.1" stroke-width=".9"/><path d="M12.2 1.4l.8 2.6 2.6.8-2.6.8-.8 2.6-.8-2.6-2.6-.8 2.6-.8z" fill="currentColor" fill-opacity=".35"/><path d="M14.4 8.6v1.6M13.6 9.4h1.6M8.6 1.6v1.2M8 2.2h1.2" stroke-width=".8"/>',
+  coin: '<circle cx="8" cy="8" r="6"/><path d="M8 3.4 L10.7 11.72 L3.63 6.58 L12.37 6.58 L5.3 11.72 Z" stroke-width="1"/>',
+};
+// Meter icons, picked from the meter's name (or chosen by hand in the meter editor).
+// [key, label, svg body]; the order is the picker's.
+const METER_ICONS = [
+  ["m-hunger", "Hunger", '<path d="M4.5 2v3.6a1.5 1.5 0 0 0 3 0V2M6 2v12"/><path d="M11.5 14V2c-1.7.9-2.3 3.1-2.3 5.6h2.3"/>'],
+  ["m-meat", "Meat", '<path d="M7.3 8.7C5.5 6.9 5.6 4.2 7.5 2.9c1.9-1.3 4.5-1 5.8.8 1.3 1.7.9 4.2-.9 5.5-1.6 1.2-3.7 1-5.1-.5z" fill="currentColor" fill-opacity=".2"/><path d="M9 4.6c.9-.3 1.9 0 2.4.8" stroke-width="1"/><path d="M7.3 8.7L4.5 11.5"/><circle cx="3.4" cy="11.1" r="1.25"/><circle cx="4.9" cy="12.6" r="1.25"/>'],
+  ["m-thirst", "Thirst", '<path d="M3.6 3h8.8l-1.3 10.6a.9.9 0 0 1-.9.8H5.8a.9.9 0 0 1-.9-.8z"/><path d="M4.2 7.2c1.2-.7 2.4-.7 3.8 0s2.6.7 3.8 0" stroke-width="1.2"/>'],
+  ["m-brain", "Brain (sanity)", '<path d="M8 3.4C7.2 2.4 5.3 2.4 4.6 3.6 3.2 3.6 2.4 5 2.9 6.2 1.9 7 1.9 8.6 2.9 9.4 2.6 10.8 3.7 12 5.1 11.9 5.7 13.1 7.2 13.4 8 12.6"/><path d="M8 3.4c.8-1 2.7-1 3.4.2 1.4 0 2.2 1.4 1.7 2.6 1 .8 1 2.4 0 3.2.3 1.4-.8 2.6-2.2 2.5-.6 1.2-2.1 1.5-2.9.7"/><path d="M8 3.4v9.2"/><path d="M5 6c.9-.1 1.6.5 1.7 1.3M4.4 9.1c.8-.4 1.8-.1 2.2.7M11 6c-.9-.1-1.6.5-1.7 1.3M11.6 9.1c-.8-.4-1.8-.1-2.2.7" stroke-width="1.1"/>'],
+  ["m-energy", "Energy", '<path d="M9.2 1.6L3.8 9h3.8l-.9 5.4L12.2 7H8.4z"/>'],
+  ["m-heat", "Temperature", '<path d="M6.4 9.6V3.4a1.6 1.6 0 0 1 3.2 0v6.2a2.9 2.9 0 1 1-3.2 0z"/><path d="M8 6.2v5.4"/><circle cx="8" cy="12" r="1" fill="currentColor"/><path d="M11.4 4h1.4M11.4 6.2h1M11.4 8.4h1.4" stroke-width="1.1"/>'],
+  ["m-cold", "Cold", '<path d="M8 1.8v12.4M2.6 4.9l10.8 6.2M2.6 11.1l10.8-6.2"/><path d="M6.6 2.8L8 4.2l1.4-1.4M6.6 13.2L8 11.8l1.4 1.4M2.9 7.2l1.9-.5-.5-1.9M13.1 8.8l-1.9.5.5 1.9M2.9 8.8l1.9.5-.5 1.9M13.1 7.2l-1.9-.5.5-1.9" stroke-width="1.1"/>'],
+  ["m-corrupt", "Corruption", '<path d="M8.00 7.50 L8.15 7.42 L8.33 7.40 L8.54 7.43 L8.74 7.53 L8.93 7.70 L9.07 7.93 L9.14 8.22 L9.14 8.54 L9.04 8.86 L8.85 9.17 L8.57 9.44 L8.21 9.63 L7.78 9.72 L7.33 9.70 L6.87 9.56 L6.44 9.29 L6.09 8.90 L5.83 8.41 L5.70 7.86 L5.72 7.26 L5.89 6.66 L6.23 6.11 L6.71 5.65 L7.31 5.31 L8.00 5.12 L8.74 5.12 L9.48 5.31 L10.16 5.70 L10.75 6.26 L11.19 6.96 L11.44 7.78 L11.48 8.66 L11.29 9.55 L10.87 10.38 L10.25 11.09 L9.44 11.64 L8.50 11.98 L7.48 12.08 L6.45 11.91 L5.47 11.48 L4.61 10.80 L3.94 9.91 L3.50 8.86 L3.33 7.71 L3.46 6.52 L3.89 5.39 L4.60 4.38 L5.56 3.57 L6.72 3.01 L8.00 2.75 L9.33 2.82 L10.62 3.23 L11.79 3.97 L12.75 4.98 L13.44 6.23 L13.81 7.63 L13.81 9.11 L13.44 10.56 L12.70 11.89 L11.64 13.02"/>'],
+  ["m-rad", "Radiation", '<path d="M6.75 5.83L4.95 2.72A6.1 6.1 0 0 1 11.05 2.72L9.25 5.83A2.5 2.5 0 0 0 6.75 5.83zM10.50 8.00L14.10 8.00A6.1 6.1 0 0 1 11.05 13.28L9.25 10.17A2.5 2.5 0 0 0 10.50 8.00zM6.75 10.17L4.95 13.28A6.1 6.1 0 0 1 1.90 8.00L5.50 8.00A2.5 2.5 0 0 0 6.75 10.17z" fill="currentColor" fill-opacity=".25" stroke-width="1.1"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/>'],
+  ["m-poison", "Poison", '<path d="M6.2 2h3.6M6.9 2v4.2L3.4 12.4a1.2 1.2 0 0 0 1 1.8h7.2a1.2 1.2 0 0 0 1-1.8L9.1 6.2V2"/><path d="M4.6 10.4h6.8" stroke-width="1.1"/><circle cx="7" cy="12.2" r=".7" fill="currentColor"/><circle cx="9.4" cy="11.6" r=".5" fill="currentColor"/>'],
+  ["m-sick", "Infection", '<circle cx="8" cy="8" r="4.2" fill="currentColor" fill-opacity=".15"/><path d="M12.20 8.00L14.20 8.00M10.97 10.97L12.38 12.38M8.00 12.20L8.00 14.20M5.03 10.97L3.62 12.38M3.80 8.00L1.80 8.00M5.03 5.03L3.62 3.62M8.00 3.80L8.00 1.80M10.97 5.03L12.38 3.62" stroke-width="1.1"/><circle cx="14.60" cy="8.00" r=".7" fill="currentColor"/><circle cx="12.67" cy="12.67" r=".7" fill="currentColor"/><circle cx="8.00" cy="14.60" r=".7" fill="currentColor"/><circle cx="3.33" cy="12.67" r=".7" fill="currentColor"/><circle cx="1.40" cy="8.00" r=".7" fill="currentColor"/><circle cx="3.33" cy="3.33" r=".7" fill="currentColor"/><circle cx="8.00" cy="1.40" r=".7" fill="currentColor"/><circle cx="12.67" cy="3.33" r=".7" fill="currentColor"/><circle cx="7" cy="7.2" r=".8" fill="currentColor"/><circle cx="9.3" cy="9.2" r=".6" fill="currentColor"/>'],
+  ["m-air", "Oxygen", '<circle cx="5.6" cy="10.2" r="3.2"/><circle cx="11.1" cy="5.8" r="2.3"/><circle cx="11.6" cy="11.9" r="1.3"/><path d="M4.4 8.8a1.6 1.6 0 0 1 1.4-.9" stroke-width="1"/>'],
+  ["m-sleep", "Fatigue", '<path d="M2.6 4.2h4.6L2.6 9.8h4.6"/><path d="M9.2 8.4h4L9.2 13.2h4" stroke-width="1.4"/>'],
+  ["m-mood", "Mood", '<circle cx="8" cy="8" r="6"/><path d="M5.5 9.5c1.3 1.6 3.7 1.6 5 0"/><circle cx="6" cy="6.6" r=".8" fill="currentColor"/><circle cx="10" cy="6.6" r=".8" fill="currentColor"/>'],
+  ["m-stress", "Stress", '<circle cx="8" cy="8" r="6"/><path d="M5 10.9l1-.8 1 .8 1-.8 1 .8 1-.8 1 .8" stroke-width="1.1"/><circle cx="6" cy="6.6" r="1.1"/><circle cx="10" cy="6.6" r="1.1"/>'],
+  ["m-blood", "Blood", '<path d="M6.8 2.2c2.4 3 3.7 5 3.7 6.7a3.7 3.7 0 0 1-7.4 0c0-1.7 1.3-3.7 3.7-6.7z" fill="currentColor" fill-opacity=".2"/><path d="M12.4 8.8c.9 1.1 1.3 1.8 1.3 2.4a1.3 1.3 0 0 1-2.6 0c0-.6.4-1.3 1.3-2.4z"/>'],
+  ["bond", "Heart", null],
+  ["m-ward", "Barrier", '<path d="M8 1.8l5.4 3.1v6.2L8 14.2l-5.4-3.1V4.9z"/><path d="M8 4.6l2.9 1.7v3.4L8 11.4 5.1 9.7V6.3z" stroke-width="1" opacity=".7"/>'],
+  ["def", "Shield", null],
+  ["m-ammo", "Ammo", '<path d="M3.2 14V7.6c0-1.6.6-2.9 1.4-3.7.8.8 1.4 2.1 1.4 3.7V14zM7.6 14V6.4c0-1.6.6-2.9 1.4-3.7.8.8 1.4 2.1 1.4 3.7V14z"/><path d="M3.2 9h2.8M7.6 8h2.8" stroke-width="1"/><path d="M12 14v-3.6c0-.8.3-1.4.7-1.8.4.4.7 1 .7 1.8V14z" stroke-width="1.2"/>'],
+  ["m-battery", "Battery", '<rect x="1.8" y="4.8" width="11" height="6.4" rx="1.2"/><path d="M14.2 7v2"/><path d="M8.1 5.9L5.9 8.2h2.2L6.7 10.2" stroke-width="1.1"/>'],
+  ["m-xp", "Experience", '<path d="M8.00 2.20 9.53 6.30 13.90 6.48 10.47 9.20 11.64 13.42 8.00 11.00 4.36 13.42 5.53 9.20 2.10 6.48 6.47 6.30 z"/>'],
+  ["m-fame", "Reputation", '<path d="M2.6 11.6L2 4.8l3.3 3L8 3.4l2.7 4.4L14 4.8l-.6 6.8z"/><path d="M2.8 13.8h10.4"/>'],
+  ["m-eye", "Suspicion", '<path d="M1.6 8s2.4-4.4 6.4-4.4S14.4 8 14.4 8s-2.4 4.4-6.4 4.4S1.6 8 1.6 8z"/><circle cx="8" cy="8" r="2"/><circle cx="8" cy="8" r=".7" fill="currentColor"/>'],
+  ["m-focus", "Focus", '<circle cx="8" cy="8" r="4.6"/><path d="M8 1.4v3.2M8 11.4v3.2M1.4 8h3.2M11.4 8h3.2"/><circle cx="8" cy="8" r="1" fill="currentColor"/>'],
+  ["m-zone", "The Zone", '<circle cx="8" cy="8" r="6.2" stroke-width="1.1" stroke-dasharray="2.2 1.6"/><path d="M9 3.6L5.6 8.6h2.6l-1 3.8 3.4-5H8z" fill="currentColor" fill-opacity=".3"/><path d="M1.8 3.4l1.4 1M14.2 3.4l-1.4 1M1.8 12.6l1.4-1M14.2 12.6l-1.4-1" stroke-width="1"/>'],
+  ["m-boost", "Boost", '<path d="M3.2 7.6L8 2.8l4.8 4.8"/><path d="M3.2 12.6L8 7.8l4.8 4.8"/>'],
+  ["m-divide", "Divide", '<circle cx="8" cy="8" r="6.2"/><path d="M4.6 8h6.8"/><circle cx="8" cy="5.1" r=".9" fill="currentColor"/><circle cx="8" cy="10.9" r=".9" fill="currentColor"/>'],
+  ["m-luck", "Luck", '<circle cx="8" cy="4.9" r="2.4" fill="currentColor" fill-opacity=".2"/><circle cx="11.1" cy="8" r="2.4" fill="currentColor" fill-opacity=".2"/><circle cx="8" cy="11.1" r="2.4" fill="currentColor" fill-opacity=".2"/><circle cx="4.9" cy="8" r="2.4" fill="currentColor" fill-opacity=".2"/><path d="M9.4 9.4l3.6 4.4" stroke-width="1.3"/>'],
+  ["m-faith", "Faith", '<path d="M8 1.8c1 1.1 1.4 1.9 1.4 2.6a1.4 1.4 0 0 1-2.8 0c0-.7.4-1.5 1.4-2.6z" fill="currentColor" fill-opacity=".3"/><path d="M5.6 7h4.8v7H5.6z"/><path d="M4 14.2h8"/>'],
+  ["satk", "Flame", null],
+  ["mp", "Mana", null],
+  ["m-sparkle", "Sparkle", '<path d="M6.4 2.6l1.1 3.7 3.7 1.1-3.7 1.1-1.1 3.7-1.1-3.7-3.7-1.1 3.7-1.1z"/><path d="M12.2 1.6l.5 1.5 1.5.5-1.5.5-.5 1.5-.5-1.5-1.5-.5 1.5-.5z" stroke-width="1"/><path d="M12 10.4l.6 1.8 1.8.6-1.8.6-.6 1.8-.6-1.8-1.8-.6 1.8-.6z" stroke-width="1"/>'],
+  ["hourglass", "Time", null],
+  ["coin", "Coin", null],
+  ["hp", "Health", null],
+  ["meter", "Gauge", null],
+];
+const METER_ICON_PATHS = Object.fromEntries(METER_ICONS.filter(([, , d]) => d).map(([k, , d]) => [k, d]));
+// The first rule whose words appear in the name wins, so "temp hp" is health, not temperature.
+const METER_ICON_RULES = [
+  [/sanity|mind|mental|brain|psych|reason|lucid/, "m-brain"],
+  [/\btemp(orary)?\s*hp\b|\bhealth\b|\bvital/, "hp"],
+  [/hunger|hungry|food|satiat|starv|appetite|nourish/, "m-hunger"],
+  [/thirst|water|hydrat|dehydrat/, "m-thirst"],
+  [/stamina|energy|vigou?r|endurance|adrenal/, "m-energy"],
+  [/fatigue|sleep|tired|rest\b|exhaust|drows/, "m-sleep"],
+  [/cold|frost|freez|chill|hypotherm/, "m-cold"],
+  [/heat|temp(?!t)|warmth|fever|hypertherm/, "m-heat"],
+  [/corrupt|taint|madness|insanity|chaos|abyss|void|erosion/, "m-corrupt"],
+  [/radiat|\brads?\b|contamin/, "m-rad"],
+  [/poison|toxi|venom/, "m-poison"],
+  [/infect|disease|sick|plague|virus|illness/, "m-sick"],
+  [/oxygen|\bo2\b|\bair\b|breath|suffoc/, "m-air"],
+  [/stress|fear|terror|panic|anxi|dread|horror|trauma/, "m-stress"],
+  [/morale|mood|happi|joy|spirit|cheer|comfort/, "m-mood"],
+  [/blood|bleed|hemo|haemo/, "m-blood"],
+  [/lust|arous|love|affection|desire|libido|passion|romance/, "bond"],
+  [/shield|barrier|\bwards?\b|aegis/, "m-ward"],
+  [/armou?r|durab|integrity|hull|plating/, "def"],
+  [/ammo|bullet|\brounds?\b|magazine|\barrows?\b|shells?\b/, "m-ammo"],
+  [/\bzone\b|flow ?state|black ?flash/, "m-zone"],
+  [/\bboost/, "m-boost"],
+  [/\bdivid/, "m-divide"],
+  [/will|resolve|focus|concentr|determin|composure|discipline/, "m-focus"],
+  [/suspic|alert|aware|detect|notori|wanted|stealth|exposure/, "m-eye"],
+  [/fuel|battery|charge|power|\boil\b|\bgas\b|petrol/, "m-battery"],
+  [/\bxp\b|\bexp\b|experience|level|progress/, "m-xp"],
+  [/reput|fame|renown|honou?r|prestige|influence|favou?r/, "m-fame"],
+  [/luck|fortune/, "m-luck"],
+  [/faith|divin|holy|prayer|piety|devotion/, "m-faith"],
+  [/rage|anger|fury|wrath|burn|fire/, "satk"],
+  [/mana|\bki\b|chakra|\bqi\b|aether|ether|magic|essence/, "mp"],
+  [/time|clock|doom|countdown/, "hourglass"],
+  [/gold|money|coin|cash|credit/, "coin"],
+];
+function meterIconAuto(name) {
+  const k = String(name || "").toLowerCase();
+  for (const [re, icon] of METER_ICON_RULES) if (re.test(k)) return icon;
+  return "meter";
+}
+function meterIconFor(name) {
+  const own = uiSettings?.meterIcons?.[meterKey(name)];
+  return own && (METER_ICON_PATHS[own] || SYS_ICON_PATHS[own]) ? own : meterIconAuto(name);
+}
+const sysIcon = (k) => `<svg class="sys-svg" viewBox="0 0 16 16" aria-hidden="true">${(isFogSkin() && FOG_ICON_PATHS[k]) || SYS_ICON_PATHS[k] || METER_ICON_PATHS[k] || ""}</svg>`;
 
 // An analog face for the in-world time. "14:30", "2:30 PM", "02.30pm" all read.
 function sysClockSvg(clock) {
@@ -7615,15 +8853,15 @@ function sysClockSvg(clock) {
     ticks += `<line x1="50" y1="${major ? 9 : 11}" x2="50" y2="${major ? 17 : 15}" stroke="currentColor" stroke-width="${major ? 3 : 1.6}"
       stroke-linecap="round" transform="rotate(${i * 30} 50 50)"/>`;
   }
-  const hand = "#f4fbff";
+  const hand = "var(--t-f4fbff, #f4fbff)";
   return `<svg viewBox="0 0 100 100" aria-label="${escAttr(ok ? `Time ${clock}` : "Time unknown")}" role="img">
-    <circle cx="50" cy="50" r="47" fill="rgba(8,20,38,.6)" stroke="currentColor" stroke-width="2"/>
+    <circle cx="50" cy="50" r="47" style="fill:rgba(var(--t-8_20_38, 8,20,38),.6)" stroke="currentColor" stroke-width="2"/>
     <circle cx="50" cy="50" r="41" fill="none" stroke="currentColor" stroke-opacity=".35" stroke-width="1"/>
     ${ticks}
-    <text x="50" y="74" text-anchor="middle" font-size="11" letter-spacing="1" fill="#a9cbe8" style="font-family:inherit">${ok ? (h >= 12 ? "PM" : "AM") : "?"}</text>
-    ${ok ? `<line x1="50" y1="53" x2="50" y2="28" stroke="${hand}" stroke-width="4.5" stroke-linecap="round" transform="rotate(${ha.toFixed(1)} 50 50)"/>
-    <line x1="50" y1="56" x2="50" y2="16" stroke="${hand}" stroke-width="2.6" stroke-linecap="round" transform="rotate(${ma} 50 50)"/>` : ""}
-    <circle cx="50" cy="50" r="3.6" fill="${hand}"/>
+    <text x="50" y="74" text-anchor="middle" font-size="11" letter-spacing="1" style="font-family:inherit; fill:var(--t-a9cbe8, #a9cbe8)">${ok ? (h >= 12 ? "PM" : "AM") : "?"}</text>
+    ${ok ? `<line x1="50" y1="53" x2="50" y2="28" style="stroke:${hand}" stroke-width="4.5" stroke-linecap="round" transform="rotate(${ha.toFixed(1)} 50 50)"/>
+    <line x1="50" y1="56" x2="50" y2="16" style="stroke:${hand}" stroke-width="2.6" stroke-linecap="round" transform="rotate(${ma} 50 50)"/>` : ""}
+    <circle cx="50" cy="50" r="3.6" style="fill:${hand}"/>
   </svg>`;
 }
 
@@ -7632,6 +8870,9 @@ function sysClockSvg(clock) {
 // "storybook" is pale blue, white and navy; "system" is the same drawing in
 // the window's own glow, so it follows the frame (red for enemies and so on).
 const HAT_CLOCK_LOOKS = {
+  fog: { case_: "#1d1d23", edge: "currentColor", stitch: "currentColor", stitchOp: .42, face: "#111115", faceEdge: "currentColor",
+    dots: "#9c99a8", nums: "#ecebf0", hands: "#f3f2f6", hub: "#0e0e12", ampm: "#9c99a8",
+    bow: "rgba(140,115,190,.35)", bowDk: "rgba(140,115,190,.55)", bowEdge: "currentColor", hat: "#000", brim: "#000", hatEdge: "currentColor", shine: "rgba(220,220,230,.3)" },
   storybook: { case_: "#b7cdee", edge: "#7f9ccc", stitch: "#8eaad6", stitchOp: 1, face: "#fbfcff", faceEdge: "#8eaad6",
     dots: "#444", nums: "#2f2f2f", hands: "#2b2b2b", hub: "#fff", ampm: "#8a96a8",
     bow: "#1f3a9e", bowDk: "#152a78", bowEdge: "#152a78", hat: "#0b0b0e", brim: "#0b0b0e", hatEdge: "#000", shine: "#3a3a44" },
@@ -7691,6 +8932,72 @@ function sysHatClockSvg(clock, look = "storybook") {
   </svg>`;
 }
 
+// A Victorian pocket watch: bow ring and crown on top, a short chain, a
+// small-seconds dial at six and Breguet hands (the open ring near the tip).
+const POCKET_WATCH_LOOKS = {
+  fog: { metal: true, caseA: "#eceef3", caseB: "#8b8e9a", edge: "#4a4c55", rim: "#c9ccd6", face: "#efe9da", faceEdge: "#a39d8c",
+    nums: "#2a2620", ticks: "#5a554a", hands: "#28324d", sub: "#8f897a", chain: "url(#rpg-pw-case-fog)", ampm: "#7a7466" },
+  system: { caseA: "#14304f", caseB: "#081426", edge: "currentColor", rim: "currentColor", face: "#050c18", faceEdge: "currentColor",
+    nums: "#e6f5ff", ticks: "#8fb6d8", hands: "#f4fbff", sub: "#6f93b5", chain: "currentColor", ampm: "#8fb6d8" },
+};
+function sysPocketWatchSvg(clock, look = "fog") {
+  const L = POCKET_WATCH_LOOKS[look] || POCKET_WATCH_LOOKS.fog;
+  const p = parseClock(clock);
+  const cx = 64, cy = 76, R = 42;
+  const h = p ? Math.floor(p.mins / 60) : 0, mi = p ? p.mins % 60 : 0;
+  const ha = ((h % 12) + mi / 60) * 30, ma = mi * 6;
+  const ROMAN = ["XII", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI"];
+  let ticks = "";
+  for (let i = 0; i < 60; i++) {
+    const big = i % 5 === 0;
+    ticks += `<line x1="${cx}" y1="${cy - R + 7}" x2="${cx}" y2="${cy - R + (big ? 11 : 9)}" stroke="${L.ticks}" stroke-width="${big ? 1.4 : .6}" transform="rotate(${i * 6} ${cx} ${cy})"/>`;
+  }
+  const nums = ROMAN.map((r, i) => {
+    if (i === 6) return "";                                  // the small-seconds dial sits there
+    const t = (i * 30 - 90) * Math.PI / 180, rr = R - 19.5;
+    return `<text x="${(cx + rr * Math.cos(t)).toFixed(1)}" y="${(cy + rr * Math.sin(t) + 2.3).toFixed(1)}" text-anchor="middle" font-size="${r.length > 3 ? 5.4 : 6.4}">${r}</text>`;
+  }).join("");
+  // Breguet hand: a slim taper with an open ring a little before the tip
+  const hand = (len, ring, w, ang) => `<g transform="rotate(${ang.toFixed(1)} ${cx} ${cy})">
+      <path d="M${cx - w} ${cy + 5} L${cx} ${cy - len} L${cx + w} ${cy + 5} Z" fill="${L.hands}"/>
+      <circle cx="${cx}" cy="${cy - ring}" r="${(w * 1.6).toFixed(1)}" fill="${L.face}" stroke="${L.hands}" stroke-width="1"/></g>`;
+  const links = [[51, 21, -35], [45, 26, -50], [40, 32, -65], [37, 39, -80], [36, 47, -95]]
+    .map(([x, y, r]) => `<ellipse cx="${x}" cy="${y}" rx="3.6" ry="2.2" transform="rotate(${r} ${x} ${y})"/>`).join("");
+  return `<svg viewBox="0 0 120 132" role="img" aria-label="${escAttr(p ? `Time ${clock}` : "Time unknown")}">
+    <defs>${L.metal
+      // polished silver: banded light and dark like a reflection, a bevel that runs the other way, and a soft highlight
+      ? `<linearGradient id="rpg-pw-case-${look}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fbfcfe"/><stop offset=".18" stop-color="#c3c6cf"/>
+          <stop offset=".38" stop-color="#6c6f7a"/><stop offset=".52" stop-color="#e3e5ea"/><stop offset=".7" stop-color="#9a9da8"/>
+          <stop offset=".86" stop-color="#5d606a"/><stop offset="1" stop-color="#d4d6dd"/></linearGradient>
+        <linearGradient id="rpg-pw-bezel-${look}" x1="1" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#f4f5f8"/><stop offset=".3" stop-color="#8d909b"/>
+          <stop offset=".55" stop-color="#e9ebef"/><stop offset=".8" stop-color="#6a6d77"/><stop offset="1" stop-color="#c7cad2"/></linearGradient>
+        <radialGradient id="rpg-pw-shine-${look}" cx=".3" cy=".22" r=".6"><stop offset="0" stop-color="#fff" stop-opacity=".85"/>
+          <stop offset=".35" stop-color="#fff" stop-opacity=".18"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>`
+      : `<linearGradient id="rpg-pw-case-${look}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${L.caseA}"/><stop offset="1" stop-color="${L.caseB}"/></linearGradient>`}</defs>
+    <g fill="none" stroke="${L.chain}" stroke-width="1.3" opacity=".9">${links}</g>
+    <ellipse cx="${cx}" cy="17" rx="10" ry="8" fill="none" stroke="url(#rpg-pw-case-${look})" stroke-width="3.2"/>
+    <ellipse cx="${cx}" cy="17" rx="10" ry="8" fill="none" stroke="${L.edge}" stroke-width=".6"/>
+    <rect x="${cx - 4}" y="22" width="8" height="5" rx="1" fill="url(#rpg-pw-case-${look})" stroke="${L.edge}" stroke-width=".7"/>
+    <rect x="${cx - 6.5}" y="26.5" width="13" height="6" rx="2" fill="url(#rpg-pw-case-${look})" stroke="${L.edge}" stroke-width=".7"/>
+    <path d="M${cx - 4} 27.5v4M${cx - 1.3} 27.5v4M${cx + 1.3} 27.5v4M${cx + 4} 27.5v4" stroke="${L.edge}" stroke-width=".5"/>
+    <circle cx="${cx}" cy="${cy}" r="${R + 3}" fill="url(#rpg-pw-case-${look})" stroke="${L.edge}" stroke-width="1"/>
+    ${L.metal ? `<circle cx="${cx}" cy="${cy}" r="${R + 2.5}" fill="url(#rpg-pw-shine-${look})"/>
+    <circle cx="${cx}" cy="${cy}" r="${R - .2}" fill="none" stroke="url(#rpg-pw-bezel-${look})" stroke-width="2.6"/>
+    <circle cx="${cx}" cy="${cy}" r="${R - 1.6}" fill="none" stroke="${L.edge}" stroke-width=".6" opacity=".7"/>
+    <ellipse cx="${cx}" cy="17" rx="10" ry="8" fill="none" stroke="#fff" stroke-width=".7" opacity=".55" stroke-dasharray="9 54" stroke-dashoffset="-34"/>`
+      : `<circle cx="${cx}" cy="${cy}" r="${R - .5}" fill="none" stroke="${L.rim}" stroke-width="1.2" opacity=".8"/>`}
+    <circle cx="${cx}" cy="${cy}" r="${R - 2.5}" fill="${L.face}" stroke="${L.faceEdge}" stroke-width=".8"/>
+    ${ticks}
+    <g fill="${L.nums}" font-family="'Times New Roman',Georgia,serif">${nums}</g>
+    <circle cx="${cx}" cy="${cy + 19}" r="7.5" fill="none" stroke="${L.sub}" stroke-width=".8"/>
+    ${p ? `<line x1="${cx}" y1="${cy + 19}" x2="${cx}" y2="${cy + 13}" stroke="${L.sub}" stroke-width=".9" transform="rotate(${(mi * 37) % 360} ${cx} ${cy + 19})"/>` : ""}
+    ${p ? `<text x="${cx}" y="${cy - 8.5}" text-anchor="middle" font-size="5.2" letter-spacing=".5" fill="${L.ampm}" font-family="inherit">${h >= 12 ? "PM" : "AM"}</text>` : `<text x="${cx}" y="${cy - 10}" text-anchor="middle" font-size="9" fill="${L.ampm}">?</text>`}
+    ${p ? hand(17, 11, 1.8, ha) + hand(34, 28, 1.3, ma) : ""}
+    <circle cx="${cx}" cy="${cy}" r="2.6" fill="${L.hands}"/>
+    ${L.metal ? `<path d="M${cx - R + 6} ${cy - 2} A${R - 5} ${R - 5} 0 0 1 ${cx + 2} ${cy - R + 5} A${R - 1} ${R - 1} 0 0 0 ${cx - R + 6} ${cy - 2} Z" fill="#fff" opacity=".22"/>` : ""}
+  </svg>`;
+}
+
 function sysBar(icon, label, curr, max, extra = {}) {
   const iconHtml = extra.editMeters
     ? `<button class="sys-ibtn" data-meter-edit title="Edit meters" aria-label="Edit meters">${sysIcon(icon)}</button>`
@@ -7698,7 +9005,7 @@ function sysBar(icon, label, curr, max, extra = {}) {
   const maxNum = safeParseFloatOrInf(max, 0);
   if (extra.skipEmpty && Number.isFinite(maxNum) && maxNum <= 0) return "";
   const pct = extra.pct ?? percentFrom(curr, max);
-  const cls = extra.tint ? "tint" : (extra.lowWarn && pct <= 25 ? "low" : "");
+  const cls = (extra.tint ? "tint" : (extra.lowWarn && pct <= 25 ? "low" : "")) + (extra.cls ? " " + extra.cls : "");
   return `<div class="sys-bar">
       <div class="sys-bar-lab">${iconHtml}<span>${escHtml(label)}</span>
         <span class="sys-bar-num">${extra.numHtml ?? `${renderInlineValue(curr)} / ${renderInlineValue(max)}`}</span></div>
@@ -7712,9 +9019,10 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
     : type === "player" ? playerDisplayName() : displayName(display.name, "Unit");
   const pick = (inner) => `<span class="sys-pick">${inner}<span class="sys-caret">▾</span>` +
     `<select id="rpg-char-select" title="Switch character">${getCharOptions().replace(/>\s*\p{Extended_Pictographic}\uFE0F?\s*/gu, ">")}</select></span>`;
-  const clockMode = ["clock", "hatclock", "hatclock2"].includes(uiSettings.sysBigSlot);
+  const clockMode = ["clock", "hatclock", "hatclock2", "pocketwatch"].includes(uiSettings.sysBigSlot);
+  const pocketWatch = uiSettings.sysBigSlot === "pocketwatch";
   const hatClock = uiSettings.sysBigSlot === "hatclock" || uiSettings.sysBigSlot === "hatclock2";
-  const hatLook = uiSettings.sysBigSlot === "hatclock2" ? "system" : "storybook";
+  const hatLook = uiSettings.sysBigSlot === "hatclock2" ? (isFogSkin() ? "fog" : "system") : "storybook";
 
   const wd = worldWeekday(time);
   const dateText = `${wd ? wd + ", " : ""}${time.month ?? "???"} ${time.day ?? ""}${time.year ? ", " + time.year : ""}`;
@@ -7731,13 +9039,14 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
 
   const size = name.length > 18 ? " s" : name.length > 11 ? " m" : "";
   const hero = clockMode
-    ? `<div class="sys-hero clock"><div class="sys-clock${hatClock ? ` hat ${hatLook}` : ""}">${hatClock ? sysHatClockSvg(time.clock, hatLook) : sysClockSvg(time.clock)}</div>${info}</div>`
+    ? `<div class="sys-hero clock"><div class="sys-clock${hatClock ? ` hat ${hatLook}` : pocketWatch ? " hat pocket" : ""}">${pocketWatch ? sysPocketWatchSvg(time.clock, isFogSkin() ? "fog" : "system")
+      : hatClock ? sysHatClockSvg(time.clock, hatLook) : sysClockSvg(time.clock)}</div>${info}</div>`
     : `<div class="sys-hero name"><div class="sys-big${size}">${pick(escHtml(name))}</div><div class="sys-rule"></div>${info}</div>`;
 
   // bars: HP, MP/EN, bond for party and NPCs, then any meters
   const { curr: eCurr, max: eMax, label: eLabel } = getEnergy(display, isVehicle);
   let bars = sysBar("hp", hpLabel, display.hp_curr, display.hp_max, { lowWarn: true })
-    + sysBar("mp", eLabel, eCurr, eMax, { skipEmpty: true });
+    + sysBar("mp", isFogSkin() && eLabel === "MP" ? "SPIRITUALITY" : eLabel, eCurr, eMax, { skipEmpty: true, cls: "mp" });
   if ((type === "party" || type === "npc") && !isVehicle) {
     const bond = clamp(parseBondValue(root.bond), Number.NEGATIVE_INFINITY, 101);
     bars += sysBar("bond", "BOND", 0, 0, {
@@ -7749,9 +9058,12 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
   (Array.isArray(display.meters) ? display.meters : []).forEach((mt) => {
     if (!mt || typeof mt !== "object") return;
     const nm = mt.name ?? mt.label ?? "Meter";
-    bars += sysBar("meter", String(nm).toUpperCase(), mt.curr ?? mt.value ?? 0, mt.max ?? 100,
+    bars += sysBar(meterIconFor(nm), String(nm).toUpperCase(), mt.curr ?? mt.value ?? 0, mt.max ?? 100,
       { skipEmpty: true, tint: meterColorByName(nm), editMeters: true });
   });
+  if (!(Array.isArray(display.meters) && display.meters.length) && !meterEditorHtml) {
+    bars += `<div class="sys-addmeter-row"><button class="sys-addmeter" data-meter-edit data-meter-add title="Add a meter">+ METER</button></div>`;
+  }
 
   const stat = (icon, label, raw) => {
     const has = raw !== undefined && raw !== null && String(raw).trim() !== "";
@@ -7768,10 +9080,11 @@ function sysTopHtml({ root, display, type, isVehicle, latest, latestTitle, hpLab
       <span class="sys-kind">${kind}</span>
       <div class="sys-plate">STATUS</div>
       <div class="sys-ctl">
-        <span id="rpg-latest-indicator" style="cursor:pointer; user-select:none;">${renderIndicatorDotHtml(latest.status, latestTitle)}</span>
+        <span id="rpg-latest-indicator" style="cursor:pointer; user-select:none;">${isFogSkin() ? fogStatusStarHtml(latest.status, latestTitle) : renderIndicatorDotHtml(latest.status, latestTitle)}</span>
         <button id="rpg-min-btn" title="Minimize" style="cursor:pointer; font-size:12px; padding:0; font-weight:bold; line-height:18px; box-sizing:border-box;">_</button>
       </div>
     </div>
+    ${isFogSkin() ? fogNumberHtml(display, time) : ""}
     ${hero}
     <div class="sys-panels">
       <div class="sys-box">${bars}</div>
@@ -7805,7 +9118,7 @@ function sysUnitList(list, { title, jumpType, emptyText = "", foe = false, hpOnl
       <div class="sys-unit-head"><span class="rpg-jump" data-idx="${charIndexFor(jumpType, idx)}">${isVeh ? "\u25C6 " : ""}${name}</span>
         ${bond !== null ? `<span class="sys-unit-tag">${sysIcon("bond")}${bond >= 101 ? "\u221E" : escHtml(bond)}</span>` : ""}</div>
       ${mini(isVeh ? "HULL" : "HP", t?.hp_curr, t?.hp_max, foe ? "foe" : "")}
-      ${hpOnly ? "" : mini(eL, eC, eM, "mp")}
+      ${hpOnly ? "" : mini(isFogSkin() && eL === "MP" ? "SPI" : eL, eC, eM, "mp")}
     </div>`;
   }).join("");
   return `<div class="sys-units">${head}${rows}</div>`;
@@ -7813,22 +9126,36 @@ function sysUnitList(list, { title, jumpType, emptyText = "", foe = false, hpOnl
 
 // ---- settings (inside the classic settings overlay, when this skin is on) ----
 function sysSettingsHtml() {
-  const sel = "width:100%; background:#0d1a2c; border:1px solid #3d6a94; color:#dff1ff; padding:6px; margin-bottom:8px;";
-  const lab = "font-size:0.75em; color:#9fc6e6; margin-bottom:4px;";
+  const sel = "width:100%; background:var(--t-0d1a2c, #0d1a2c); border:1px solid var(--t-3d6a94, #3d6a94); color:var(--t-dff1ff, #dff1ff); padding:6px; margin-bottom:8px;";
+  const lab = "font-size:0.75em; color:var(--t-9fc6e6, #9fc6e6); margin-bottom:4px;";
   const opt = (v, t, cur) => `<option value="${v}"${cur === v ? " selected" : ""}>${t}</option>`;
-  const big = ["clock", "hatclock", "hatclock2"].includes(uiSettings.sysBigSlot) ? uiSettings.sysBigSlot : "name";
+  const big = ["clock", "hatclock", "hatclock2", "pocketwatch"].includes(uiSettings.sysBigSlot) ? uiSettings.sysBigSlot : "name";
   const font = uiSettings.sysFont || "exo";
   return `
-    <div style="margin:0 0 10px; padding:8px; border:1px solid rgba(143,208,255,0.35); background:rgba(90,170,255,0.06);">
+    <div style="margin:0 0 10px; padding:8px; border:1px solid rgba(var(--t-143_208_255, 143,208,255),0.35); background:rgba(var(--t-90_170_255, 90,170,255),0.06);">
       <div style="${lab}">Big slot</div>
-      <select id="rpg-sys-bigslot" style="${sel}">${opt("name", "Name", big)}${opt("clock", "Clock (in-world time)", big)}${opt("hatclock", "Clock: Roman, top hat", big)}${opt("hatclock2", "Clock: Roman, top hat (System colours)", big)}</select>
-      <div style="${lab}">Font</div>
-      <select id="rpg-sys-font" style="${sel}">${opt("exo", "Exo 2", font)}${opt("squarish", "Squarish (Rajdhani)", font)}${opt("saira", "Saira Condensed", font)}${opt("teko", "Teko", font)}${opt("sans", "Sans", font)}${opt("preset", "Follow preset", font)}</select>
+      <select id="rpg-sys-bigslot" style="${sel}">${opt("name", "Name", big)}${opt("clock", "Clock (in-world time)", big)}${opt("pocketwatch", "Pocket watch", big)}${opt("hatclock", "Clock: Roman, top hat", big)}${opt("hatclock2", isFogSkin() ? "Clock: Roman, top hat (Gray Fog colours)" : "Clock: Roman, top hat (System colours)", big)}</select>
+      ${isFogSkin() ? "" : `<div style="${lab}">Font</div>`}
+      <select id="rpg-sys-font" style="${sel}${isFogSkin() ? " display:none;" : ""}">${opt("exo", "Exo 2", font)}${opt("squarish", "Squarish (Rajdhani)", font)}${opt("saira", "Saira Condensed", font)}${opt("teko", "Teko", font)}${opt("sans", "Sans", font)}${opt("preset", "Follow preset", font)}</select>
+      ${isFogSkin() ? `<div style="${lab}">Tarot number</div>
+      <select id="rpg-fog-number" style="${sel}">${opt("auto", "Sequence if tracked, else the day", uiSettings.fogNumber || "auto")}${opt("day", "Day of the month", uiSettings.fogNumber || "auto")}${opt("sequence", "Sequence only", uiSettings.fogNumber || "auto")}${opt("none", "None", uiSettings.fogNumber || "auto")}</select>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+        <span title="The panel folds into the round button when you minimize it, and unfolds when you open it">Fold animation</span>
+        <input type="checkbox" id="rpg-fog-fold-cb" ${uiSettings.fogFold !== false ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
+      </div>
+      <div style="${lab}${uiSettings.fogFold === false ? " opacity:.45;" : ""}">Fold speed</div>
+      <select id="rpg-fog-fold-speed" style="${sel}${uiSettings.fogFold === false ? " opacity:.45;" : ""}" ${uiSettings.fogFold === false ? "disabled" : ""}>${["slow", "normal", "fast", "instant"].map((v) => opt(v, { slow: "Slow", normal: "Normal", fast: "Fast", instant: "Very fast" }[v], FOG_FOLD_SPEEDS[uiSettings.fogFoldSpeed] ? uiSettings.fogFoldSpeed : "normal")).join("")}</select>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+        <span title="Stop the round button (the folded-away HUD) from being dragged">Lock button position</span>
+        <input type="checkbox" id="rpg-fog-orb-lock" ${uiSettings.fogOrbLock ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
+      </div>
+      <button id="rpg-fog-orb-reset" style="width:100%; background:var(--t-0d1a2c, #0d1a2c); border:1px solid var(--t-3d6a94, #3d6a94); color:var(--t-dff1ff, #dff1ff); padding:6px; cursor:pointer; margin-bottom:8px;${uiSettings.fogOrbPos ? "" : " opacity:.45;"}" ${uiSettings.fogOrbPos ? "" : "disabled"}>Reset button position</button>` : ""}
       <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
         <span title="A System popup when a reply gives you items, skills or passives, adds quests, timers or party members, or starts a fight">Notifications</span>
         <input type="checkbox" id="rpg-sys-notices-cb" ${uiSettings.sysNotices !== false ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
       </div>
-      <button id="rpg-sys-testnote" style="width:100%; background:#0d1a2c; border:1px solid #3d6a94; color:#dff1ff; padding:6px; cursor:pointer;">Show a test notification</button>
+      <button id="rpg-sys-testnote" style="width:100%; background:var(--t-0d1a2c, #0d1a2c); border:1px solid var(--t-3d6a94, #3d6a94); color:var(--t-dff1ff, #dff1ff); padding:6px; cursor:pointer; margin-bottom:8px;">Show a test notification</button>
+      <button id="rpg-sys-emblem-open" style="width:100%; background:var(--t-0d1a2c, #0d1a2c); border:1px solid var(--t-3d6a94, #3d6a94); color:var(--t-dff1ff, #dff1ff); padding:6px; cursor:pointer;">Background images\u2026</button>
     </div>`;
 }
 
@@ -7838,8 +9165,20 @@ function sysBindSettings() {
   if (big) { stop(big); big.onchange = () => { uiSettings.sysBigSlot = big.value; saveUiSettings(); renderRPG(); }; }
   const font = document.getElementById("rpg-sys-font");
   if (font) { stop(font); font.onchange = () => { uiSettings.sysFont = font.value; saveUiSettings(); renderRPG(); }; }
+  const fn = document.getElementById("rpg-fog-number");
+  if (fn) { stop(fn); fn.onchange = () => { uiSettings.fogNumber = fn.value; saveUiSettings(); renderRPG(); }; }
+  const fc = document.getElementById("rpg-fog-fold-cb");
+  if (fc) { stop(fc); fc.onchange = () => { uiSettings.fogFold = fc.checked; saveUiSettings(); renderRPG(); }; }
+  const fs = document.getElementById("rpg-fog-fold-speed");
+  if (fs) { stop(fs); fs.onchange = () => { uiSettings.fogFoldSpeed = fs.value; saveUiSettings(); }; }
+  const ol = document.getElementById("rpg-fog-orb-lock");
+  if (ol) { stop(ol); ol.onchange = () => { uiSettings.fogOrbLock = ol.checked; saveUiSettings(); }; }
+  const orr = document.getElementById("rpg-fog-orb-reset");
+  if (orr) orr.onclick = (e) => { e.stopPropagation(); uiSettings.fogOrbPos = null; saveUiSettings(); renderRPG(); hudToast.success("The button is back in its usual spot."); };
   const nt = document.getElementById("rpg-sys-notices-cb");
   if (nt) { stop(nt); nt.onchange = () => { uiSettings.sysNotices = nt.checked; saveUiSettings(); }; }
+  const emb = document.getElementById("rpg-sys-emblem-open");
+  if (emb) emb.onclick = (e) => { e.stopPropagation(); isSettingsOpen = false; emblemEditOpen = true; renderRPG(); };
   const test = document.getElementById("rpg-sys-testnote");
   if (test) test.onclick = (e) => {
     e.stopPropagation();
@@ -7954,7 +9293,7 @@ function sysShowNotices(list, replyKey = "") {
   shown.forEach((n, i) => {
     setTimeout(() => {
       const el = document.createElement("div");
-      el.className = "rpg-sys-note" + (n.warn ? " warn" : "");
+      el.className = "rpg-sys-note" + (n.warn ? " warn" : "") + (isFogSkin() ? " fog" : "");
       el.innerHTML = `<div class="plate">${n.plate}</div><div class="msg">${n.html}</div>`;
       const close = () => {
         if (el.dataset.out) return;
@@ -7976,6 +9315,25 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-10-30.8", items: [
+    "Meter icons (System and Gray Fog): each meter gets an icon from its name: a brain for sanity, a fork and knife for hunger, a cup for thirst, a bolt for stamina, a thermometer, a snowflake, a spiral for corruption, radiation, poison, oxygen, fatigue, mood, stress, blood, ammo, fuel, reputation, suspicion, focus, the Zone, Boost and Divide, luck, faith and more. Tap a meter's icon to open the editor, then tap the icon at the start of its row to pick a different one; Auto goes back to the name's. Like colours, a chosen icon follows that meter's name across characters.",
+    "Meter edits can fix earlier replies too, as many as Edits Rewrite Past Replies is set to: after renaming or removing a meter, or changing its maximum, Save asks whether to make the same change in those replies for that character or only the latest one, so the AI doesn't bring the old version back. Current values in earlier replies are left alone.",
+    "Meter bars get automatic colours for those names too (red for blood, pale blue for oxygen, indigo for fatigue, gold for mood, orange for stress, steel for armour and so on), in every skin. Colours you picked yourself stay as they are.",
+  ] },
+  { build: "2026-10-28.1", items: [
+    "Gray Fog: the round button the HUD folds into can be dragged anywhere on screen, and stays where you leave it. Tap it to open the HUD as before. Settings can lock it in place or put it back in its usual spot.",
+  ] },
+  { build: "2026-10-26.31", items: [
+    "New skin: Gray Fog. The System panel in a Victorian occult look: charcoal fog with a faint eight-pointed star over a broken circle and stars, a silver double frame with corner flourishes, gothic and serif lettering, one round menu button at the bottom that fans out into settings, scan, help and the log, a floating round button when minimised whose slowly turning star takes the status colour (the status dot is that star too), the panel folding up like a paper accordion when closed and unfolding when opened (its speed is adjustable, and it can be turned off), and a tarot number under the title (the Sequence if the card tracks one, else the day). MP reads as Spirituality, and the icons lean tarot: a cup, a star, a crescent and a pentacle. Every System feature carries over, including the clocks and notifications.",
+    "Big slot: a pocket watch, with a chain, a small-seconds dial and Breguet hands. Polished silver and ivory in Gray Fog, glowing in System.",
+    "Background images (System and Gray Fog): stack up to six layers behind the top of the panel: the built-in star, pictures from links, or ones you upload. Each layer's size, position, angle, opacity, shape, faded edges, colour and blend are adjustable, with a live preview. Drag on the panel to place a picture, pinch or scroll to size it, twist to turn it, and fold the controls away to see the whole panel while you do.",
+  ] },
+  { build: "2026-10-25.3", items: [
+    "The turn log now tracks stat changes: max HP and max MP, and ATK, MATK, DEF, SATK and SDEF, for you, the party, NPCs and enemies. Each can be undone or locked like any other change.",
+  ] },
+  { build: "2026-10-25.2", items: [
+    "A character with no meters now shows a small + meter (System and classic). It opens the meter editor on a new row, so the first meter can be added without Edit state.",
+  ] },
   { build: "2026-10-25.1", items: [
     "Fix: a pipe inside an item, like \u201cF-Rank Card [ 0 | 0 ]\u201d, set off a false broken-format warning. The check now reads lines the same way the parser does, so only real problems are flagged.",
   ] },
@@ -8113,10 +9471,10 @@ const CLASSIC_HELP = [
   ["The dot", "Top right. Green: the latest reply has a valid state. Yellow: the block is broken (tap for details). Grey: no block."],
   ["Tabs", "Party, Bonds, Timers, Items, Skills, Passive, Mastery, Quest, Environment and Log. Pick a character from the name dropdown to see their tabs."],
   ["Editing lists", "In Items, Skills and Passive, tap any icon to edit that list: change text, ✕ to delete, ▲▼ to reorder, + Add. Mastery and Quest have a ✎ button instead."],
-  ["Meters", "Tap a meter's name (in the System skin, its icon) to edit that character's meters: rename, change values, pick a colour (↺ goes back to automatic), reorder, add or remove. Save writes them to the latest reply."],
+  ["Meters", "Tap a meter's name (in the System skin, its icon) to edit that character's meters, or + meter when they have none: rename, change values, pick a colour (↺ goes back to automatic), reorder, add or remove. Save writes them to the latest reply; after a rename, a removal or a new maximum it asks whether to make the same change in earlier replies too, as many as Edits Rewrite Past Replies is set to."],
   ["Your own icons", "In the list editor, tap a row's icon to pick a different one (Auto goes back to guessing from the name), then Save. It sticks to that name in every chat and on your other devices; a blue dot marks it in the editor."],
   ["Position locks", "In the item, skill and passive editor, the padlock under ✕ pins an entry to its place. If the AI reorders the list, locked entries are put back; the rest keep their order."],
-  ["Edits Rewrite Past Replies", "Settings. List edits also fix this many earlier replies, so the AI can't copy the old version back from history. 0 means the latest reply only."],
+  ["Edits Rewrite Past Replies", "Settings. List and meter edits also fix this many earlier replies, so the AI can't copy the old version back from history. 0 means the latest reply only."],
   ["Bonds", "✎ to edit, + to add. Deleting asks whether to also remove the name from earlier Bonds lists; characters' own Bond values are left alone."],
   ["Timers", "Turns (2/3), deadlines (Jan 6 1023,14:00) or uses (2/2x). Charge timers have a −1 button to spend one."],
   ["Log", "What changed each turn. Undo last turn reverts the newest turn; ↶ reverts a single change; the padlock keeps a change through Undo last turn. Redo puts it back."],
@@ -8132,8 +9490,10 @@ const CLASSIC_HELP = [
 ];
 
 const SYS_HELP = [
+  ["Background images", "Settings → Background images…: stack up to six layers behind the top of the panel: the built-in star, pictures from links, or ones you upload. Pick a layer to adjust its size, position, angle, opacity, shape, faded edges, colour and blend, live; Lower and Raise change the stacking. Each skin keeps its own. Uploads stay on that device; a link works anywhere you paste it."],
+  ["Gray Fog", "A second look for this panel: charcoal fog, a silver frame, gothic lettering, silver and violet bars. Pick it under Skin; everything works the same as in System."],
   ["System window", "The panel shows the selected character. Tap the big name (or NAME, with the clock) to switch character. The frame turns red for enemies and purple for vehicles."],
-  ["Big slot", "Settings → Big slot: the character's name, or an analog clock of the in-world time: the glowing one, or a storybook clock with Roman numerals, a bow and a little top hat, in its own pale blue or in the System window's glow."],
+  ["Big slot", "Settings → Big slot: the character's name, or an analog clock of the in-world time: the glowing one, a pocket watch, or a storybook clock with Roman numerals, a bow and a little top hat, in its own pale blue or in the System window's glow."],
   ["Notifications", "Settings → Notifications: a System popup when a reply gives you items, skills, passives, coin or a status, adds quests, timers or party members, or brings in enemies. Tap one to dismiss it. Your own edits never trigger them."],
 ];
 
@@ -8144,12 +9504,12 @@ function classicInfoHtml() {
     ? CHANGELOG.map((c) => `<div style="margin-bottom:10px;"><div style="color:#FFD700; font-weight:bold; margin-bottom:3px;">Build ${escHtml(c.build)}</div>` +
         c.items.map((t) => `<div style="color:#ccc; padding-left:10px; text-indent:-10px; margin-bottom:2px;">• ${escHtml(t)}</div>`).join("") + `</div>`).join("")
       + `<div style="opacity:.6; font-style:italic;">You're on build ${escHtml(HUD_BUILD)}.</div>`
-    : (uiSettings.skin === "system" ? [...SYS_HELP, ...CLASSIC_HELP] : CLASSIC_HELP).map(([k, v]) => `<div style="margin-bottom:9px;"><div style="color:#4FC3F7; font-weight:bold;">${escHtml(k)}</div><div style="color:#ccc;">${escHtml(v)}</div></div>`).join("");
+    : (isSysSkin() ? [...SYS_HELP, ...CLASSIC_HELP] : CLASSIC_HELP).map(([k, v]) => `<div style="margin-bottom:9px;"><div style="color:#4FC3F7; font-weight:bold;">${escHtml(k)}</div><div style="color:#ccc;">${escHtml(v)}</div></div>`).join("");
   return `
     <div id="rpg-info-overlay" style="position:absolute; inset:0; background:#0b0b0d; border:1px solid #333; z-index:100001;
       display:flex; flex-direction:column; box-sizing:border-box; padding:10px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid #333; padding-bottom:6px;">
-        <div style="font-weight:bold; color:#ddd;">${uiSettings.skin === "system" ? sysIcon(isLog ? "log" : "help") + (isLog ? " UPDATE LOG" : " HELP") : isLog ? "\u{1F4DC} UPDATE LOG" : "❓ HELP"}</div>
+        <div style="font-weight:bold; color:#ddd;">${isSysSkin() ? sysIcon(isLog ? "log" : "help") + (isLog ? " UPDATE LOG" : " HELP") : isLog ? "\u{1F4DC} UPDATE LOG" : "❓ HELP"}</div>
         <button id="rpg-info-close" style="background:#444; border:1px solid #777; color:#fff; cursor:pointer; font-size:10px; padding:3px 10px; font-weight:bold;">CLOSE</button>
       </div>
       <div data-scroll-key="c:info:${classicInfo}" style="flex:1; overflow:auto; font-size:0.8em; line-height:1.4; padding-right:4px;">${rows}</div>
@@ -8485,7 +9845,7 @@ function saoSettingsHtml() {
     + toggle("rpg-sao-sw-weekday", "Fix weekdays", uiSettings.fixWeekdays !== false)
     + `<div class="rpg-sao-mrow toggle"><span title="How times are shown. 12- and 24-hour times in the story are both understood either way.">Clock</span>
         <select id="rpg-sao-clockfmt">${clockFormatOptions()}</select></div>`
-    + `<div class="rpg-sao-mrow toggle"><span title="Editing Items, Skills or Passives from the Status orb also rewrites this many earlier replies">Edits rewrite past replies</span>
+    + `<div class="rpg-sao-mrow toggle"><span title="Editing Items, Skills, Passives or meters also rewrites this many earlier replies">Edits rewrite past replies</span>
         <input id="rpg-sao-edithist" type="number" min="0" max="20" step="1" value="${Math.max(0, Math.min(20, parseInt(uiSettings.listEditHistory, 10) || 0))}"></div>`
     + toggle("rpg-sao-sw-bars", "Keep bars when minimised", !!uiSettings.barsOnMin)
     + toggle("rpg-sao-sw-shadow", "Text shadow", !!uiSettings.saoTextShadow)
@@ -8534,6 +9894,7 @@ function saoSettingsHtml() {
         <select id="rpg-sao-skin">
           <option value="classic">Classic</option>
           <option value="system">System</option>
+          <option value="fog">Gray Fog</option>
           <option value="sao" selected>SAO</option>
         </select></div>`
     + `<div class="rpg-sao-build">build ${HUD_BUILD}</div>`;
