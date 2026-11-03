@@ -141,7 +141,7 @@ Combat Rules:
 8. AoE caps: Small 3 · AoE 5 (default) · Big 15 · True unlimited.
 9. Barriers block most debuffs incl. DoT and tank True DMG. High-tier magic debuffs (e.g., timestop) bypass them.
 10. Skill multiplier bonuses (passives/items, stackable) add to each skill's listed multiplier; rewrite the Skills entry with the result (e.g., "All Skill Multipliers +1": ATK*1 → ATK*2; multi-hit boosts the per-hit multiplier, not hit count: ((ATK*1)*8) → ((ATK*2)*8)). Never put these in the stat equation.
-11. Firearms: Guns grant built-in Gun Skills (any skill using ammo) while equipped. Format: "P365 [10/10] (PBDMG: 100) [X]" = [Loaded/Capacity], Per Bullet DMG. PBDMG is True DMG unless stated. Skill cost [Ammo/Capacity] subtracts from the gun's loaded count: Fire [1/10] PBDMG*1; Triple Tap [3/10] PBDMG*3 (P365 [9/10] → [6/10]). Reload refills to max; default: Reload (Coin-100), Coin morphs into ammo. Some characters reload uniquely; bought ammo is usually cheaper.
+11. Firearms: Guns grant built-in Gun Skills (any skill using ammo) while equipped. Format: "P365 [10/10] (PBDMG: 100) [X]" = [Loaded/Capacity], Per Bullet DMG. PBDMG is True DMG unless stated. Skill cost [Ammo/Capacity] subtracts from the gun's loaded count: Fire [1/10] PBDMG*1; Triple Tap [3/10] PBDMG*3 (P365 [9/10] → [6/10]). Reload refills to max; default: Reload (Danks-100), Danks morphs into ammo. Some characters reload uniquely; bought ammo is usually cheaper.
 
 VI. LIVING WEAPON OVERRIDE
 Trigger: {{user}} is a sentient weapon/item.
