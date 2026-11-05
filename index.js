@@ -423,7 +423,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-10-30.8";
+const HUD_BUILD = "2026-11-04.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -6478,7 +6478,7 @@ function saoMetersSection(display) {
 const ico = (d, extra = "") => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/>${extra}</svg>`;
 const LIST_ICONS = {
   sword:   ico("M20 4v4l-9.5 9.5-4-4L16 4z M5 13l6 6 M7.5 16.5 4 20"),
-  dagger:  ico("M18 4.5v3.5l-6.5 6.5-3-3L15 5z M6.5 11.5l6 6 M8.5 15.5 5 19"),
+  dagger:  ico("M8.96 11.64Q13.6 7 20 4Q17 10.4 12.36 15.04z M7.9 11l5.1 5.1 M9.9 14.1 6.4 17.6", '<circle cx="5.1" cy="18.7" r="1.5"/>'),
   spear:   ico("M4 20 14.5 9.5 M14.5 9.5l1.6-5.2 4.6-1.6-1.6 4.6z"),
   axe:     ico("M5 20 14 11 M12.5 3.5c4.5.3 7.7 3.5 8 8l-3.2 1L11.5 6.7z"),
   hammer:  ico("M5 20l8-8 M10.6 5.6l4.2-2.4 5.9 5.9-2.4 4.2z"),
