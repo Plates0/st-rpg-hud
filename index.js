@@ -374,6 +374,27 @@ function loadBondBlocklist(chatKey) {
     const list = all[bondBlockChatKey];
     bondBlocklist = new Set(Array.isArray(list) ? list : []);
   } catch { bondBlocklist = new Set(); }
+  try {
+    const all = JSON.parse(localStorage.getItem(BOND_AUTO_KEY) || "{}");
+    const list = all[bondBlockChatKey];
+    bondAutoAdded = new Set(Array.isArray(list) ? list : []);
+  } catch { bondAutoAdded = new Set(); }
+}
+
+// Auto-add only looks at the latest reply. Who it added is remembered per chat,
+// so once added a character stays in the ledger after they leave the scene,
+// while characters who only had a Bond in older replies are never pulled in.
+const BOND_AUTO_KEY = "rpg_hud_bond_auto_v1";
+let bondAutoAdded = new Set();
+function rememberAutoBonds(names) {
+  let grew = false;
+  (names || []).forEach((n) => { const k = normBondName(n); if (k && !bondAutoAdded.has(k)) { bondAutoAdded.add(k); grew = true; } });
+  if (!grew) return;
+  try {
+    const all = JSON.parse(localStorage.getItem(BOND_AUTO_KEY) || "{}");
+    all[bondBlockChatKey] = [...bondAutoAdded];
+    localStorage.setItem(BOND_AUTO_KEY, JSON.stringify(all));
+  } catch (e) { console.warn("RPG HUD: couldn't save auto-added bonds", e); }
 }
 
 function saveBondBlocklist() {
@@ -423,7 +444,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-04.1";
+const HUD_BUILD = "2026-11-05.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -1633,7 +1654,9 @@ function bondMemoryFromHistory(chat, beforeIdx) {
     if (led) parseBondLedger(led[1]).forEach((b) => upsertBond(out, b.name, b.bond));
 
     // 2. live |Bond:| values on party/NPC entries overwrite it, as in the
-    //    real pipeline. Walk statefully: Name and Bond may sit on separate lines.
+    //    real pipeline, but only for someone already in the ledger or added by
+    //    auto-add from a latest reply: an older reply's Bond alone adds nobody.
+    //    Walk statefully: Name and Bond may sit on separate lines.
     let curName = "";
     let inPlayer = false;
     body.split("\n").forEach((raw) => {
@@ -1649,7 +1672,10 @@ function bondMemoryFromHistory(chat, beforeIdx) {
       if (nm) curName = nm[1].trim();
       if (inPlayer || !curName) return;
       const bd = line.match(/\|Bond:\s*([^|]*)/i);
-      if (bd && bd[1].trim()) upsertBond(out, curName, parseBondValue(bd[1]));
+      if (!bd || !bd[1].trim()) return;
+      const key = normBondName(curName);
+      if (!bondAutoAdded.has(key) && !out.some((b) => normBondName(b?.name) === key)) return;
+      upsertBond(out, curName, parseBondValue(bd[1]));
     });
   }
   return out;
@@ -1700,10 +1726,12 @@ function mergeBondLedger(prevList, parsedList) {
   return out;
 }
 
-// Live party/NPC bonds are authoritative — push them into the ledger
-function syncLiveBondsIntoLedger(state) {
+// Live party/NPC bonds are authoritative — push them into the ledger.
+// onlyKnown: update values of names already there, add nobody new.
+function syncLiveBondsIntoLedger(state, onlyKnown = false) {
   if (!state) return;
   if (!Array.isArray(state.bonds)) state.bonds = [];
+  const known = new Set(state.bonds.map((b) => normBondName(b?.name)));
   const live = [
     ...(Array.isArray(state.party) ? state.party : []),
     ...(Array.isArray(state.npcs) ? state.npcs : []),
@@ -1714,6 +1742,7 @@ function syncLiveBondsIntoLedger(state) {
     // a bond you deleted stays out of the ledger even though the character
     // keeps their own |Bond:| value
     if (bondBlocklist.has(normBondName(u.name))) return;
+    if (onlyKnown && !known.has(normBondName(u.name))) return;
     upsertBond(state.bonds, u.name, parseBondValue(u.bond));
   });
 }
@@ -3350,7 +3379,8 @@ function writeStateBackToChatMessage(stateObj, opts = {}) {
 // --- 3. ACTIONS ---
 
 function buildPipeString(stateObj) {
-  syncLiveBondsIntoLedger(stateObj);
+  // with auto-add off, writing a block back mustn't slip new names into the ledger
+  syncLiveBondsIntoLedger(stateObj, !uiSettings.autoAddBonds);
 	
   let lines = ["[Global]"];
   const wt = stateObj.world_time || {};
@@ -9315,6 +9345,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-11-05.1", items: [
+    "Auto-add bonds now only takes characters from the latest reply. Someone who only had a Bond value in older replies (and never made it into the |Bonds:| ledger) is no longer pulled in. Anyone auto-add has added still stays after they leave the scene. With auto-add off, saving an edit no longer slips new names into the ledger either.",
+  ] },
   { build: "2026-10-30.8", items: [
     "Meter icons (System and Gray Fog): each meter gets an icon from its name: a brain for sanity, a fork and knife for hunger, a cup for thirst, a bolt for stamina, a thermometer, a snowflake, a spiral for corruption, radiation, poison, oxygen, fatigue, mood, stress, blood, ammo, fuel, reputation, suspicion, focus, the Zone, Boost and Divide, luck, faith and more. Tap a meter's icon to open the editor, then tap the icon at the start of its row to pick a different one; Auto goes back to the name's. Like colours, a chosen icon follows that meter's name across characters.",
     "Meter edits can fix earlier replies too, as many as Edits Rewrite Past Replies is set to: after renaming or removing a meter, or changing its maximum, Save asks whether to make the same change in those replies for that character or only the latest one, so the AI doesn't bring the old version back. Current values in earlier replies are left alone.",
@@ -9797,7 +9830,7 @@ function saoHelpPanel() {
       + item("Bar backdrop",
           "The wash behind your HP and MP bars. It's a pale tint, so raising it makes the card lighter; at 0 the bars float free.")
       + item("Auto-add bonds",
-          "On, a character's Bond value joins the ledger by itself. Off, only bonds the model writes into |Bonds:| are kept.")
+          "On, a character with a Bond value in the latest reply joins the ledger by itself, and stays after leaving the scene. Older replies don't add anyone. Off, only bonds the model writes into |Bonds:| are kept.")
       + item("Unblock bonds",
           "Deleting a bond stops it coming back. This clears that list for this chat, so deleted names may reappear.")
       + `</dl>
@@ -11775,6 +11808,8 @@ function parsePipeFormat(text) {
     if (!uiSettings.autoAddBonds && !declared.has(k)) return false; // no silent adds
     return true;
   });
+  // whoever auto-add just took from this (latest) reply stays in the ledger from now on
+  if (uiSettings.autoAddBonds) rememberAutoBonds(newState.bonds.map((b) => b?.name).filter((n) => !declared.has(normBondName(n))));
 
   // Deltas measure against the same memory, so they're swipe-stable too and the
   // observer's repeat scans of one message can't erase the arrow.
@@ -11811,7 +11846,7 @@ const checkMessage = async (manual = false) => {
     bondMemory = [];
     timerMemory = [];
     historyMemoryKey = null;
-    loadBondBlocklist(chatKey);
+    loadBondBlocklist(chatKey);       // also loads who auto-add has added in this chat
   }
   renderRPG();
 
