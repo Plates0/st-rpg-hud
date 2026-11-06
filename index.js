@@ -454,6 +454,33 @@ function blockedBondList() {
 const BOND_BLOCK_NAMES_KEY = "rpg_hud_bond_block_names_v1";
 const BOND_HIDDEN_KEY = "rpg_hud_bond_hidden_v1";
 let bondBlockNames = {};
+let blockedBondsOpen = false;    // the blocked-bonds list in Settings starts folded
+let blockedBondsQuery = "";      // its search box, kept across re-renders
+const BLOCKED_SEARCH_AT = 6;     // the search box shows once this many names are blocked
+// the names that match the search box
+function blockedBondsShown() {
+  const q = blockedBondsQuery.trim().toLowerCase();
+  return blockedBondList().map((b) => ({ ...b, hidden: !!q && !b.name.toLowerCase().includes(q) }));
+}
+// filter the rows already on screen as you type, so the box keeps focus
+function bindBlockedSearch(inputId, rowSel, emptyId, showAs = "") {
+  const el = document.getElementById(inputId);
+  if (!el) return;
+  el.onclick = (e) => e.stopPropagation();
+  el.onkeydown = (e) => e.stopPropagation();
+  el.oninput = () => {
+    blockedBondsQuery = el.value;
+    const q = el.value.trim().toLowerCase();
+    let shown = 0;
+    document.querySelectorAll(rowSel).forEach((r) => {
+      const hit = !q || String(r.dataset.name || "").toLowerCase().includes(q);
+      r.style.display = hit ? showAs : "none";
+      if (hit) shown++;
+    });
+    const none = document.getElementById(emptyId);
+    if (none) none.style.display = shown ? "none" : "";
+  };
+}
 let bondHidden = new Map();
 function hideBonds(names, uptoIdx) {
   (names || []).forEach((n) => { const k = normBondName(n); if (k) bondHidden.set(k, uptoIdx); });
@@ -495,7 +522,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-06.1";
+const HUD_BUILD = "2026-11-06.3";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -4301,13 +4328,25 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           <span style="font-size:0.8em; color:#ddd;" title="On: a bond you remove is blocked from coming back until you unblock it. Off: it's only gone until a newer reply gives that character a bond again.">Block removed bonds</span>
           <input type="checkbox" id="rpg-settings-blockbond" ${uiSettings.blockRemovedBonds !== false ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
         </div>
-        ${bondBlocklist.size ? `<div style="border:1px solid #444; background:rgba(255,255,255,0.03); padding:6px 8px; margin-bottom:10px;">
-          <div style="font-size:0.75em; color:#aaa; margin-bottom:4px;">Blocked bonds in this chat</div>
-          ${blockedBondList().map(({ key, name }) => `<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:3px 0; font-size:0.85em; color:#ddd;">
-            <span style="overflow-wrap:anywhere;">${escHtml(name)}</span>
-            <button class="rpg-settings-unblock-one" data-key="${escAttr(key)}" style="flex:0 0 auto; background:#222; border:1px solid #555; color:#ddd; padding:2px 8px; cursor:pointer;">Unblock</button></div>`).join("")}
-          ${bondBlocklist.size > 1 ? `<button id="rpg-settings-unblock" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:5px; margin-top:4px; cursor:pointer;">Unblock all ${bondBlocklist.size}</button>` : ""}
-        </div>` : ""}
+        ${bondBlocklist.size ? (() => {
+          const rows = blockedBondsShown();
+          const shown = rows.filter((r) => !r.hidden).length;
+          return `<div style="border:1px solid #444; background:rgba(255,255,255,0.03); padding:6px 8px; margin-bottom:10px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+            <span style="font-size:0.75em; color:#aaa;">Blocked bonds in this chat (${bondBlocklist.size})</span>
+            <button id="rpg-settings-unblock" style="flex:0 0 auto; background:#222; border:1px solid #555; color:#ddd; padding:2px 8px; cursor:pointer;">Unblock all</button>
+          </div>
+          <button id="rpg-settings-blocked-toggle" aria-expanded="${blockedBondsOpen}" style="width:100%; display:flex; justify-content:space-between; align-items:center; background:none; border:0; border-top:1px solid #333; margin-top:6px; padding:5px 0 0; color:#aaa; font-size:0.75em; cursor:pointer; text-align:left;">
+            <span>${blockedBondsOpen ? "Hide names" : "Show names"}</span><span>${blockedBondsOpen ? "▾" : "▸"}</span></button>
+          ${!blockedBondsOpen ? "" : `<div style="margin-top:4px;">
+            ${bondBlocklist.size >= BLOCKED_SEARCH_AT ? `<input type="search" id="rpg-settings-blocked-search" placeholder="Search names" value="${escAttr(blockedBondsQuery)}"
+              style="width:100%; box-sizing:border-box; background:#111; color:#ddd; border:1px solid #555; padding:4px 6px; margin-bottom:4px; font-size:0.85em;">` : ""}
+            ${rows.map(({ key, name, hidden }) => `<div class="rpg-blocked-row" data-name="${escAttr(name)}" style="display:${hidden ? "none" : "flex"}; align-items:center; justify-content:space-between; gap:8px; padding:3px 0; font-size:0.85em; color:#ddd;">
+              <span style="overflow-wrap:anywhere;">${escHtml(name)}</span>
+              <button class="rpg-settings-unblock-one" data-key="${escAttr(key)}" style="flex:0 0 auto; background:#222; border:1px solid #555; color:#ddd; padding:2px 8px; cursor:pointer;">Unblock</button></div>`).join("")}
+            <div id="rpg-settings-blocked-none" style="display:${shown ? "none" : ""}; font-size:0.8em; color:#888; padding:3px 0;">No names match.</div>
+          </div>`}
+        </div>`; })() : ""}
 
         <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Appearance</div>
         <button id="rpg-settings-reset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:6px; cursor:pointer;">↺ Reset settings to defaults</button>
@@ -4732,6 +4771,9 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    bbEl.onclick = (e) => e.stopPropagation();
 	    bbEl.onchange = () => { uiSettings.blockRemovedBonds = bbEl.checked; saveUiSettings(); };
 	  }
+	  const btEl = document.getElementById("rpg-settings-blocked-toggle");
+	  if (btEl) btEl.onclick = (e) => { e.stopPropagation(); blockedBondsOpen = !blockedBondsOpen; renderRPG(); };
+	  bindBlockedSearch("rpg-settings-blocked-search", ".rpg-blocked-row", "rpg-settings-blocked-none", "flex");
 	  const ubEl = document.getElementById("rpg-settings-unblock");
 	  if (ubEl) ubEl.onclick = (e) => {
 	    e.stopPropagation();
@@ -9428,9 +9470,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
-  { build: "2026-11-06.1", items: [
+  { build: "2026-11-06.3", items: [
     "New setting, Block removed bonds (on by default). Turn it off and a bond you remove is only gone until a newer reply gives that character a bond again; older replies still can't bring it back.",
-    "Blocked bonds are now listed by name in Settings, so you can unblock just one (or all of them at once).",
+    "Blocked bonds can now be unblocked one by one: Settings has Unblock all, with the blocked names folded underneath (and a search box once the list gets long).",
   ] },
   { build: "2026-11-05.1", items: [
     "Auto-add bonds now only takes characters from the latest reply. Someone who only had a Bond value in older replies (and never made it into the |Bonds:| ledger) is no longer pulled in. Anyone auto-add has added still stays after they leave the scene. With auto-add off, saving an edit no longer slips new names into the ledger either.",
@@ -9975,10 +10017,17 @@ function saoSettingsHtml() {
     + toggle("rpg-sao-sw-anim", "Animations", uiSettings.saoAnimate !== false)
     + toggle("rpg-sao-sw-autobond", "Auto-add bonds", !!uiSettings.autoAddBonds)
     + toggle("rpg-sao-sw-blockbond", "Block removed bonds", uiSettings.blockRemovedBonds !== false)
-    + blockedBondList().map(({ key, name }) =>
-        `<button class="rpg-sao-mrow rpg-sao-unblock-one" data-key="${escAttr(key)}" title="Unblock this bond"><span class="pip">&#8635;</span>Unblock ${escHtml(name)}</button>`).join("")
-    + (bondBlocklist.size > 1
-        ? row("rpg-sao-unblock", "&#8635;", `Unblock all ${bondBlocklist.size} bonds`) : "")
+    + (bondBlocklist.size
+        ? row("rpg-sao-unblock", "&#8635;", `Unblock all ${bondBlocklist.size} bond${bondBlocklist.size === 1 ? "" : "s"}`)
+          + row("rpg-sao-blocked-toggle", blockedBondsOpen ? "&#9662;" : "&#9656;", blockedBondsOpen ? "Hide blocked names" : "Show blocked names") : "")
+    + (!bondBlocklist.size || !blockedBondsOpen ? "" : (() => {
+        const rows = blockedBondsShown();
+        return (bondBlocklist.size >= BLOCKED_SEARCH_AT
+            ? `<div class="rpg-sao-mrow toggle"><input type="search" id="rpg-sao-blocked-search" placeholder="Search names" value="${escAttr(blockedBondsQuery)}" style="width:100%"></div>` : "")
+          + rows.map(({ key, name, hidden }) =>
+            `<button class="rpg-sao-mrow rpg-sao-unblock-one" data-key="${escAttr(key)}" data-name="${escAttr(name)}" title="Unblock this bond"${hidden ? ' style="display:none"' : ""}><span class="pip">&#8635;</span>Unblock ${escHtml(name)}</button>`).join("")
+          + `<div class="rpg-sao-mrow toggle" id="rpg-sao-blocked-none"${rows.some((r) => !r.hidden) ? ' style="display:none"' : ""}><span>No names match.</span></div>`;
+      })())
     + `<div class="rpg-sao-mrow toggle"><span>Panel brightness</span>
         <input type="range" id="rpg-sao-panel-a" min="18" max="98"
                value="${Math.round(uiSettings.saoPanelLight ?? 92)}"></div>`
@@ -10542,6 +10591,8 @@ function saoBind() {
     saveUiSettings(); renderRPG();
   });
   bind("rpg-sao-sw-autobond", () => { uiSettings.autoAddBonds = !uiSettings.autoAddBonds; saveUiSettings(); renderRPG(); });
+  bind("rpg-sao-blocked-toggle", () => { blockedBondsOpen = !blockedBondsOpen; renderRPG(); });
+  bindBlockedSearch("rpg-sao-blocked-search", ".rpg-sao-unblock-one", "rpg-sao-blocked-none");
   bind("rpg-sao-sw-blockbond", () => { uiSettings.blockRemovedBonds = uiSettings.blockRemovedBonds === false; saveUiSettings(); renderRPG(); });
   bind("rpg-sao-unblock", () => {
     clearBondBlocklist();
