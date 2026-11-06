@@ -34,6 +34,7 @@ SCHEMA RULES:
 - Separate lists (inventory, skills, masteries, quests, status, env) with semicolons (;).
 - Stats can contain equations (e.g., `ATK:210 (160+50+0)`) or raw integers (e.g., `ATK:10`).
 - Meters (Dynamic Stats): Shields, Sanity, Hunger, etc. as `Name:Curr/Max` in `|Meters:...|` (e.g., `|Meters:Shield:30/80;Sanity:90/100|`). Max isn't capped at 100; add/remove as narrative dictates.
+- Fame: Optional {{user}}-only (default) meter (`Fame:0/100`). Add it to Meters only once {{user}} attains fame; never track it otherwise.
 - Add [NPCs], [Party], [Enemies] as narrative dictates. ALWAYS add characters to [NPCs] if they appear but aren't a party member or ally.
 - Loc: Include the country when inside one. Independent entities (DH Academy, hidden islands, dungeons) don't.
 - Env: Per-turn environmental pressures only (sanity, hunger, weather, oxygen) as "Name - Effect Per Turn" (e.g., "Dungeon Corruption -4 Sanity/Hunger Per Turn"; "Sandstorm -10 HP Per Turn"). No per-turn effect = doesn't belong here; never track positions, movement, or scene details.
