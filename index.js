@@ -379,6 +379,15 @@ function loadBondBlocklist(chatKey) {
     const list = all[bondBlockChatKey];
     bondAutoAdded = new Set(Array.isArray(list) ? list : []);
   } catch { bondAutoAdded = new Set(); }
+  try {
+    const all = JSON.parse(localStorage.getItem(BOND_BLOCK_NAMES_KEY) || "{}");
+    bondBlockNames = all[bondBlockChatKey] && typeof all[bondBlockChatKey] === "object" ? all[bondBlockChatKey] : {};
+  } catch { bondBlockNames = {}; }
+  try {
+    const all = JSON.parse(localStorage.getItem(BOND_HIDDEN_KEY) || "{}");
+    const m = all[bondBlockChatKey];
+    bondHidden = new Map(m && typeof m === "object" ? Object.entries(m).filter(([, v]) => Number.isFinite(v)) : []);
+  } catch { bondHidden = new Map(); }
 }
 
 // Auto-add only looks at the latest reply. Who it added is remembered per chat,
@@ -398,22 +407,91 @@ function rememberAutoBonds(names) {
 }
 
 function saveBondBlocklist() {
+  const put = (storeKey, val, keep) => {
+    const all = JSON.parse(localStorage.getItem(storeKey) || "{}");
+    if (keep) all[bondBlockChatKey] = val; else delete all[bondBlockChatKey];
+    localStorage.setItem(storeKey, JSON.stringify(all));
+  };
   try {
-    const all = JSON.parse(localStorage.getItem(BOND_BLOCK_KEY) || "{}");
-    if (bondBlocklist.size) all[bondBlockChatKey] = [...bondBlocklist];
-    else delete all[bondBlockChatKey];
-    localStorage.setItem(BOND_BLOCK_KEY, JSON.stringify(all));
+    put(BOND_BLOCK_KEY, [...bondBlocklist], bondBlocklist.size);
+    const names = {};
+    bondBlocklist.forEach((k) => { if (bondBlockNames[k]) names[k] = bondBlockNames[k]; });
+    put(BOND_BLOCK_NAMES_KEY, names, Object.keys(names).length);
+    put(BOND_HIDDEN_KEY, Object.fromEntries(bondHidden), bondHidden.size);
   } catch (e) { console.warn("RPG HUD: couldn't save bond blocklist", e); }
 }
 
 function blockBonds(names) {
-  (names || []).forEach((n) => { const k = normBondName(n); if (k) bondBlocklist.add(k); });
+  (names || []).forEach((n) => {
+    const k = normBondName(n);
+    if (!k) return;
+    bondBlocklist.add(k);
+    bondBlockNames[k] = bondBaseName(n);
+  });
   saveBondBlocklist();
 }
 
 function clearBondBlocklist() {
   bondBlocklist = new Set();
+  bondBlockNames = {};
   saveBondBlocklist();
+}
+
+function unblockBonds(keys) {
+  (keys || []).forEach((k) => { bondBlocklist.delete(k); delete bondBlockNames[k]; });
+  saveBondBlocklist();
+}
+
+// The blocked names for the settings list, as they were written when removed.
+function blockedBondList() {
+  return [...bondBlocklist].map((k) => ({ key: k, name: bondBlockNames[k] || k.replace(/\b\w/g, (c) => c.toUpperCase()) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// With blocking off, a removed bond is only hidden up to the reply it was
+// removed in: older replies can't bring it back, but a newer reply that gives
+// that character a bond again (or lists them in |Bonds:|) does.
+const BOND_BLOCK_NAMES_KEY = "rpg_hud_bond_block_names_v1";
+const BOND_HIDDEN_KEY = "rpg_hud_bond_hidden_v1";
+let bondBlockNames = {};
+let blockedBondsOpen = false;    // the blocked-bonds list in Settings starts folded
+let blockedBondsQuery = "";      // its search box, kept across re-renders
+const BLOCKED_SEARCH_AT = 6;     // the search box shows once this many names are blocked
+// the names that match the search box
+function blockedBondsShown() {
+  const q = blockedBondsQuery.trim().toLowerCase();
+  return blockedBondList().map((b) => ({ ...b, hidden: !!q && !b.name.toLowerCase().includes(q) }));
+}
+// filter the rows already on screen as you type, so the box keeps focus
+function bindBlockedSearch(inputId, rowSel, emptyId, showAs = "") {
+  const el = document.getElementById(inputId);
+  if (!el) return;
+  el.onclick = (e) => e.stopPropagation();
+  el.onkeydown = (e) => e.stopPropagation();
+  el.oninput = () => {
+    blockedBondsQuery = el.value;
+    const q = el.value.trim().toLowerCase();
+    let shown = 0;
+    document.querySelectorAll(rowSel).forEach((r) => {
+      const hit = !q || String(r.dataset.name || "").toLowerCase().includes(q);
+      r.style.display = hit ? showAs : "none";
+      if (hit) shown++;
+    });
+    const none = document.getElementById(emptyId);
+    if (none) none.style.display = shown ? "none" : "";
+  };
+}
+let bondHidden = new Map();
+function hideBonds(names, uptoIdx) {
+  (names || []).forEach((n) => { const k = normBondName(n); if (k) bondHidden.set(k, uptoIdx); });
+  saveBondBlocklist();
+}
+// Is this name kept off the ledger for a block in message msgIdx?
+function bondSuppressed(name, msgIdx = lastRpgMsgIndex) {
+  const k = normBondName(name);
+  if (!k) return false;
+  if (bondBlocklist.has(k)) return true;
+  return bondHidden.has(k) && Number.isFinite(msgIdx) && msgIdx <= bondHidden.get(k);
 }
 
 let bondMemory = [];
@@ -444,12 +522,13 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-05.1";
+const HUD_BUILD = "2026-11-06.4";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
   skin: "classic",
   autoAddBonds: true,     // add party/NPC |Bond:| values to the ledger automatically
+  blockRemovedBonds: true, // removing a bond blocks it for good (else: hidden until a newer reply brings it back)
   saoPanelLight: 92,      // panel lightness %, lower = dimmer but still solid
   saoCardAlpha: 11,       // % wash behind the player's HP/MP bars; higher = lighter
   saoFont: "preset",      // "preset" | "sans" | "squarish" | "saira" | "teko" | "exo" | "custom"
@@ -1649,9 +1728,9 @@ function bondMemoryFromHistory(chat, beforeIdx) {
     while ((m = blockRe.exec(msg.mes)) !== null) body = m[1];
     if (body === null) continue;
 
-    // 1. the |Bonds:| ledger pipe
+    // 1. the |Bonds:| ledger pipe (minus anyone removed at or after this reply)
     const led = body.match(/\|Bonds:([^|]*)\|/i);
-    if (led) parseBondLedger(led[1]).forEach((b) => upsertBond(out, b.name, b.bond));
+    if (led) parseBondLedger(led[1]).forEach((b) => { if (!bondSuppressed(b.name, i)) upsertBond(out, b.name, b.bond); });
 
     // 2. live |Bond:| values on party/NPC entries overwrite it, as in the
     //    real pipeline, but only for someone already in the ledger or added by
@@ -1674,6 +1753,7 @@ function bondMemoryFromHistory(chat, beforeIdx) {
       const bd = line.match(/\|Bond:\s*([^|]*)/i);
       if (!bd || !bd[1].trim()) return;
       const key = normBondName(curName);
+      if (bondSuppressed(curName, i)) return;
       if (!bondAutoAdded.has(key) && !out.some((b) => normBondName(b?.name) === key)) return;
       upsertBond(out, curName, parseBondValue(bd[1]));
     });
@@ -1741,7 +1821,7 @@ function syncLiveBondsIntoLedger(state, onlyKnown = false) {
     if (u.bond === undefined || u.bond === null || u.bond === "") return;
     // a bond you deleted stays out of the ledger even though the character
     // keeps their own |Bond:| value
-    if (bondBlocklist.has(normBondName(u.name))) return;
+    if (bondSuppressed(u.name)) return;
     if (onlyKnown && !known.has(normBondName(u.name))) return;
     upsertBond(state.bonds, u.name, parseBondValue(u.bond));
   });
@@ -2827,7 +2907,11 @@ function commitBondsEdit() {
     if (edited && hasLive) u.bond = edited.bond;
   });
   const names = removed.map((b) => b.name);
-  if (names.length) blockBonds(names);
+  const blocking = uiSettings.blockRemovedBonds !== false;
+  if (names.length) {
+    if (blocking) blockBonds(names);
+    else hideBonds(names, lastRpgMsgIndex);      // gone for now; a newer reply can bring them back
+  }
 
   bondsEditMode = false;
   bondsSnapshot = [];
@@ -2839,7 +2923,8 @@ function commitBondsEdit() {
 
   const scrub = confirm(
     `Also remove ${names.length === 1 ? "it" : "them"} from ALL earlier messages?\n\n` +
-    `If you skip this, the AI can still see them in older Bonds lists. They stay blocked either way, ` +
+    `If you skip this, the AI can still see them in older Bonds lists. ` +
+    (blocking ? `They stay blocked either way, ` : `Either way they're off the list until a newer reply gives them a bond again, `) +
     `and the characters keep their own Bond values.\n\n` +
     `This edits your chat history and cannot be undone.`
   );
@@ -2847,7 +2932,8 @@ function commitBondsEdit() {
     const n = purgeBondsFromHistory(names);
     if (window.toastr) hudToast.info(`Scrubbed ${names.length} name(s) from ${n} message(s).`);
   } else if (window.toastr) {
-    hudToast.info(`${names.length} bond(s) removed and blocked from returning.`);
+    hudToast.info(blocking ? `${names.length} bond(s) removed and blocked from returning.`
+      : `${names.length} bond(s) removed. A newer reply can bring them back.`);
   }
 }
 
@@ -3187,6 +3273,48 @@ function purgeBondsFromHistory(names) {
     try { window.saveChat?.(); } catch (e) { console.warn("RPG HUD: saveChat failed", e); }
   }
   return changed;
+}
+
+// Blocked names can still sit in the |Bonds:| ledger of older replies' text,
+// which is sent to the model with the chat (and can set off lorebook entries).
+// How many replies still carry one:
+function blockedBondsInHistory() {
+  if (!bondBlocklist.size) return 0;
+  let chat;
+  try { chat = SillyTavern.getContext()?.chat; } catch { return 0; }
+  if (!Array.isArray(chat)) return 0;
+  return chat.filter((msg) => msg && typeof msg.mes === "string" && /<rpg_state\b/i.test(msg.mes)
+    && stripBondsFromText(msg.mes, bondBlocklist) !== msg.mes).length;
+}
+
+function scrubBlockedHistoryAsk() {
+  const names = blockedBondList().map((b) => b.name);
+  const n = blockedBondsInHistory();
+  if (!n) return;
+  const ok = confirm(`Remove the blocked names from the Bonds ledger in ${n} earlier repl${n === 1 ? "y" : "ies"}?\n\n` +
+    `${names.join(", ")}\n\n` +
+    `Older replies still list them in |Bonds:|. The model reads those, and they can set off lorebook entries. ` +
+    `Only the |Bonds:| ledger is changed; characters' own Bond values and everything else stay.\n\n` +
+    `This edits your chat history and cannot be undone.`);
+  if (!ok) return;
+  const changed = purgeBondsFromHistory(names);
+  if (window.toastr) hudToast.info(changed ? `Cleaned ${changed} earlier repl${changed === 1 ? "y" : "ies"}.` : "Nothing needed changing.");
+  renderRPG();
+}
+
+// A finished reply that copied a blocked name into its |Bonds:| ledger gets it
+// taken straight back out, so it doesn't spread to later replies.
+function scrubBlockedFromLatest() {
+  if (!bondBlocklist.size) return false;
+  let chat;
+  try { chat = SillyTavern.getContext()?.chat; } catch { return false; }
+  const msg = Array.isArray(chat) ? chat[chat.length - 1] : null;
+  if (!msg || msg.is_user || typeof msg.mes !== "string" || !/<\/rpg_state>/i.test(msg.mes)) return false;
+  const next = stripBondsFromText(msg.mes, bondBlocklist);
+  if (next === msg.mes) return false;
+  setMessageText(msg, next);
+  try { window.saveChat?.(); } catch {}
+  return true;
 }
 
 // --- TIMER HISTORY SCRUB (mirrors the bond version) ---
@@ -4238,7 +4366,30 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           <span style="font-size:0.8em; color:#ddd;">Auto-add bonds</span>
           <input type="checkbox" id="rpg-settings-autobond" ${uiSettings.autoAddBonds ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
         </div>
-        ${bondBlocklist.size ? `<button id="rpg-settings-unblock" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px; cursor:pointer;">Unblock ${bondBlocklist.size} bond(s)</button>` : ""}
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+          <span style="font-size:0.8em; color:#ddd;" title="On: a bond you remove is blocked from coming back until you unblock it. Off: it's only gone until a newer reply gives that character a bond again.">Block removed bonds</span>
+          <input type="checkbox" id="rpg-settings-blockbond" ${uiSettings.blockRemovedBonds !== false ? 'checked' : ''} style="cursor:pointer; width:18px; height:18px;">
+        </div>
+        ${bondBlocklist.size ? (() => {
+          const rows = blockedBondsShown();
+          const shown = rows.filter((r) => !r.hidden).length;
+          return `<div style="border:1px solid #444; background:rgba(255,255,255,0.03); padding:6px 8px; margin-bottom:10px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+            <span style="font-size:0.75em; color:#aaa;">Blocked bonds in this chat (${bondBlocklist.size})</span>
+            <button id="rpg-settings-unblock" style="flex:0 0 auto; background:#222; border:1px solid #555; color:#ddd; padding:2px 8px; cursor:pointer;">Unblock all</button>
+          </div>
+          <button id="rpg-settings-blocked-toggle" aria-expanded="${blockedBondsOpen}" style="width:100%; display:flex; justify-content:space-between; align-items:center; background:none; border:0; border-top:1px solid #333; margin-top:6px; padding:5px 0 0; color:#aaa; font-size:0.75em; cursor:pointer; text-align:left;">
+            <span>${blockedBondsOpen ? "Hide names" : "Show names"}</span><span>${blockedBondsOpen ? "▾" : "▸"}</span></button>
+          ${(() => { const n = blockedBondsInHistory(); return n ? `<button id="rpg-settings-blocked-scrub" title="Older replies still list blocked names in their |Bonds:| ledger. The model reads those, and they can set off lorebook entries." style="width:100%; background:#222; border:1px solid #6a5a2a; color:#e8d9a8; padding:4px; margin-top:6px; cursor:pointer; font-size:0.8em;">Remove them from ${n} earlier repl${n === 1 ? "y" : "ies"}</button>` : ""; })()}
+          ${!blockedBondsOpen ? "" : `<div style="margin-top:4px;">
+            ${bondBlocklist.size >= BLOCKED_SEARCH_AT ? `<input type="search" id="rpg-settings-blocked-search" placeholder="Search names" value="${escAttr(blockedBondsQuery)}"
+              style="width:100%; box-sizing:border-box; background:#111; color:#ddd; border:1px solid #555; padding:4px 6px; margin-bottom:4px; font-size:0.85em;">` : ""}
+            ${rows.map(({ key, name, hidden }) => `<div class="rpg-blocked-row" data-name="${escAttr(name)}" style="display:${hidden ? "none" : "flex"}; align-items:center; justify-content:space-between; gap:8px; padding:3px 0; font-size:0.85em; color:#ddd;">
+              <span style="overflow-wrap:anywhere;">${escHtml(name)}</span>
+              <button class="rpg-settings-unblock-one" data-key="${escAttr(key)}" style="flex:0 0 auto; background:#222; border:1px solid #555; color:#ddd; padding:2px 8px; cursor:pointer;">Unblock</button></div>`).join("")}
+            <div id="rpg-settings-blocked-none" style="display:${shown ? "none" : ""}; font-size:0.8em; color:#888; padding:3px 0;">No names match.</div>
+          </div>`}
+        </div>`; })() : ""}
 
         <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Appearance</div>
         <button id="rpg-settings-reset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:6px; cursor:pointer;">↺ Reset settings to defaults</button>
@@ -4658,13 +4809,32 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    abEl.onclick = (e) => e.stopPropagation();
 	    abEl.onchange = () => { uiSettings.autoAddBonds = abEl.checked; saveUiSettings(); };
 	  }
+	  const bbEl = document.getElementById("rpg-settings-blockbond");
+	  if (bbEl) {
+	    bbEl.onclick = (e) => e.stopPropagation();
+	    bbEl.onchange = () => { uiSettings.blockRemovedBonds = bbEl.checked; saveUiSettings(); };
+	  }
+	  const btEl = document.getElementById("rpg-settings-blocked-toggle");
+	  if (btEl) btEl.onclick = (e) => { e.stopPropagation(); blockedBondsOpen = !blockedBondsOpen; renderRPG(); };
+	  bindBlockedSearch("rpg-settings-blocked-search", ".rpg-blocked-row", "rpg-settings-blocked-none", "flex");
+	  const bsEl = document.getElementById("rpg-settings-blocked-scrub");
+	  if (bsEl) bsEl.onclick = (e) => { e.stopPropagation(); scrubBlockedHistoryAsk(); };
 	  const ubEl = document.getElementById("rpg-settings-unblock");
 	  if (ubEl) ubEl.onclick = (e) => {
 	    e.stopPropagation();
 	    clearBondBlocklist();
 	    if (window.toastr) hudToast.info("Bond blocklist cleared for this chat.");
-	    renderRPG();
+	    checkMessage();
 	  };
+	  document.querySelectorAll(".rpg-settings-unblock-one").forEach((el) => {
+	    el.onclick = (e) => {
+	      e.stopPropagation();
+	      const one = blockedBondList().find((b) => b.key === el.dataset.key);
+	      unblockBonds([el.dataset.key]);
+	      if (window.toastr) hudToast.info(`${one?.name || "Bond"} unblocked. They come back if the story still has them.`);
+	      checkMessage();
+	    };
+	  });
 
 	  const resetEl = document.getElementById("rpg-settings-reset");
 	  if (resetEl) resetEl.onclick = resetUiSettings;
@@ -6375,7 +6545,7 @@ function saoStatusPanel() {
     if ((type === "party" || type === "npc") && !isVehicle) {
       const has = root?.bond !== undefined && root?.bond !== null && String(root.bond).trim() !== "";
       const b = has ? parseBondValue(root.bond) : null;
-      const blocked = bondBlocklist.has(normBondName(root?.name));
+      const blocked = bondSuppressed(root?.name);
       h += `<div class="rpg-sao-vline rpg-sao-livebond"><span>Bond${blocked ? ` <i title="Kept off the Bonds list">(hidden)</i>` : ""}</span><b>
         <input type="text" inputmode="numeric" id="rpg-sao-livebond" value="${b === null ? "" : b >= 101 ? "\u221E" : b}"
           placeholder="none" title="0\u2013100, or \u221E. Leave empty for no bond. Enter to save."> / 100</b></div>`;
@@ -9345,6 +9515,11 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-11-06.4", items: [
+    "New setting, Block removed bonds (on by default). Turn it off and a bond you remove is only gone until a newer reply gives that character a bond again; older replies still can't bring it back.",
+    "Blocked bonds no longer linger in older replies. The blocked list shows when earlier replies still name them in their |Bonds:| ledger (which the model reads, and which can set off lorebook entries) and can remove them in one go, and a new reply that copies a blocked name into its ledger has it taken back out.",
+    "Blocked bonds can now be unblocked one by one: Settings has Unblock all, with the blocked names folded underneath (and a search box once the list gets long).",
+  ] },
   { build: "2026-11-05.1", items: [
     "Auto-add bonds now only takes characters from the latest reply. Someone who only had a Bond value in older replies (and never made it into the |Bonds:| ledger) is no longer pulled in. Anyone auto-add has added still stays after they leave the scene. With auto-add off, saving an edit no longer slips new names into the ledger either.",
   ] },
@@ -9831,8 +10006,10 @@ function saoHelpPanel() {
           "The wash behind your HP and MP bars. It's a pale tint, so raising it makes the card lighter; at 0 the bars float free.")
       + item("Auto-add bonds",
           "On, a character with a Bond value in the latest reply joins the ledger by itself, and stays after leaving the scene. Older replies don't add anyone. Off, only bonds the model writes into |Bonds:| are kept.")
-      + item("Unblock bonds",
-          "Deleting a bond stops it coming back. This clears that list for this chat, so deleted names may reappear.")
+      + item("Block removed bonds",
+          "On, a bond you remove is blocked from coming back until you unblock it. Off, it's gone only until a newer reply gives that character a bond again (or lists them in |Bonds:|).")
+      + item("Unblock",
+          "Each blocked bond in this chat is listed; unblock one by name, or all at once. An unblocked name comes back if the story still has them.")
       + `</dl>
       <div class="rpg-sao-help-sec">Getting around</div>
       <dl class="rpg-sao-help">`
@@ -9885,8 +10062,19 @@ function saoSettingsHtml() {
     + toggle("rpg-sao-sw-backing", "Text backing", !!uiSettings.saoTextBacking)
     + toggle("rpg-sao-sw-anim", "Animations", uiSettings.saoAnimate !== false)
     + toggle("rpg-sao-sw-autobond", "Auto-add bonds", !!uiSettings.autoAddBonds)
+    + toggle("rpg-sao-sw-blockbond", "Block removed bonds", uiSettings.blockRemovedBonds !== false)
     + (bondBlocklist.size
-        ? row("rpg-sao-unblock", "&#8635;", `Unblock ${bondBlocklist.size} bond(s)`) : "")
+        ? row("rpg-sao-unblock", "&#8635;", `Unblock all ${bondBlocklist.size} bond${bondBlocklist.size === 1 ? "" : "s"}`)
+          + (() => { const n = blockedBondsInHistory(); return n ? row("rpg-sao-blocked-scrub", "&#10007;", `Remove them from ${n} earlier repl${n === 1 ? "y" : "ies"}`) : ""; })()
+          + row("rpg-sao-blocked-toggle", blockedBondsOpen ? "&#9662;" : "&#9656;", blockedBondsOpen ? "Hide blocked names" : "Show blocked names") : "")
+    + (!bondBlocklist.size || !blockedBondsOpen ? "" : (() => {
+        const rows = blockedBondsShown();
+        return (bondBlocklist.size >= BLOCKED_SEARCH_AT
+            ? `<div class="rpg-sao-mrow toggle"><input type="search" id="rpg-sao-blocked-search" placeholder="Search names" value="${escAttr(blockedBondsQuery)}" style="width:100%"></div>` : "")
+          + rows.map(({ key, name, hidden }) =>
+            `<button class="rpg-sao-mrow rpg-sao-unblock-one" data-key="${escAttr(key)}" data-name="${escAttr(name)}" title="Unblock this bond"${hidden ? ' style="display:none"' : ""}><span class="pip">&#8635;</span>Unblock ${escHtml(name)}</button>`).join("")
+          + `<div class="rpg-sao-mrow toggle" id="rpg-sao-blocked-none"${rows.some((r) => !r.hidden) ? ' style="display:none"' : ""}><span>No names match.</span></div>`;
+      })())
     + `<div class="rpg-sao-mrow toggle"><span>Panel brightness</span>
         <input type="range" id="rpg-sao-panel-a" min="18" max="98"
                value="${Math.round(uiSettings.saoPanelLight ?? 92)}"></div>`
@@ -10337,7 +10525,7 @@ function saoBind() {
         const v = clamp(Math.round(parseBondValue(raw)), 0, 101);
         root.bond = v;
         // keep the Bonds list in step, unless you took this name off it
-        if (!bondBlocklist.has(normBondName(root.name))) {
+        if (!bondSuppressed(root.name)) {
           if (!Array.isArray(rpgState.bonds)) rpgState.bonds = [];
           upsertBond(rpgState.bonds, root.name, v);
         }
@@ -10450,10 +10638,23 @@ function saoBind() {
     saveUiSettings(); renderRPG();
   });
   bind("rpg-sao-sw-autobond", () => { uiSettings.autoAddBonds = !uiSettings.autoAddBonds; saveUiSettings(); renderRPG(); });
+  bind("rpg-sao-blocked-toggle", () => { blockedBondsOpen = !blockedBondsOpen; renderRPG(); });
+  bind("rpg-sao-blocked-scrub", () => scrubBlockedHistoryAsk());
+  bindBlockedSearch("rpg-sao-blocked-search", ".rpg-sao-unblock-one", "rpg-sao-blocked-none");
+  bind("rpg-sao-sw-blockbond", () => { uiSettings.blockRemovedBonds = uiSettings.blockRemovedBonds === false; saveUiSettings(); renderRPG(); });
   bind("rpg-sao-unblock", () => {
     clearBondBlocklist();
     if (window.toastr) hudToast.info("Bond blocklist cleared for this chat.");
-    renderRPG();
+    checkMessage();
+  });
+  document.querySelectorAll(".rpg-sao-unblock-one").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const one = blockedBondList().find((b) => b.key === el.dataset.key);
+      unblockBonds([el.dataset.key]);
+      if (window.toastr) hudToast.info(`${one?.name || "Bond"} unblocked. They come back if the story still has them.`);
+      checkMessage();
+    };
   });
 
   // live, without a re-render: rebuilding the menu would drop the slider mid-drag
@@ -11804,7 +12005,7 @@ function parsePipeFormat(text) {
 
   newState.bonds = newState.bonds.filter((b) => {
     const k = normBondName(b?.name);
-    if (bondBlocklist.has(k)) return false;                       // deleted on purpose
+    if (bondSuppressed(k)) return false;                          // deleted on purpose (or hidden until a newer reply)
     if (!uiSettings.autoAddBonds && !declared.has(k)) return false; // no silent adds
     return true;
   });
@@ -11941,7 +12142,10 @@ $(document).on('change', '#rpg-settings-autoinject', function() {
       invalidateHistoryMemory();
     }
     // small delay: some events fire before chat[] is updated
-    setTimeout(() => checkMessage(), 150);
+    setTimeout(() => {
+      if (name === "MESSAGE_RECEIVED") { try { if (scrubBlockedFromLatest()) invalidateHistoryMemory(); } catch {} }
+      checkMessage();
+    }, 150);
   });
 });
 
