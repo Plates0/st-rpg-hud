@@ -52,7 +52,7 @@ Deadlines for anything over ~5 turns; grant or steal time by moving the deadline
 Drop resolved CD/BUFF/DEBUFF. Keep EVENT/DOOM listed until narrated, fired or not.
 Ex: |Timers:Heavy Strike:2/3:CD;Phase Veil:2/2x:BUFF;Kira/Regen:3/5:BUFF;Dentist:Dec 6 1023,14:00:EVENT;Plague:Jan 9 1023,06:00:DOOM;Sensitivity Debuff:Mar 4 3027,07:23|
 
-Calendar: Format `Month Day Year,Clock` (e.g. `Jan 5 1023,14:30`). If day exceeds the month's max, roll to day 1 of next month; Dec 31 rolls to Jan 1 of next year.
+Calendar: Format `Month Day Year,Clock` (e.g. `Jan 5 2055,14:30`). If day exceeds the month's max, roll to day 1 of next month; Dec 31 rolls to Jan 1 of next year.
 - 30: Apr, Jun, Sep, Nov | 31: Jan, Mar, May, Jul, Aug, Oct, Dec | 28: Feb
 
 |Bonds:| Format: |Bonds:Name:X/100;|
