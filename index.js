@@ -522,7 +522,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-06.4";
+const HUD_BUILD = "2026-11-09.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -5314,8 +5314,45 @@ function setSkin(name) {
 
 function renderRPG() {
   if ((uiSettings.skin || "classic") === "sao") return renderSaoSkin();
-  return renderClassicSkin();
+  const out = renderClassicSkin();
+  try { fitHudToScreen(); } catch (e) { console.warn("RPG HUD: fit to screen failed", e); }
+  return out;
 }
+
+// Classic, System and Gray Fog: keep the whole panel on screen. On a short
+// screen (a phone, or with the keyboard up) the scrolling list box gives up
+// height first, so Save, the menu and the settings stay reachable; if that
+// isn't enough, the panel itself scrolls.
+const HUD_SCREEN_GAP = 8;     // px kept clear below the panel
+const HUD_LIST_MIN = 56;      // the list box never shrinks below this
+function fitHudToScreen() {
+  const c = document.getElementById("rpg-hud-container");
+  if (!c || isMinimized || c.classList.contains("rpg-fog-orb")) return;
+  const body = c.querySelector('[data-scroll-key^="c:body:"]');
+  const base = body ? Number(body.dataset.baseH || parseFloat(body.style.height) || 0) : 0;
+  if (body && !body.dataset.baseH) body.dataset.baseH = String(base);
+  if (body && base) body.style.height = `${base}px`;
+  c.style.maxHeight = "";
+  if (c.dataset.fitScroll) { c.style.overflowY = ""; c.style.overflow = "hidden"; delete c.dataset.fitScroll; }
+  const vv = window.visualViewport;
+  const limit = (vv ? vv.height + vv.offsetTop : window.innerHeight) - HUD_SCREEN_GAP;
+  let over = c.getBoundingClientRect().bottom - limit;
+  if (over <= 0) return;
+  if (body && base) {
+    body.style.height = `${Math.max(HUD_LIST_MIN, Math.floor(base - over))}px`;
+    over = c.getBoundingClientRect().bottom - limit;
+    if (over <= 0) return;
+  }
+  // still too tall (a very short screen, or a long editor up top): scroll the panel
+  c.style.maxHeight = `${Math.max(160, Math.floor(limit - c.getBoundingClientRect().top))}px`;
+  // the settings sheet covers the panel and scrolls by itself, so the panel stays put under it
+  c.style.overflowY = isSettingsOpen ? "hidden" : "auto";
+  c.dataset.fitScroll = "1";
+}
+let hudFitTimer = 0;
+const hudFitSoon = () => { clearTimeout(hudFitTimer); hudFitTimer = setTimeout(() => { try { if ((uiSettings.skin || "classic") !== "sao") fitHudToScreen(); } catch {} }, 80); };
+window.addEventListener("resize", hudFitSoon);
+window.visualViewport?.addEventListener("resize", hudFitSoon);
 
 // ---------------------------------------------------------------- SAO SKIN
 let saoPanel = null;        // null | "status" | "bonds" | "quests" | "place" | "gear"
@@ -9515,6 +9552,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-11-09.1", items: [
+    "The panel (Classic, System and Gray Fog) now stays on screen on short screens like phones: the list box gives up height first so editors' Save, the settings and the bottom buttons stay reachable, and if that isn't enough the panel scrolls. It also refits when the keyboard opens.",
+  ] },
   { build: "2026-11-06.4", items: [
     "New setting, Block removed bonds (on by default). Turn it off and a bond you remove is only gone until a newer reply gives that character a bond again; older replies still can't bring it back.",
     "Blocked bonds no longer linger in older replies. The blocked list shows when earlier replies still name them in their |Bonds:| ledger (which the model reads, and which can set off lorebook entries) and can remove them in one go, and a new reply that copies a blocked name into its ledger has it taken back out.",
