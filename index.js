@@ -522,7 +522,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-09.1";
+const HUD_BUILD = "2026-11-10.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -5080,15 +5080,39 @@ function tDiffLists(out, a, b, owner = "", who = null) {
   WATCHED_LISTS.forEach(({ key, label }) => {
     const tag = owner ? `${owner} \u00B7 ${label}` : label;
     const A = tListMap(a?.[key]), B = tListMap(b?.[key]);
+    const isMastery = key === "masteries";
     B.forEach((text, k) => {
-      if (!A.has(k)) { out.push({ tone: "good", text: `+ ${tag}: ${text}`, u: { f: "list", key, k, who } }); return; }
+      if (!A.has(k)) {
+        out.push({ tone: "good", text: isMastery ? `+ ${tag} ${masteryPretty(text)}` : `+ ${tag}: ${text}`, u: { f: "list", key, k, who } });
+        return;
+      }
       const before = A.get(k);
       if (before === text || stripStatusTags(before) === stripStatusTags(text)) return;
+      // a mastery whose numbers moved reads like a stat: "Mastery Swordsmanship: 45 → 46/100 (+1)"
+      if (isMastery) {
+        const p0 = saoParseProgress(stripStatusTags(before)), p1 = saoParseProgress(stripStatusTags(text));
+        const c0 = tNum(p0.curr), c1 = tNum(p1.curr);
+        if (c0 !== null && c1 !== null && p0.tail.trim() === p1.tail.trim()) {
+          const maxMoved = String(p0.max) !== String(p1.max);
+          if (c0 === c1 && !maxMoved) return;
+          const from = maxMoved ? `${c0}/${p0.max}` : `${c0}`;
+          out.push({ tone: c1 > c0 ? "good" : c1 < c0 ? "bad" : "neutral", u: { f: "list", key, k, who },
+            text: `${tag} ${p1.name}: ${from} \u2192 ${c1}/${p1.max}${c1 !== c0 ? ` (${tSigned(c1 - c0)})` : ""}` });
+          return;
+        }
+      }
       out.push({ tone: "neutral", text: `~ ${tag}: ${stripStatusTags(before)} \u2192 ${stripStatusTags(text)}`, u: { f: "list", key, k, who },
         diff: { label: tag, name: tItemName(text), before: stripStatusTags(before), after: stripStatusTags(text) } });
     });
-    A.forEach((text, k) => { if (!B.has(k)) out.push({ tone: "bad", text: `\u2212 ${tag}: ${text}`, u: { f: "list", key, k, who } }); });
+    A.forEach((text, k) => { if (!B.has(k)) out.push({ tone: "bad", text: isMastery ? `\u2212 ${tag} ${masteryPretty(text)}` : `\u2212 ${tag}: ${text}`, u: { f: "list", key, k, who } }); });
   });
+}
+
+// "Swordsmanship:45/100" -> "Swordsmanship: 45/100"
+function masteryPretty(text) {
+  const p = saoParseProgress(text);
+  if (p.curr === "") return String(text ?? "").trim();
+  return `${p.name}: ${p.curr}/${p.max}${p.tail}`;
 }
 
 const tTimerKey = (t) => `${String(t?.owner || "").toLowerCase()}|${String(t?.name || "").toLowerCase()}`;
@@ -8019,7 +8043,7 @@ function classicMasteryHtml(items) {
     return `<div class="rpg-c-ed">${saoMasteriesSection(items)}</div>`;
   }
   return `<div style="display:flex; justify-content:flex-end; margin-bottom:3px;">${editBtn("rpg-sao-ms-edit", "✎", "#4FC3F7")}</div>` +
-    makeList(items, "No Mastery Tracking");
+    makeList((Array.isArray(items) ? items : []).map((x) => typeof x === "string" ? masteryPretty(x) : x), "No Mastery Tracking");
 }
 
 function classicQuestHtml() {
@@ -9552,6 +9576,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-11-10.1", items: [
+    "Mastery progress in the turn log now reads like a stat (\"Mastery Swordsmanship: 45 \u2192 46/100 (+1)\") instead of crossing out the old entry, and masteries show as \"Name: 45/100\" with a space after the colon.",
+  ] },
   { build: "2026-11-09.1", items: [
     "The panel (Classic, System and Gray Fog) now stays on screen on short screens like phones: the list box gives up height first so editors' Save, the settings and the bottom buttons stay reachable, and if that isn't enough the panel scrolls. It also refits when the keyboard opens.",
   ] },
