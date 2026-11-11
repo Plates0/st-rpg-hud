@@ -522,7 +522,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-10.1";
+const HUD_BUILD = "2026-11-11.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -6760,6 +6760,9 @@ const LIST_ICONS = {
   laptop:  ico("M5.5 5.5h13v9h-13z M2.8 18.5h18.4l-1.7-4H4.5z"),
   camera:  ico("M4 8.2h3.4l1.6-2.6h6l1.6 2.6H20v10.6H4z", '<circle cx="12" cy="13.4" r="3.4"/>'),
   misc:    ico("M9 9.2a3 3 0 1 1 4.6 2.5c-1 .6-1.6 1.3-1.6 2.6 M12 17.6v.4"),
+  card:    ico("M5 5.5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z M5.6 15.4c.4-1.5 1.4-2.3 2.6-2.3s2.2.8 2.6 2.3 M13.2 9.6h5 M13.2 12.4h5 M13.2 15.2h3", '<circle cx="8.2" cy="10.3" r="1.6"/>'),
+  medal:   ico("M7.6 2.6h3.1L12 6.8l1.3-4.2h3.1L13.6 9.8h-3.2z", '<circle cx="12" cy="15.2" r="5.2"/><path d="M12.00 12.70 12.62 14.35 14.38 14.43 13.00 15.52 13.47 17.22 12.00 16.25 10.53 17.22 11.00 15.52 9.62 14.43 11.38 14.35z" stroke-width="1.2"/>'),
+  paper:   ico("M6 3h8.6L19 7.4V21H6z M14.6 3v4.4H19 M8.8 11h7.4 M8.8 14h7.4 M8.8 17h4.6"),
   quest:   ico("M6 21V3.5 M6 4.5h11.5l-2.5 4 2.5 4H6"),
   // skills and passives
   fire:    ico("M12 3c.9 3.1 5 5 5 10.2a5 5 0 0 1-10 0c0-3 1.8-4.2 2-6.2 1.1.9 1.9 2 2 3.3 1.2-2.1 1.3-4.6 1-7.3z"),
@@ -6791,9 +6794,13 @@ const ITEM_KINDS = [
   ["armor",  /\b(armou?r|mail|plate|helm|helmet|gauntlets?|greaves|boots|cloak|robes?|coat|shirt|dress|jacket|tunic|hood|gloves|cape|vest|pants|trousers|uniform|outfit|clothes|clothing|garb|leathers?|hat|mask|belt)\b/],
   ["potion", /\b(potion|elixir|tonic|draught|vial|flask|antidote|salve|crystal|bandages?|medicine|pills?|herbs?)\b/],
   ["food",   /\b(food|bread|rations?|meat|apple|fruit|stew|cheese|jerky|berr(y|ies)|fish|cake|pie|drink|water|ale|wine|tea|soup|meal)\b/],
-  ["key",    /\b(key|keycard|keys)\b/],
-  ["book",   /\b(scroll|book|tome|map|letter|note|journal|grimoire|manual|page|diary|contract)\b/],
-  ["ring",   /\b(ring|amulet|necklace|pendant|bracelet|earrings?|charm|talisman|brooch|circlet|crown|halo|locket|keychain|keyring|trinket|bauble|accessory|accessories|pin|badge|emblem|anklet|tiara|choker|strap|watch|wristwatch)\b/],
+  // cards and papers before keys and books: "Keycard" is a card, "Seer Formula" a sheet of paper
+  ["card",   /\b(card|cards|keycard|id|license|licence|passport|ticket|tickets|pass|permit|membership|credentials?)\b/],
+  ["key",    /\b(key|keys)\b/],
+  ["paper",  /\b(paper|papers|note|notes|notepad|formula|formulas|recipe|recipes|letter|letters|document|documents|blueprint|blueprints|schematic|deed|certificate|receipt|memo|flyer|poster|notice|page|pages|sheet|parchment|contract|invoice|manuscript|map|maps|report|dossier|warrant|bounty)\b/],
+  ["book",   /\b(scroll|book|tome|journal|grimoire|manual|diary|codex|bible|almanac|ledger)\b/],
+  ["medal",  /\b(badge|badges|medal|medals|medallion|insignia|emblem|crest|sigil|seal)\b/],
+  ["ring",   /\b(ring|amulet|necklace|pendant|bracelet|earrings?|charm|talisman|brooch|circlet|crown|halo|locket|keychain|keyring|trinket|bauble|accessory|accessories|pin|anklet|tiara|choker|strap|watch|wristwatch)\b/],
   ["gem",    /\b(gem|jewel|ruby|emerald|sapphire|diamond|ore|ingot|shard|stone|pearl|materials?|hide|pelt|scales?|fang|claw|bone|crystals)\b/],
   ["coin",   /\b(coins?|gold|purse|pouch|money|col)\b/],
   ["bag",    /\b(rope|torch|lantern|pickaxe|shovel|lockpicks?|tools?|kit|compass|tent|bedroll|bag|backpack|satchel|flint|whetstone|sheath|scabbard|holster|case)\b/],
@@ -6884,7 +6891,7 @@ function setIconOverride(listKey, text, kind) {
 
 // every icon, the list's own kind first
 const ITEM_ICON_ORDER = ["sword", "dagger", "spear", "axe", "hammer", "bow", "gun", "staff", "shield", "armor", "ring", "potion",
-  "food", "key", "book", "gem", "coin", "bag", "phone", "laptop", "camera", "misc"];
+  "food", "key", "book", "paper", "card", "medal", "gem", "coin", "bag", "phone", "laptop", "camera", "misc"];
 const SKILL_ICON_ORDER = ["fire", "ice", "bolt", "heal", "dark", "wind", "burst", "badge"];
 function iconPickerHtml(listKey, i, current, isCustom) {
   const order = listKey === "inventory" ? [...ITEM_ICON_ORDER, ...SKILL_ICON_ORDER] : [...SKILL_ICON_ORDER, ...ITEM_ICON_ORDER];
@@ -8563,7 +8570,17 @@ function fogSequenceOf(display) {
   if (m) return tNum(m.curr);
   const st = display?.stats || {};
   const k = Object.keys(st).find((x) => /^seq(uence)?$/i.test(x));
-  return k ? tNum(st[k]) : null;
+  if (k) return tNum(st[k]);
+  // a mastery naming it: "Sequence 9: Seer", "Seer (Sequence 8)", "Seq 7 Magician: 40/100".
+  // Lower is further along, so with several the lowest one counts.
+  let best = null;
+  (Array.isArray(display?.masteries) ? display.masteries : []).forEach((x) => {
+    const name = saoParseProgress(String(typeof x === "object" ? x?.name ?? "" : x ?? "")).name;
+    const mm = name.match(/\bseq(?:uence)?\b\.?\s*[:#-]?\s*(\d{1,2})\b/i);
+    const n = mm ? parseInt(mm[1], 10) : NaN;
+    if (Number.isFinite(n) && (best === null || n < best)) best = n;
+  });
+  return best;
 }
 function fogNumberHtml(display, time) {
   const mode = uiSettings.fogNumber || "auto";
@@ -9576,6 +9593,10 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-11-11.1", items: [
+    "New item icons: a card (adventurer or guild cards, IDs, credit cards, keycards, tickets, passes, licences), a badge (badges, medals, insignia, emblems, crests) and a sheet of paper (notes, letters, formulas like \"Sequence 9: Seer Formula\", recipes, documents, maps, contracts, blueprints).",
+    "Gray Fog's tarot number now also finds the Sequence in the Mastery tab (\"Sequence 9: Seer\", \"Seer (Sequence 8)\" and the like); with more than one, the lowest counts.",
+  ] },
   { build: "2026-11-10.1", items: [
     "Mastery progress in the turn log now reads like a stat (\"Mastery Swordsmanship: 45 \u2192 46/100 (+1)\") instead of crossing out the old entry, and masteries show as \"Name: 45/100\" with a space after the colon.",
   ] },
