@@ -522,7 +522,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-11.1";
+const HUD_BUILD = "2026-11-12.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -4392,6 +4392,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         </div>`; })() : ""}
 
         <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Appearance</div>
+        <button id="rpg-settings-transfer" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:6px; cursor:pointer;" title="Copy all your HUD settings as a code, or paste one in">⇄ Transfer settings (copy / paste)</button>
         <button id="rpg-settings-reset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:6px; cursor:pointer;">↺ Reset settings to defaults</button>
         <button id="rpg-settings-resetlayout" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px; cursor:pointer;">✥ Reset SAO layout</button>
 
@@ -4836,6 +4837,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    };
 	  });
 
+	  const trEl = document.getElementById("rpg-settings-transfer");
+	  if (trEl) trEl.onclick = openTransferDialog;
 	  const resetEl = document.getElementById("rpg-settings-reset");
 	  if (resetEl) resetEl.onclick = resetUiSettings;
 
@@ -6951,6 +6954,215 @@ function bestEntryIndex(items, key, text, taken = new Set()) {
   });
   return best;
 }
+
+// =====================================================================
+// SETTINGS TRANSFER
+// One code (or a small file) carrying every HUD setting, so they survive a
+// cleared cache or move to another browser: sizes, skin choices, colours,
+// meter icons, item icons you picked, background layers (uploaded pictures
+// included, if you like) and, optionally, chat data kept on this device
+// (blocked bonds, position and change locks).
+// =====================================================================
+const TRANSFER_PREFIX_Z = "RPGHUD1z.";   // gzip, then base64
+const TRANSFER_PREFIX_P = "RPGHUD1p.";   // plain JSON, base64 (no CompressionStream)
+const TRANSFER_CHAT_KEYS = [BOND_BLOCK_KEY, "rpg_hud_bond_auto_v1", "rpg_hud_bond_hidden_v1", "rpg_hud_bond_block_names_v1", "rpgHud:posLocks", "rpgHud:turnLocks"];
+
+function transferImageKeys() {
+  const out = [];
+  try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith("rpgHud:emblemImg:")) out.push(k); } } catch {}
+  return out;
+}
+function transferImageBytes() {
+  let n = 0;
+  transferImageKeys().forEach((k) => { try { n += (localStorage.getItem(k) || "").length; } catch {} });
+  return n;
+}
+function transferPayload({ images = true, chatData = true } = {}) {
+  const out = { v: 1, build: HUD_BUILD, at: new Date().toISOString(), settings: { ...uiSettings }, icons: { ...iconOverridesAll() } };
+  if (images) {
+    out.images = {};
+    transferImageKeys().forEach((k) => { try { out.images[k] = localStorage.getItem(k); } catch {} });
+  }
+  if (chatData) {
+    out.chat = {};
+    TRANSFER_CHAT_KEYS.forEach((k) => { try { const v = localStorage.getItem(k); if (v) out.chat[k] = JSON.parse(v); } catch {} });
+  }
+  return out;
+}
+function bytesToB64(bytes) {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+function b64ToBytes(b64) {
+  const bin = atob(b64.replace(/\s+/g, ""));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+async function transferEncode(obj) {
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  if (typeof CompressionStream === "function") {
+    try {
+      const zipped = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
+      return TRANSFER_PREFIX_Z + bytesToB64(zipped);
+    } catch {}
+  }
+  return TRANSFER_PREFIX_P + bytesToB64(bytes);
+}
+async function transferDecode(code) {
+  const text = String(code || "").trim();
+  let bytes;
+  if (text.startsWith(TRANSFER_PREFIX_Z)) {
+    if (typeof DecompressionStream !== "function") throw new Error("This browser can't unpack compressed codes.");
+    const zipped = b64ToBytes(text.slice(TRANSFER_PREFIX_Z.length));
+    bytes = new Uint8Array(await new Response(new Blob([zipped]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+  } else if (text.startsWith(TRANSFER_PREFIX_P)) {
+    bytes = b64ToBytes(text.slice(TRANSFER_PREFIX_P.length));
+  } else if (text.startsWith("{")) {
+    bytes = new TextEncoder().encode(text);                       // a plain JSON export works too
+  } else {
+    throw new Error("That isn't an RPG HUD settings code.");
+  }
+  const obj = JSON.parse(new TextDecoder().decode(bytes));
+  if (!obj || obj.v !== 1 || typeof obj.settings !== "object") throw new Error("That code is damaged or from an unknown version.");
+  return obj;
+}
+function transferApply(obj) {
+  const failed = [];
+  uiSettings = { ...defaultUiSettings, ...obj.settings };
+  saveUiSettings();
+  if (obj.icons && typeof obj.icons === "object") saveIconOverrides({ ...obj.icons });
+  if (obj.images && typeof obj.images === "object") {
+    Object.entries(obj.images).forEach(([k, v]) => {
+      if (!k.startsWith("rpgHud:emblemImg:") || typeof v !== "string") return;
+      try { localStorage.setItem(k, v); } catch { failed.push(k); }
+    });
+    Object.keys(emblemImgCache).forEach((k) => delete emblemImgCache[k]);
+  }
+  if (obj.chat && typeof obj.chat === "object") {
+    TRANSFER_CHAT_KEYS.forEach((k) => {
+      const incoming = obj.chat[k];
+      if (!incoming || typeof incoming !== "object") return;
+      try {
+        const mine = JSON.parse(localStorage.getItem(k) || "{}") || {};
+        localStorage.setItem(k, JSON.stringify({ ...mine, ...incoming }));   // per chat: the code's chats win, others stay
+      } catch { failed.push(k); }
+    });
+    try { loadBondBlocklist(bondBlockChatKey); } catch {}
+  }
+  try { invalidateHistoryMemory(); } catch {}
+  return failed;
+}
+const fmtKB = (n) => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
+
+// The dialog: a sheet of its own over the page, so it works the same in every skin.
+function openTransferDialog(e) {
+  if (e) e.stopPropagation();
+  document.getElementById("rpg-transfer")?.remove();
+  const imgBytes = transferImageBytes();
+  const wrap = document.createElement("div");
+  wrap.id = "rpg-transfer";
+  wrap.innerHTML = `
+    <div class="rpg-tr-sheet" role="dialog" aria-label="Transfer settings">
+      <div class="rpg-tr-head"><b>Transfer settings</b><button class="rpg-tr-x" title="Close">&#10005;</button></div>
+      <p class="rpg-tr-hint">Copy a code here, then paste it on the other browser (or after clearing your cache) to get the same HUD back.</p>
+      <div class="rpg-tr-sec">Copy</div>
+      <label class="rpg-tr-row"><input type="checkbox" id="rpg-tr-img" ${imgBytes ? "checked" : "disabled"}> Uploaded background pictures ${imgBytes ? `(${fmtKB(imgBytes)})` : "(none)"}</label>
+      <label class="rpg-tr-row"><input type="checkbox" id="rpg-tr-chat" checked> Chat data on this device (blocked bonds, locks)</label>
+      <div class="rpg-tr-btns">
+        <button id="rpg-tr-copy">Copy code</button>
+        <button id="rpg-tr-file">Save as file</button>
+      </div>
+      <textarea id="rpg-tr-out" readonly placeholder="The code appears here if it can't be copied automatically." style="display:none"></textarea>
+      <div class="rpg-tr-sec">Paste</div>
+      <textarea id="rpg-tr-in" placeholder="Paste a settings code here"></textarea>
+      <div class="rpg-tr-btns">
+        <label class="rpg-tr-filebtn">Open file<input type="file" id="rpg-tr-open" accept=".txt,.json,text/plain,application/json"></label>
+        <button id="rpg-tr-apply" class="primary">Apply</button>
+      </div>
+      <p class="rpg-tr-msg" id="rpg-tr-msg"></p>
+    </div>`;
+  document.body.appendChild(wrap);
+  const $id = (id) => wrap.querySelector(`#${id}`);
+  const msg = (t, bad) => { const m = $id("rpg-tr-msg"); m.textContent = t; m.classList.toggle("bad", !!bad); };
+  const close = () => wrap.remove();
+  wrap.querySelector(".rpg-tr-x").onclick = close;
+  wrap.onclick = (ev) => { if (ev.target === wrap) close(); };
+  wrap.addEventListener("keydown", (ev) => { ev.stopPropagation(); if (ev.key === "Escape") close(); });
+  const build = async () => transferEncode(transferPayload({ images: $id("rpg-tr-img").checked, chatData: $id("rpg-tr-chat").checked }));
+  $id("rpg-tr-copy").onclick = async () => {
+    try {
+      const code = await build();
+      let copied = false;
+      try { await navigator.clipboard.writeText(code); copied = true; } catch {}
+      if (copied) { msg(`Copied (${fmtKB(code.length)}). Paste it under Transfer settings on the other side.`); return; }
+      const out = $id("rpg-tr-out");
+      out.style.display = ""; out.value = code; out.focus(); out.select();
+      msg("Couldn't copy automatically. The code is selected below: copy it by hand, or use Save as file.");
+    } catch (err) { msg(`Couldn't make the code: ${err.message || err}`, true); }
+  };
+  $id("rpg-tr-file").onclick = async () => {
+    try {
+      const code = await build();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([code], { type: "text/plain" }));
+      a.download = `rpg-hud-settings-${new Date().toISOString().slice(0, 10)}.txt`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      msg(`Saved (${fmtKB(code.length)}).`);
+    } catch (err) { msg(`Couldn't save: ${err.message || err}`, true); }
+  };
+  $id("rpg-tr-open").onchange = async (ev) => {
+    const f = ev.target.files?.[0];
+    if (!f) return;
+    $id("rpg-tr-in").value = (await f.text()).trim();
+    msg(`Loaded ${f.name}. Press Apply.`);
+  };
+  $id("rpg-tr-apply").onclick = async () => {
+    let obj;
+    try { obj = await transferDecode($id("rpg-tr-in").value); }
+    catch (err) { msg(err.message || String(err), true); return; }
+    const parts = ["all HUD settings"];
+    if (obj.icons && Object.keys(obj.icons).length) parts.push(`${Object.keys(obj.icons).length} item icon choice(s)`);
+    if (obj.images && Object.keys(obj.images).length) parts.push(`${Object.keys(obj.images).length} background picture(s)`);
+    if (obj.chat && Object.keys(obj.chat).length) parts.push("chat data (blocked bonds, locks)");
+    const ok = confirm(`Replace your HUD settings with this code's?\n\nIt has ${parts.join(", ")}` +
+      `${obj.at ? `, saved ${new Date(obj.at).toLocaleString()}` : ""}.\n\nYour current settings are overwritten.`);
+    if (!ok) return;
+    const failed = transferApply(obj);
+    close();
+    isSettingsOpen = false;
+    const c = document.getElementById("rpg-hud-container");
+    if (c) { c.style.cssText = ""; c.className = ""; }
+    try { checkMessage(); } catch {}
+    renderRPG();
+    if (window.toastr) {
+      if (failed.length) hudToast.warning(`Settings applied, but ${failed.length} item(s) didn't fit in this browser's storage (likely a large background picture).`);
+      else hudToast.success("Settings applied.");
+    }
+  };
+}
+const TRANSFER_CSS = `
+#rpg-transfer{position:fixed; inset:0; z-index:200000; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; padding:12px; box-sizing:border-box}
+#rpg-transfer .rpg-tr-sheet{width:min(420px, 100%); max-height:calc(100dvh - 24px); overflow:auto; box-sizing:border-box; padding:12px 14px;
+  background:#16171c; color:#e2e2e8; border:1px solid #555; border-radius:6px; font:14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; box-shadow:0 10px 40px rgba(0,0,0,.6)}
+#rpg-transfer .rpg-tr-head{display:flex; justify-content:space-between; align-items:center; margin-bottom:6px}
+#rpg-transfer .rpg-tr-x{background:none; border:0; color:#aaa; font-size:16px; cursor:pointer; padding:2px 6px}
+#rpg-transfer .rpg-tr-hint{margin:0 0 8px; color:#a6a6b0; font-size:.88em}
+#rpg-transfer .rpg-tr-sec{margin:10px 0 4px; font-size:.78em; letter-spacing:.08em; text-transform:uppercase; color:#9a9aa6}
+#rpg-transfer .rpg-tr-row{display:flex; gap:8px; align-items:center; margin:4px 0; font-size:.92em}
+#rpg-transfer .rpg-tr-row input{width:16px; height:16px}
+#rpg-transfer .rpg-tr-btns{display:flex; gap:8px; margin:6px 0}
+#rpg-transfer button,#rpg-transfer .rpg-tr-filebtn{flex:1; background:#24252c; color:#e2e2e8; border:1px solid #5a5a66; border-radius:4px; padding:7px 8px; cursor:pointer; font:inherit; text-align:center}
+#rpg-transfer button.primary{background:#2f4a6e; border-color:#5d8ac2}
+#rpg-transfer .rpg-tr-x{flex:0 0 auto}
+#rpg-transfer .rpg-tr-filebtn input{display:none}
+#rpg-transfer textarea{width:100%; box-sizing:border-box; min-height:74px; resize:vertical; background:#0f1014; color:#d8d8e0; border:1px solid #444; border-radius:4px; padding:6px; font:12px/1.35 ui-monospace, Menlo, Consolas, monospace; word-break:break-all}
+#rpg-transfer .rpg-tr-msg{min-height:1.2em; margin:6px 0 0; font-size:.88em; color:#9fd29f}
+#rpg-transfer .rpg-tr-msg.bad{color:#ff8a80}
+`;
+(() => { try { const st = document.createElement("style"); st.id = "rpg-transfer-css"; st.textContent = TRANSFER_CSS; document.head.appendChild(st); } catch {} })();
 
 // ---- position locks ----
 // A locked entry keeps its place in its list (1st, 2nd, 3rd...). After each
@@ -9593,6 +9805,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-11-12.1", items: [
+    "Transfer settings (in Settings): copy every HUD setting as one code, or save it as a file, then paste or open it elsewhere (or after clearing your cache) to get the same HUD back: size, skin options, the rewrite number, colours, icons, background layers and, if you like, uploaded pictures and this device's chat data (blocked bonds, locks).",
+  ] },
   { build: "2026-11-11.1", items: [
     "New item icons: a card (adventurer or guild cards, IDs, credit cards, keycards, tickets, passes, licences), a badge (badges, medals, insignia, emblems, crests) and a sheet of paper (notes, letters, formulas like \"Sequence 9: Seer Formula\", recipes, documents, maps, contracts, blueprints).",
     "Gray Fog's tarot number now also finds the Sequence in the Mastery tab (\"Sequence 9: Seer\", \"Seer (Sequence 8)\" and the like); with more than one, the lowest counts.",
@@ -10054,6 +10269,8 @@ function saoHelpPanel() {
           "The other way to solve the same problem: a faint card behind that text instead of a shadow. Use one or the other, or neither.")
       + item("Panel brightness",
           "Dims the panels while they stay solid. Take it below halfway and they go dark, with the text inverting to light \u2014 small light-on-dark text renders crisper than dark-on-light.")
+      + item("Transfer settings",
+          "Copies every HUD setting as one code (or a file) to paste in elsewhere, for example after clearing your cache. Uploaded background pictures and this device's chat data (blocked bonds, locks) can go along too.")
       + item("Reset settings",
           "Puts every slider and toggle back to its default. Your skin choice and chat data stay as they are.")
       + item("Move HUD pieces",
@@ -10128,6 +10345,7 @@ function saoSettingsHtml() {
     + row("rpg-sao-help", "?", saoHelpOpen === true ? "Hide help" : "What these do")
     + row("rpg-sao-whatsnew", "\u2726", saoHelpOpen === "log" ? "Hide what's new" : `What's new${changelogUnseen() ? " \u2022" : ""}`)
     + row("rpg-sao-move", "\u2725", "Move HUD pieces")
+    + row("rpg-sao-transfer", "\u21C4", "Transfer settings")
     + row("rpg-sao-reset", "\u21BA", "Reset settings")
     + row("rpg-sao-layoutrep", "\u2316", saoHelpOpen === "layout" ? "Hide layout report" : "Layout report")
     + row("rpg-sao-insert", "&#8595;", "Insert state")
@@ -10666,6 +10884,7 @@ function saoBind() {
     renderRPG();
   });
   bind("rpg-sao-reset", resetUiSettings);
+  bind("rpg-sao-transfer", openTransferDialog);
   // the embedded error panel closes itself via isErrorOpen, which this skin
   // doesn't use — its visibility is saoPanel, so close that instead
   bind("rpg-error-close", () => { isErrorOpen = false; saoPanel = null; renderRPG(); });
