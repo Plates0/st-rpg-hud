@@ -522,7 +522,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-12.1";
+const HUD_BUILD = "2026-11-12.2";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -6766,6 +6766,9 @@ const LIST_ICONS = {
   card:    ico("M5 5.5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z M5.6 15.4c.4-1.5 1.4-2.3 2.6-2.3s2.2.8 2.6 2.3 M13.2 9.6h5 M13.2 12.4h5 M13.2 15.2h3", '<circle cx="8.2" cy="10.3" r="1.6"/>'),
   medal:   ico("M7.6 2.6h3.1L12 6.8l1.3-4.2h3.1L13.6 9.8h-3.2z", '<circle cx="12" cy="15.2" r="5.2"/><path d="M12.00 12.70 12.62 14.35 14.38 14.43 13.00 15.52 13.47 17.22 12.00 16.25 10.53 17.22 11.00 15.52 9.62 14.43 11.38 14.35z" stroke-width="1.2"/>'),
   paper:   ico("M6 3h8.6L19 7.4V21H6z M14.6 3v4.4H19 M8.8 11h7.4 M8.8 14h7.4 M8.8 17h4.6"),
+  pen:     ico("M15.6 4.4l4 4L9 19l-5 1 1-5z M13.6 6.4l4 4 M5 15l4 4"),
+  brush:   ico("M19.6 3.2a1.3 1.3 0 0 1 1.2 1.2l-7 8.3-2.5-2.5z M11.3 10.2l2.5 2.5 M10.3 11.5c1.9-.5 3 .6 2.6 2.5-.7 2.9-3.6 5.1-8.4 5.8.6-4.8 2.6-7.8 5.8-8.3z"),
+  herb:    ico("M19.6 4.4C10.2 4.4 4.6 8.8 4.9 17.3c8.6.3 14.7-4.3 14.7-12.9z M4 20l11-11 M10 14h4.2 M12.6 11.4V7.6 M7.6 16.4V13"),
   quest:   ico("M6 21V3.5 M6 4.5h11.5l-2.5 4 2.5 4H6"),
   // skills and passives
   fire:    ico("M12 3c.9 3.1 5 5 5 10.2a5 5 0 0 1-10 0c0-3 1.8-4.2 2-6.2 1.1.9 1.9 2 2 3.3 1.2-2.1 1.3-4.6 1-7.3z"),
@@ -6792,10 +6795,14 @@ const ITEM_KINDS = [
   ["phone",  /\b(phone|smartphone|cellphone|iphone|mobile|radio|walkie|walkie-talkie|communicator|comms?|pager|beeper|pda|handset|headset|earpiece|transceiver|transmitter|receiver|scanner|tracker|gadget|device|smartwatch)\b/],
   ["laptop", /\b(laptop|computer|pc|terminal|console|datapad|monitor|keyboard|usb|drive|disk|disc|server|hard drive|flash drive)\b/],
   ["camera", /\b(camera|camcorder|polaroid|binoculars|telescope|spyglass)\b/],
+  // writing and painting things
+  ["brush",  /\b(brush|brushes|paintbrush|paintbrushes|paints?|palette|easel|canvas)\b/],
+  ["pen",    /\b(pen|pens|pencil|pencils|quill|quills|marker|markers|crayons?|chalk|ink|inkwell|stylus|charcoal|highlighter|biro)\b/],
   ["staff",  /\b(staff|wand|rod|scepter|sceptre|orb|focus)\b/],
   ["shield", /\b(shield|buckler|aegis)\b/],
   ["armor",  /\b(armou?r|mail|plate|helm|helmet|gauntlets?|greaves|boots|cloak|robes?|coat|shirt|dress|jacket|tunic|hood|gloves|cape|vest|pants|trousers|uniform|outfit|clothes|clothing|garb|leathers?|hat|mask|belt)\b/],
-  ["potion", /\b(potion|elixir|tonic|draught|vial|flask|antidote|salve|crystal|bandages?|medicine|pills?|herbs?)\b/],
+  ["herb",   /\b(herbs?|herbal|leaf|leaves|plants?|flowers?|blossoms?|petals?|moss|roots?|mushrooms?|fungus|fungi|seeds?|sprigs?|weeds?|grass|ferns?|vines?|ginseng|mint|lavender|thyme|basil|rosemary|sage leaf|clover|nightshade|mandrake|lotus|bloom)\b/],
+  ["potion", /\b(potion|elixir|tonic|draught|vial|flask|antidote|salve|crystal|bandages?|medicine|pills?)\b/],
   ["food",   /\b(food|bread|rations?|meat|apple|fruit|stew|cheese|jerky|berr(y|ies)|fish|cake|pie|drink|water|ale|wine|tea|soup|meal)\b/],
   // cards and papers before keys and books: "Keycard" is a card, "Seer Formula" a sheet of paper
   ["card",   /\b(card|cards|keycard|id|license|licence|passport|ticket|tickets|pass|permit|membership|credentials?)\b/],
@@ -6894,7 +6901,7 @@ function setIconOverride(listKey, text, kind) {
 
 // every icon, the list's own kind first
 const ITEM_ICON_ORDER = ["sword", "dagger", "spear", "axe", "hammer", "bow", "gun", "staff", "shield", "armor", "ring", "potion",
-  "food", "key", "book", "paper", "card", "medal", "gem", "coin", "bag", "phone", "laptop", "camera", "misc"];
+  "food", "herb", "key", "book", "paper", "pen", "brush", "card", "medal", "gem", "coin", "bag", "phone", "laptop", "camera", "misc"];
 const SKILL_ICON_ORDER = ["fire", "ice", "bolt", "heal", "dark", "wind", "burst", "badge"];
 function iconPickerHtml(listKey, i, current, isCustom) {
   const order = listKey === "inventory" ? [...ITEM_ICON_ORDER, ...SKILL_ICON_ORDER] : [...SKILL_ICON_ORDER, ...ITEM_ICON_ORDER];
@@ -9805,6 +9812,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-11-12.2", items: [
+    "New item icons: a pencil (pens, pencils, quills, markers, chalk, ink, styluses), a paintbrush (brushes, paints, palettes, canvases) and a leaf (herbs, leaves, plants, flowers, roots, mushrooms, seeds and named herbs like mandrake or lavender). Herbs used to share the potion icon.",
+  ] },
   { build: "2026-11-12.1", items: [
     "Transfer settings (in Settings): copy every HUD setting as one code, or save it as a file, then paste or open it elsewhere (or after clearing your cache) to get the same HUD back: size, skin options, the rewrite number, colours, icons, background layers and, if you like, uploaded pictures and this device's chat data (blocked bonds, locks).",
   ] },
