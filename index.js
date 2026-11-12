@@ -522,7 +522,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-12.2";
+const HUD_BUILD = "2026-11-12.3";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -557,7 +557,10 @@ const defaultUiSettings = {
   fogFold: true,          // Gray Fog: fold the panel into the round button and back
   fogFoldSpeed: "normal", // "slow" | "normal" | "fast" | "instant"
   fogOrbPos: null,        // Gray Fog: where the folded-away button was dragged to, { fx, fy } as screen fractions
-  fogOrbLock: false,      // Gray Fog: the folded-away button can't be dragged
+  fogOrbLock: false,      // (old) Gray Fog's button lock; now minLock
+  fogMinStyle: "orb",     // Gray Fog minimized: "orb" (floating round button) | "tab" (side tab)
+  minTabY: null,          // where the side tab was slid to: its centre, as a fraction of the screen height
+  minLock: false,         // the minimized tab / button can't be moved
   meterIcons: {},         // System and Gray Fog: icons chosen for meters, by meter name (like meterColors)
   fontPreset: "retro_mono",
   fontFamily: "'Courier New', Courier, monospace",
@@ -579,6 +582,9 @@ let uiSettings = (() => {
     return { ...defaultUiSettings };
   }
 })();
+
+// the old Gray Fog-only lock now covers every minimized tab and button
+if (uiSettings.fogOrbLock) { uiSettings.minLock = true; uiSettings.fogOrbLock = false; try { localStorage.setItem(UI_SETTINGS_KEY, JSON.stringify(uiSettings)); } catch {} }
 
 // Puts every HUD setting back to its default. The skin choice is kept, since
 // being thrown into the other skin is rarely what "reset" is meant to do, and
@@ -3668,6 +3674,63 @@ function fogOrbPlaceCss() {
       transform: translateY(-50%);`;
   return "left: 0px; top: 0px;";            // placed exactly by fogOrbPlace() once it's laid out
 }
+// The side tab (Classic, System, Gray Fog's tab form) can be slid up and down
+// the edge; where it was left is kept as its centre, a fraction of the screen height.
+function minTabTopCss(h) {
+  const fy = uiSettings.minTabY;
+  if (!Number.isFinite(fy))
+    return `top: clamp(calc(env(safe-area-inset-top, 0px) + 50px), 20vh, calc(100vh - env(safe-area-inset-bottom, 0px) - 50px)); transform: translateY(-50%);`;
+  return `top: clamp(calc(env(safe-area-inset-top, 0px) + ${FOG_ORB_EDGE}px), calc(${(fy * 100).toFixed(3)}vh - ${h / 2}px), calc(100vh - env(safe-area-inset-bottom, 0px) - ${h + FOG_ORB_EDGE}px)); transform: none;`;
+}
+// the open panel mustn't keep the tab's slide handlers
+function clearMinTabHandlers(c) {
+  c.onpointerdown = c.onpointermove = c.onpointerup = c.onpointercancel = c.oncontextmenu = null;
+  c.style.touchAction = "";
+}
+function bindMinTabDrag(container) {
+  const locked = !!uiSettings.minLock;
+  container.classList.toggle("locked", locked);
+  container.style.touchAction = locked ? "manipulation" : "none";
+  let start = null, dragged = false;
+  container.onpointerdown = (e) => {
+    if (locked || (e.button !== undefined && e.button !== 0)) return;
+    start = { y: e.clientY, id: e.pointerId };
+    dragged = false;
+    container.setPointerCapture?.(e.pointerId);
+  };
+  container.onpointermove = (e) => {
+    if (!start || e.pointerId !== start.id) return;
+    if (!dragged && Math.abs(e.clientY - start.y) < 6) return;     // a tap, not a slide (yet)
+    if (!dragged) {
+      // from the default spot (centred with a transform) to a plain top, measured so a zoomed page still tracks the finger
+      const r = container.getBoundingClientRect(), k = r.height && container.offsetHeight ? r.height / container.offsetHeight : 1;
+      Object.assign(container.style, { top: `${r.top / k}px`, transform: "none" });
+      const r2 = container.getBoundingClientRect();
+      start.k = k; start.a = r2.top - k * (parseFloat(getComputedStyle(container).top) || 0); start.top = r2.top; start.h = r2.height;
+      container.classList.add("dragging");
+    }
+    dragged = true;
+    const vh = window.visualViewport?.height || window.innerHeight;
+    const top = Math.max(FOG_ORB_EDGE, Math.min(vh - start.h - FOG_ORB_EDGE, start.top + (e.clientY - start.y)));
+    container.style.top = `${((top - start.a) / start.k).toFixed(1)}px`;
+    uiSettings.minTabY = (top + start.h / 2) / vh;                   // kept live, so a re-render mid-slide keeps it
+  };
+  const end = (e) => {
+    if (!start || e.pointerId !== start.id) return;
+    start = null;
+    container.classList.remove("dragging");
+    if (dragged) saveUiSettings();
+  };
+  container.onpointerup = end;
+  container.onpointercancel = end;
+  container.oncontextmenu = (e) => e.preventDefault();
+  container.onclick = (e) => {
+    e.stopPropagation();
+    if (dragged) { dragged = false; return; }                       // the end of a slide isn't a tap
+    toggleMinimize(e);
+  };
+}
+
 // How the button's style position maps to where it shows on screen (screen = a + k * style).
 // Measured rather than assumed, so a zoomed or scaled page still puts it right under the finger.
 function fogOrbMap(container) {
@@ -3699,7 +3762,7 @@ function fogBindOrbDrag(container) {
     const vw = window.visualViewport?.width || window.innerWidth, vh = window.visualViewport?.height || window.innerHeight;
     fogOrbPlace(container, p.fx * vw, p.fy * vh);
   }
-  const locked = !!uiSettings.fogOrbLock;
+  const locked = !!uiSettings.minLock;
   container.classList.toggle("locked", locked);
   let start = null, dragged = false;
   btn.onpointerdown = (e) => {
@@ -4060,10 +4123,21 @@ function renderClassicSkin() {
       const latestTitle = latest?.detail ? `${latest.label}\n${latest.detail}` : (latest?.label || "");
 
       container.className = "";
+      if (FOG && uiSettings.fogMinStyle === "tab") {
+        // Gray Fog as a side tab: the same turning star, tinted by the status
+        container.className = "rpg-fog-tab";
+        container.style.cssText = `position: fixed; right: 0; ${minTabTopCss(64)} z-index: 99999; --orb-tint: ${fogStatusTint(latest?.status)};`;
+        fogFoldClasses(container, true);
+        container.innerHTML = `<button class="fog-tab" title="${escAttr(latestTitle || "Open the HUD")}${uiSettings.minLock ? "" : "\n(slide up or down to move)"}" aria-label="Open the HUD">
+          <svg viewBox="0 0 24 24" aria-hidden="true" style="animation-delay:-${Date.now() % 14000}ms">${FOG_STAR_GLYPH("var(--orb-tint)")}</svg></button>`;
+        bindMinTabDrag(container);
+        return;
+      }
       if (FOG) {
         // Gray Fog: a floating round button with the slowly turning star, coloured like the status dot
         const tint = fogStatusTint(latest?.status);
         container.className = "rpg-fog-orb";
+        clearMinTabHandlers(container);
         container.style.cssText = `position: fixed; ${fogOrbPlaceCss()} z-index: 99999; --orb-tint: ${tint};`;
         fogFoldClasses(container, true);
         container.innerHTML = `<button class="fog-orb" title="${escAttr(latestTitle || "Open the HUD")}${"\n"}(drag to move)" aria-label="Open the HUD">
@@ -4073,8 +4147,7 @@ function renderClassicSkin() {
       }
       container.style.cssText = SYS ? `
         position: fixed; right: 0;
-        top: clamp(calc(env(safe-area-inset-top, 0px) + 50px), 20vh, calc(100vh - env(safe-area-inset-bottom, 0px) - 50px));
-        transform: translateY(-50%);
+        ${minTabTopCss(58)}
         width: 26px; height: 58px;
         background: ${FOG ? "rgba(26,26,32,0.94)" : "rgba(5,12,24,0.92)"};
         border: 1px solid ${FOG ? "#c9ccd6" : "#8fd0ff"}; border-right: 0;
@@ -4085,13 +4158,7 @@ function renderClassicSkin() {
       ` : `
         position: fixed;
         right: 0;
-
-		top: clamp(
-		  calc(env(safe-area-inset-top, 0px) + 50px),
-		  20vh,
-		  calc(100vh - env(safe-area-inset-bottom, 0px) - 50px)
-		);
-        transform: translateY(-50%);
+        ${minTabTopCss(58)}
 
         width: 26px;
         height: 58px;
@@ -4127,7 +4194,7 @@ function renderClassicSkin() {
         "></div>
       `;
 
-      container.onclick = toggleMinimize;
+      bindMinTabDrag(container);
       return;
     }
 
@@ -4156,6 +4223,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
   container.className = SYS ? `rpg-sys${FOG ? " rpg-fog" : ""}` : "";
   if (FOG) fogFoldClasses(container, false);
   container.onclick = null;
+  clearMinTabHandlers(container);
 
   try {
     const { root, display, type, isVehicle } = getActiveData();
@@ -4392,6 +4460,12 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         </div>`; })() : ""}
 
         <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Appearance</div>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;">
+          <span style="font-size:0.8em; color:#ddd;" title="Stop the minimized tab (or Gray Fog's round button) from being moved">Lock minimized tab position</span>
+          <input type="checkbox" id="rpg-settings-minlock" ${uiSettings.minLock ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
+        </div>
+        ${(() => { const moved = Number.isFinite(uiSettings.minTabY) || !!uiSettings.fogOrbPos;
+          return `<button id="rpg-settings-minreset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:6px; cursor:pointer;${moved ? "" : " opacity:.45;"}" ${moved ? "" : "disabled"} title="Put the minimized tab (and Gray Fog's round button) back where they started">⇕ Reset minimized tab position</button>`; })()}
         <button id="rpg-settings-transfer" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:6px; cursor:pointer;" title="Copy all your HUD settings as a code, or paste one in">⇄ Transfer settings (copy / paste)</button>
         <button id="rpg-settings-reset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:6px; cursor:pointer;">↺ Reset settings to defaults</button>
         <button id="rpg-settings-resetlayout" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px; cursor:pointer;">✥ Reset SAO layout</button>
@@ -4837,6 +4911,14 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    };
 	  });
 
+	  const mlEl = document.getElementById("rpg-settings-minlock");
+	  if (mlEl) { mlEl.onclick = (e) => e.stopPropagation(); mlEl.onchange = () => { uiSettings.minLock = mlEl.checked; saveUiSettings(); }; }
+	  const mrEl = document.getElementById("rpg-settings-minreset");
+	  if (mrEl) mrEl.onclick = (e) => {
+	    e.stopPropagation();
+	    uiSettings.minTabY = null; uiSettings.fogOrbPos = null; saveUiSettings(); renderRPG();
+	    if (window.toastr) hudToast.success("The minimized tab is back in its usual spot.");
+	  };
 	  const trEl = document.getElementById("rpg-settings-transfer");
 	  if (trEl) trEl.onclick = openTransferDialog;
 	  const resetEl = document.getElementById("rpg-settings-reset");
@@ -8717,6 +8799,18 @@ const FOG_CSS = `
 .rpg-fog-orb .fog-orb svg{width:26px; height:26px; overflow:visible; animation:fogDockSpin 14s linear infinite;
   filter:drop-shadow(0 0 3px var(--orb-tint)) drop-shadow(0 0 1px rgba(0,0,0,.8))}
 @media (prefers-reduced-motion: reduce){.rpg-fog-orb .fog-orb svg{animation:none}}
+/* Gray Fog's side-tab form: a silver-edged tab on the right edge with the same star */
+.rpg-fog-tab{width:32px; height:64px; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none}
+.rpg-fog-tab .fog-tab{width:100%; height:100%; padding:0; cursor:pointer; display:grid; place-items:center; box-sizing:border-box;
+  background:radial-gradient(circle at 40% 35%, #3c3e48, #18181d 75%); border:1px solid rgba(214,217,226,.8); border-right:0; border-radius:8px 0 0 8px;
+  box-shadow:inset 0 0 0 2px rgba(18,18,23,.9), inset 0 0 0 3px rgba(214,217,226,.22), 0 2px 12px rgba(0,0,0,.6), 0 0 12px rgba(200,205,225,.22);
+  -webkit-tap-highlight-color:transparent}
+.rpg-fog-tab .fog-tab svg{width:22px; height:22px; overflow:visible; animation:fogDockSpin 14s linear infinite;
+  filter:drop-shadow(0 0 3px var(--orb-tint)) drop-shadow(0 0 1px rgba(0,0,0,.8))}
+.rpg-fog-tab.dragging .fog-tab{cursor:grabbing}
+.rpg-fog-tab.fog-orb-in{animation:fogTabIn ${FOG_ORB_MS}ms cubic-bezier(.3,1.3,.5,1) both}
+@keyframes fogTabIn{from{translate:100% 0; opacity:.2} to{translate:0 0; opacity:1}}
+@media (prefers-reduced-motion: reduce){.rpg-fog-tab .fog-tab svg{animation:none}}
 .rpg-fog-orb.fog-orb-in .fog-orb{animation:fogOrbIn ${FOG_ORB_MS}ms cubic-bezier(.3,1.4,.5,1) both; animation-delay:inherit; animation-duration:inherit}
 @keyframes fogOrbIn{from{opacity:0; transform:scale(.3) rotate(-60deg)} to{opacity:1; transform:none}}
 /* the status mark in the header: the star, still, in the status colour */
@@ -9642,11 +9736,8 @@ function sysSettingsHtml() {
       </div>
       <div style="${lab}${uiSettings.fogFold === false ? " opacity:.45;" : ""}">Fold speed</div>
       <select id="rpg-fog-fold-speed" style="${sel}${uiSettings.fogFold === false ? " opacity:.45;" : ""}" ${uiSettings.fogFold === false ? "disabled" : ""}>${["slow", "normal", "fast", "instant"].map((v) => opt(v, { slow: "Slow", normal: "Normal", fast: "Fast", instant: "Very fast" }[v], FOG_FOLD_SPEEDS[uiSettings.fogFoldSpeed] ? uiSettings.fogFoldSpeed : "normal")).join("")}</select>
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
-        <span title="Stop the round button (the folded-away HUD) from being dragged">Lock button position</span>
-        <input type="checkbox" id="rpg-fog-orb-lock" ${uiSettings.fogOrbLock ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
-      </div>
-      <button id="rpg-fog-orb-reset" style="width:100%; background:var(--t-0d1a2c, #0d1a2c); border:1px solid var(--t-3d6a94, #3d6a94); color:var(--t-dff1ff, #dff1ff); padding:6px; cursor:pointer; margin-bottom:8px;${uiSettings.fogOrbPos ? "" : " opacity:.45;"}" ${uiSettings.fogOrbPos ? "" : "disabled"}>Reset button position</button>` : ""}
+      <div style="${lab}">When minimized</div>
+      <select id="rpg-fog-minstyle" style="${sel}">${opt("orb", "Floating round button", uiSettings.fogMinStyle === "tab" ? "tab" : "orb")}${opt("tab", "Side tab", uiSettings.fogMinStyle === "tab" ? "tab" : "orb")}</select>` : ""}
       <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
         <span title="A System popup when a reply gives you items, skills or passives, adds quests, timers or party members, or starts a fight">Notifications</span>
         <input type="checkbox" id="rpg-sys-notices-cb" ${uiSettings.sysNotices !== false ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
@@ -9668,10 +9759,8 @@ function sysBindSettings() {
   if (fc) { stop(fc); fc.onchange = () => { uiSettings.fogFold = fc.checked; saveUiSettings(); renderRPG(); }; }
   const fs = document.getElementById("rpg-fog-fold-speed");
   if (fs) { stop(fs); fs.onchange = () => { uiSettings.fogFoldSpeed = fs.value; saveUiSettings(); }; }
-  const ol = document.getElementById("rpg-fog-orb-lock");
-  if (ol) { stop(ol); ol.onchange = () => { uiSettings.fogOrbLock = ol.checked; saveUiSettings(); }; }
-  const orr = document.getElementById("rpg-fog-orb-reset");
-  if (orr) orr.onclick = (e) => { e.stopPropagation(); uiSettings.fogOrbPos = null; saveUiSettings(); renderRPG(); hudToast.success("The button is back in its usual spot."); };
+  const ms = document.getElementById("rpg-fog-minstyle");
+  if (ms) { stop(ms); ms.onchange = () => { uiSettings.fogMinStyle = ms.value; saveUiSettings(); }; }
   const nt = document.getElementById("rpg-sys-notices-cb");
   if (nt) { stop(nt); nt.onchange = () => { uiSettings.sysNotices = nt.checked; saveUiSettings(); }; }
   const emb = document.getElementById("rpg-sys-emblem-open");
@@ -9812,6 +9901,10 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-11-12.3", items: [
+    "The minimized tab (Classic, System, and Gray Fog's new tab form) can be slid up and down the edge of the screen and stays where you leave it; tapping still opens the HUD. Settings can lock it or put it back.",
+    "Gray Fog: choose what it minimizes into (Settings, When minimized): the floating round button or a side tab, both with the turning star.",
+  ] },
   { build: "2026-11-12.2", items: [
     "New item icons: a pencil (pens, pencils, quills, markers, chalk, ink, styluses), a paintbrush (brushes, paints, palettes, canvases) and a leaf (herbs, leaves, plants, flowers, roots, mushrooms, seeds and named herbs like mandrake or lavender). Herbs used to share the potion icon.",
   ] },
@@ -10496,6 +10589,7 @@ function renderSaoSkin() {
     font-family:${saoFontStack()};
     font-size:${0.9 * (uiSettings.fontScale || 1)}em;`;
   container.onclick = null;
+  clearMinTabHandlers(container);
 
   try {
     const { root, display, type, isVehicle } = getActiveData();
