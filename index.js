@@ -522,7 +522,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-12.3";
+const HUD_BUILD = "2026-11-14.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -4599,6 +4599,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         <div id="tab-quest" style="${tabStyle("quests")}">Quest</div>
         <div id="tab-env" style="${tabStyle("env")}">Environment</div>
         <div id="tab-log" style="${tabStyle("log")}">Log</div>
+        <div id="tab-notes" style="${tabStyle("notes")}">Notes</div>
       </div>
 
       ${CLASSIC_ED_CSS}
@@ -4613,6 +4614,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         ${activeTab === "mastery" ? classicMasteryHtml(masteries) : ""}
         ${activeTab === "quests" ? classicQuestHtml() : ""}
         ${activeTab === "env" ? makeList(rpgState.env_effects, "No Environmental Effects") : ""}
+        ${activeTab === "notes" ? notesHtml() : ""}
       </div>
 
       ${renderEnemySummary()}
@@ -4809,6 +4811,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     bind("tab-quest", () => switchTab("quests"));
     bind("tab-env", () => switchTab("env"));
     bind("tab-log", () => switchTab("log"));
+    bind("tab-notes", () => switchTab("notes"));
+    if (activeTab === "notes") bindNotes(container);
     classicBindLog();
     classicBindEditors();
     classicBindInfo();
@@ -7045,6 +7049,195 @@ function bestEntryIndex(items, key, text, taken = new Set()) {
 }
 
 // =====================================================================
+// NOTES
+// Personal notes, never sent to the model: an NPC's description to keep,
+// a theory, a reminder. "This chat" notes live in the chat's own metadata
+// (saved with the chat, so they survive a cleared cache); "All chats" notes
+// live in the extension's settings on the server.
+// =====================================================================
+let notesScope = "chat";        // "chat" | "all"
+let notesOpenId = null;         // the note open in the editor
+let notesQuery = "";
+let notesCaret = null;          // { field, start, end, at } to put the cursor back after a re-render
+let lastChatSelection = "";     // the last text selected in the chat, for "+ Selected text"
+const NOTES_LOCAL_KEY = "rpgHud:notes";
+const NOTES_SEARCH_AT = 6;
+
+document.addEventListener("selectionchange", () => {
+  try {
+    const sel = window.getSelection();
+    const t = String(sel || "").trim();
+    const chatEl = document.getElementById("chat");
+    if (t && chatEl && sel.anchorNode && chatEl.contains(sel.anchorNode)) lastChatSelection = t;
+  } catch {}
+});
+
+function notesStore(scope = notesScope) {
+  let ctx = null;
+  try { ctx = SillyTavern.getContext(); } catch {}
+  if (scope === "all") {
+    const ext = ctx?.extensionSettings;
+    if (ext) {
+      ext.rpgHud = ext.rpgHud || {};
+      if (!Array.isArray(ext.rpgHud.notes)) ext.rpgHud.notes = [];
+      return { list: ext.rpgHud.notes, save: () => { try { ctx.saveSettingsDebounced?.(); } catch {} } };
+    }
+  } else {
+    const md = ctx?.chatMetadata;
+    const saveMd = ctx?.saveMetadataDebounced || ctx?.saveMetadata;
+    if (md && typeof md === "object" && typeof saveMd === "function" && ctx?.chatId) {
+      if (!Array.isArray(md.rpgHudNotes)) md.rpgHudNotes = [];
+      return { list: md.rpgHudNotes, save: () => { try { saveMd.call(ctx); } catch {} } };
+    }
+  }
+  // no chat metadata / settings to hand: keep them on this device
+  let key = scope === "all" ? "@all" : "";
+  if (!key) { try { key = currentChatKey(ctx) || "@none"; } catch { key = "@none"; } }
+  let all = {};
+  try { all = JSON.parse(localStorage.getItem(NOTES_LOCAL_KEY) || "{}") || {}; } catch {}
+  if (!Array.isArray(all[key])) all[key] = [];
+  const list = all[key];
+  return { list, save: () => { try { localStorage.setItem(NOTES_LOCAL_KEY, JSON.stringify(all)); } catch {} } };
+}
+const noteTitleOf = (n) => (String(n?.title || "").trim() || String(n?.body || "").trim().split("\n")[0] || "Untitled note").slice(0, 80);
+const noteWhen = (t) => { try { return new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" }); } catch { return ""; } };
+
+function notesHtml() {
+  const store = notesStore();
+  const note = notesOpenId ? store.list.find((n) => n.id === notesOpenId) : null;
+  if (notesOpenId && !note) notesOpenId = null;
+  if (note) {
+    return `<div class="rpg-notes">
+      <input id="rpg-note-title" class="rpg-note-in" placeholder="Title (optional)" value="${escAttr(note.title || "")}">
+      <textarea id="rpg-note-body" class="rpg-note-in" placeholder="Write anything: an NPC's description, a lead, a reminder…">${escHtml(note.body || "")}</textarea>
+      <div class="rpg-notes-row">
+        <button id="rpg-note-back" title="Back to the list (it saves as you type)">◂ Back</button>
+        <button id="rpg-note-paste" title="Add the text you last selected in the chat">+ Selected text</button>
+        <button id="rpg-note-move" title="Move this note to ${notesScope === "chat" ? "All chats" : "this chat"}">${notesScope === "chat" ? "→ All chats" : "→ This chat"}</button>
+        <button id="rpg-note-del" class="danger" title="Delete this note">Delete</button>
+      </div>
+      <div class="rpg-notes-meta">Saved as you type · ${notesScope === "chat" ? "this chat only" : "every chat"} · never sent to the AI</div>
+    </div>`;
+  }
+  const other = notesStore(notesScope === "chat" ? "all" : "chat").list.length;
+  const counts = { chat: notesScope === "chat" ? store.list.length : other, all: notesScope === "all" ? store.list.length : other };
+  const q = notesQuery.trim().toLowerCase();
+  const items = [...store.list].sort((a, b) => (b.at || 0) - (a.at || 0));
+  const rows = items.map((n) => {
+    const hit = !q || `${n.title || ""}\n${n.body || ""}`.toLowerCase().includes(q);
+    const preview = String(n.title ? n.body || "" : (n.body || "").split("\n").slice(1).join(" ")).replace(/\s+/g, " ").trim().slice(0, 90);
+    return `<button class="rpg-note-item" data-id="${escAttr(n.id)}" data-text="${escAttr(`${n.title || ""} ${n.body || ""}`)}"${hit ? "" : ' style="display:none"'}>
+      <span class="t">${escHtml(noteTitleOf(n))}</span><span class="d">${escHtml(noteWhen(n.at))}</span>
+      ${preview ? `<span class="p">${escHtml(preview)}</span>` : ""}</button>`;
+  }).join("");
+  return `<div class="rpg-notes">
+    <div class="rpg-notes-row top">
+      <span class="rpg-notes-seg">
+        <button data-notes-scope="chat" class="${notesScope === "chat" ? "on" : ""}">This chat (${counts.chat})</button><button data-notes-scope="all" class="${notesScope === "all" ? "on" : ""}">All chats (${counts.all})</button>
+      </span>
+      <button id="rpg-note-new" title="New note${lastChatSelection ? ", starting with the text you selected in the chat" : ""}">+ New</button>
+    </div>
+    ${items.length >= NOTES_SEARCH_AT ? `<input type="search" id="rpg-notes-search" class="rpg-note-in" placeholder="Search notes" value="${escAttr(notesQuery)}">` : ""}
+    ${rows || `<p class="rpg-notes-empty">No notes ${notesScope === "chat" ? "in this chat" : "for all chats"} yet. Tip: select text in the chat (an NPC's description, say), then press + New to start a note with it.</p>`}
+    ${rows ? `<p class="rpg-notes-empty" id="rpg-notes-none"${q && !items.some((n) => `${n.title || ""}\n${n.body || ""}`.toLowerCase().includes(q)) ? "" : ' style="display:none"'}>No notes match.</p>` : ""}
+  </div>`;
+}
+
+function bindNotes(root) {
+  if (!root?.querySelector?.(".rpg-notes")) return;
+  const store = notesStore();
+  const $ = (sel) => root.querySelector(sel);
+  const stop = (el) => { if (el) { el.addEventListener("click", (e) => e.stopPropagation()); el.addEventListener("keydown", (e) => e.stopPropagation()); } };
+  root.querySelectorAll("[data-notes-scope]").forEach((b) => b.onclick = (e) => { e.stopPropagation(); notesScope = b.dataset.notesScope; notesQuery = ""; renderRPG(); });
+  const nb = $("#rpg-note-new");
+  if (nb) nb.onclick = (e) => {
+    e.stopPropagation();
+    const body = lastChatSelection || "";
+    const n = { id: `n${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, title: "", body, at: Date.now() };
+    store.list.push(n); store.save();
+    lastChatSelection = "";
+    notesOpenId = n.id; notesCaret = { field: "rpg-note-title", start: 0, end: 0, at: Date.now() };
+    renderRPG();
+  };
+  root.querySelectorAll(".rpg-note-item").forEach((b) => b.onclick = (e) => { e.stopPropagation(); notesOpenId = b.dataset.id; notesCaret = null; renderRPG(); });
+  const se = $("#rpg-notes-search");
+  if (se) {
+    stop(se);
+    se.oninput = () => {
+      notesQuery = se.value;
+      const q = se.value.trim().toLowerCase();
+      let shown = 0;
+      root.querySelectorAll(".rpg-note-item").forEach((r) => { const hit = !q || String(r.dataset.text || "").toLowerCase().includes(q); r.style.display = hit ? "" : "none"; if (hit) shown++; });
+      const none = $("#rpg-notes-none"); if (none) none.style.display = shown ? "none" : "";
+    };
+  }
+  const note = notesOpenId ? store.list.find((n) => n.id === notesOpenId) : null;
+  if (!note) return;
+  const title = $("#rpg-note-title"), body = $("#rpg-note-body");
+  const keep = (el) => { notesCaret = { field: el.id, start: el.selectionStart, end: el.selectionEnd, at: Date.now() }; };
+  [title, body].forEach((el) => {
+    if (!el) return;
+    stop(el);
+    el.addEventListener("input", () => { note[el === title ? "title" : "body"] = el.value; note.at = Date.now(); store.save(); keep(el); });
+    ["keyup", "click", "focus"].forEach((ev) => el.addEventListener(ev, () => keep(el)));
+  });
+  // a re-render while typing (a new reply, say) puts the cursor back where it was
+  if (notesCaret && Date.now() - notesCaret.at < 4000) {
+    const el = $(`#${notesCaret.field}`);
+    if (el) { try { el.focus({ preventScroll: true }); el.setSelectionRange(notesCaret.start, notesCaret.end); } catch {} }
+  }
+  const btn = (sel, fn) => { const el = $(sel); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
+  btn("#rpg-note-back", () => {
+    if (!String(note.title || "").trim() && !String(note.body || "").trim()) { store.list.splice(store.list.indexOf(note), 1); store.save(); }   // nothing written: no empty note left behind
+    notesOpenId = null; notesCaret = null; renderRPG();
+  });
+  btn("#rpg-note-paste", () => {
+    if (!lastChatSelection) { if (window.toastr) hudToast.info("Select some text in the chat first, then press this."); return; }
+    note.body = (note.body ? note.body.replace(/\s+$/, "") + "\n\n" : "") + lastChatSelection;
+    note.at = Date.now(); store.save();
+    notesCaret = { field: "rpg-note-body", start: note.body.length, end: note.body.length, at: Date.now() };
+    renderRPG();
+  });
+  btn("#rpg-note-move", () => {
+    const to = notesStore(notesScope === "chat" ? "all" : "chat");
+    store.list.splice(store.list.indexOf(note), 1); store.save();
+    to.list.push(note); to.save();
+    notesScope = notesScope === "chat" ? "all" : "chat";
+    if (window.toastr) hudToast.info(`Moved to ${notesScope === "all" ? "All chats" : "this chat"}.`);
+    renderRPG();
+  });
+  btn("#rpg-note-del", () => {
+    if (!confirm(`Delete "${noteTitleOf(note)}"?`)) return;
+    store.list.splice(store.list.indexOf(note), 1); store.save();
+    notesOpenId = null; notesCaret = null; renderRPG();
+  });
+}
+
+const NOTES_CSS = `
+.rpg-notes{display:flex; flex-direction:column; gap:5px; font-size:1em}
+.rpg-notes button{font:inherit; color:inherit; cursor:pointer}
+.rpg-notes-row{display:flex; flex-wrap:wrap; gap:4px; align-items:center}
+.rpg-notes-row.top{justify-content:space-between}
+.rpg-notes-row > button,.rpg-notes-seg button{background:rgba(127,127,127,.14); border:1px solid rgba(127,127,127,.45); border-radius:3px; padding:3px 7px; font-size:.95em}
+.rpg-notes-row > button.danger{border-color:rgba(255,82,82,.6); color:#ff8a80}
+.rpg-notes-seg{display:inline-flex}
+.rpg-notes-seg button{border-radius:0}
+.rpg-notes-seg button:first-child{border-radius:3px 0 0 3px}
+.rpg-notes-seg button:last-child{border-radius:0 3px 3px 0; border-left:0}
+.rpg-notes-seg button.on{background:rgba(127,127,127,.38); font-weight:bold}
+.rpg-note-in{width:100%; box-sizing:border-box; background:rgba(127,127,127,.12); color:inherit; border:1px solid rgba(127,127,127,.45); border-radius:3px; padding:4px 6px; font:inherit}
+textarea.rpg-note-in{min-height:130px; resize:vertical; line-height:1.4}
+.rpg-note-item{display:grid; grid-template-columns:1fr auto; gap:1px 8px; width:100%; text-align:left; background:rgba(127,127,127,.08);
+  border:1px solid rgba(127,127,127,.3); border-radius:3px; padding:5px 7px}
+.rpg-note-item:hover{background:rgba(127,127,127,.18)}
+.rpg-note-item .t{font-weight:bold; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.rpg-note-item .d{opacity:.6; font-size:.85em}
+.rpg-note-item .p{grid-column:1 / -1; opacity:.75; font-size:.9em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.rpg-notes-empty,.rpg-notes-meta{opacity:.7; font-size:.9em; margin:2px 0}
+`;
+(() => { try { const st = document.createElement("style"); st.id = "rpg-notes-css"; st.textContent = NOTES_CSS; document.head.appendChild(st); } catch {} })();
+
+// =====================================================================
 // SETTINGS TRANSFER
 // One code (or a small file) carrying every HUD setting, so they survive a
 // cleared cache or move to another browser: sizes, skin choices, colours,
@@ -8363,6 +8556,7 @@ function classicQuestHtml() {
 
 // the classic tab body grows while an editor is open, so rows aren't cramped
 function classicEditorOpen() {
+  if (activeTab === "notes") return true;          // notes get the tall box, for writing
   return !!(saoListEdit && (LIST_TAB_KEYS[activeTab] === saoListEdit.key || (activeTab === "quests" && saoListEdit.key === "quests")))
     || (activeTab === "mastery" && Array.isArray(saoMasteryEdit));
 }
@@ -9901,6 +10095,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-11-14.1", items: [
+    "Notes: a new Notes tab (in SAO, a Notes button) for your own notes, never sent to the AI. Keep them per chat (saved with the chat, so clearing your cache won't lose them) or for all chats. Select text in the chat, like an NPC's description, then press + New or + Selected text to drop it in. Notes save as you type, can be searched once there are a few, and can move between this chat and all chats.",
+  ] },
   { build: "2026-11-12.3", items: [
     "The minimized tab (Classic, System, and Gray Fog's new tab form) can be slid up and down the edge of the screen and stays where you leave it; tapping still opens the HUD. Settings can lock it or put it back.",
     "Gray Fog: choose what it minimizes into (Settings, When minimized): the floating round button or a side tab, both with the turning star.",
@@ -10543,6 +10740,7 @@ const SAO_TABS = [
   { id: "bonds", label: "Bonds", icon: `<svg viewBox="0 0 24 24"><circle cx="8.1" cy="7.8" r="3.5"/><path d="M1.5 20.6c0-3.8 2.9-6.2 6.6-6.2s6.6 2.4 6.6 6.2z"/><circle cx="17.7" cy="9.4" r="2.6"/><path d="M12.8 20.6c0-2.8 2.2-4.6 4.9-4.6s4.9 1.8 4.9 4.6z"/></svg>` },
   { id: "quests", label: "Quests", icon: `<svg viewBox="0 0 24 24"><defs><mask id="rpgSaoMsg"><rect width="24" height="24" fill="#fff"/><rect x="0.2" y="7.1" width="16.6" height="11.3" rx="3" fill="#000"/><path d="M3.6 15.6h6v6.6l-6-3.4z" fill="#000"/></mask></defs><g mask="url(#rpgSaoMsg)"><rect x="8.4" y="2.4" width="14.4" height="10.2" rx="2.4"/><path d="M17.4 10.4h4.4v5.9l-4.4-2.9z"/></g><rect x="1.6" y="8.5" width="13.8" height="8.5" rx="2.2"/><path d="M5 15.1h4.6v5.5L5 17.8z"/></svg>` },
   { id: "place", label: "Location", icon: `<svg viewBox="0 0 24 24"><path d="M12 1.4c-3.7 0-6.7 2.9-6.7 6.6 0 4.8 6.7 11.5 6.7 11.5s6.7-6.7 6.7-11.5c0-3.7-3-6.6-6.7-6.6zm0 9.1a2.5 2.5 0 110-5 2.5 2.5 0 010 5z"/><rect x="3.6" y="20.8" width="16.8" height="1.7" rx="0.85"/></svg>` },
+  { id: "notes", label: "Notes", icon: `<svg viewBox="0 0 24 24"><path d="M5.5 2.5h9l4.5 4.5v14.5h-13.5z"/><path d="M14.5 2.5V7H19" fill="none" stroke="#000" stroke-opacity=".35" stroke-width="1.2"/><rect x="8" y="10.4" width="8" height="1.5" rx=".75" fill="#000" fill-opacity=".35"/><rect x="8" y="13.6" width="8" height="1.5" rx=".75" fill="#000" fill-opacity=".35"/><rect x="8" y="16.8" width="5" height="1.5" rx=".75" fill="#000" fill-opacity=".35"/></svg>` },
   { id: "gear", label: "Settings", icon: SAO_COG },
 ];
 
@@ -10737,6 +10935,7 @@ function renderSaoSkin() {
                   : saoPanel === "bonds" ? saoBondsPanel()
                   : saoPanel === "quests" ? saoQuestsPanel()
                   : saoPanel === "error" ? saoErrorPanel()
+                  : saoPanel === "notes" ? { title: "Notes", body: notesHtml() }
                   : saoPlacePanel();
       panelHtml = `<div class="rpg-sao-panelwrap"><div class="rpg-sao-panel">
         <h2>${escHtml(built.title)}</h2>
@@ -10864,6 +11063,7 @@ function saoBind() {
     else if (window.toastr) hudToast.info("That message isn't loaded in the chat view.");
   });
 
+  if (saoPanel === "notes") bindNotes(document.getElementById("rpg-hud-container"));
   const clock = document.getElementById("rpg-sao-clock");
   if (clock) clock.onclick = (e) => { e.stopPropagation(); saoTimersOpen = !saoTimersOpen; renderRPG(); };
 
