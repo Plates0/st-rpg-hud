@@ -522,7 +522,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-14.1";
+const HUD_BUILD = "2026-11-14.2";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -565,8 +565,10 @@ const defaultUiSettings = {
   fontPreset: "retro_mono",
   fontFamily: "'Courier New', Courier, monospace",
   fontScale: 1.0,
+  autoFont: false,        // text grows and shrinks with the panel's width
   hudWidth: 280,
   hudHeight: 0,
+  hudBodyH: 110,          // height of the list box (Items, Skills, Log...); editors get 130px more
   changeAlerts: true,
   toastSeconds: 8,        // how long the HUD's toasts stay up; 0 = until tapped
   ignoreCountChanges: true, // Change Alerts skip a description where only amounts changed ("4 hours" -> "3.5 hours")
@@ -634,10 +636,18 @@ function fontPresetToFamily(preset) {
   }
 }
 
+// Text size: your own size, times the panel's width over the usual 280px when Auto-size is on.
+const FONT_SCALE_MIN = 0.5, FONT_SCALE_MAX = 2.5;
+function hudFontScale(width = Number(uiSettings.hudWidth) || 280) {
+  const own = Math.max(FONT_SCALE_MIN, Math.min(FONT_SCALE_MAX, Number(uiSettings.fontScale) || 1.0));
+  if (!uiSettings.autoFont || isSaoSkin()) return own;
+  return own * Math.max(0.75, Math.min(2, width / 280));
+}
+function isSaoSkin() { return (uiSettings.skin || "classic") === "sao"; }
 function applyHudTypography(container) {
   if (!container) return;
-  const scale = Math.max(0.85, Math.min(1.15, Number(uiSettings.fontScale) || 1.0));
-  uiSettings.fontScale = scale;
+  uiSettings.fontScale = Math.max(FONT_SCALE_MIN, Math.min(FONT_SCALE_MAX, Number(uiSettings.fontScale) || 1.0));
+  const scale = hudFontScale();
 
   if (uiSettings.fontPreset) {
     uiSettings.fontFamily = fontPresetToFamily(uiSettings.fontPreset);
@@ -4109,7 +4119,7 @@ function renderClassicSkin() {
   const BOX_RADIUS = "0px";
   const BAR_RADIUS = "4px";
   const FONT_FAMILY = uiSettings.fontFamily || "'Courier New', Courier, monospace";
-  const FONT_SIZE = `${0.9 * (uiSettings.fontScale || 1)}em`;
+  const FONT_SIZE = `${0.9 * hudFontScale()}em`;
 
   let latest = { status: "nochat", label: "", detail: "" };
   try {
@@ -4202,7 +4212,7 @@ const hudW = Math.max(220, Number(uiSettings.hudWidth) || 280);
 const hudH = Math.max(0, Number(uiSettings.hudHeight) || 0);
 
 container.style.cssText = `position: fixed; top: 50px; right: 20px;
-  width: ${hudW}px;
+  width: min(${hudW}px, calc(100% - 28px));
   ${hudH ? `height:${hudH}px;` : ""}
   ${SYS ? `background: var(--sys-bg); border: 1px solid var(--sc); color: #e4f3ff;` : `
   background: rgba(10, 10, 15, 0.95);
@@ -4492,13 +4502,21 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
             <option value="story_serif">Story Serif (Georgia)</option>
         </select>
 
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-top:10px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-top:10px; gap:8px;">
             <div style="font-size:0.75em; color:#bbb;">Size</div>
-            <div id="rpg-font-scale-label" style="font-size:0.75em; color:#bbb;">100%</div>
+            <label style="display:flex; align-items:center; gap:2px; font-size:0.75em; color:#bbb;">
+              <input id="rpg-font-scale-num" type="number" min="${FONT_SCALE_MIN * 100}" max="${FONT_SCALE_MAX * 100}" step="5" inputmode="numeric"
+                style="width:58px; background:#111; color:#ddd; border:1px solid #555; padding:2px 4px; text-align:right;">%</label>
         </div>
 
-        <input id="rpg-font-scale" type="range" min="0.85" max="1.15" step="0.01"
+        <input id="rpg-font-scale" type="range" min="${FONT_SCALE_MIN}" max="${FONT_SCALE_MAX}" step="0.05"
                 style="width:100%; margin-top:6px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:6px;">
+          <span style="font-size:0.75em; color:#bbb;" title="Text grows and shrinks with the panel's width (dragging the left edge or corner). Size above still applies on top.">Auto-size text with the panel</span>
+          <input type="checkbox" id="rpg-font-auto" ${uiSettings.autoFont ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
+        </div>
+        <button id="rpg-size-reset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:5px; margin-top:8px; cursor:pointer; font-size:0.85em;" title="Width 280, list box 110 high, text 100%">Reset panel size</button>
+        <div style="font-size:0.7em; color:#888; margin-top:4px; line-height:1.3;">Drag the panel's left edge for width, the bottom edge for height, or the bottom-left corner for both.</div>
         </div>
 
           <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Notes</div>
@@ -4603,7 +4621,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       </div>
 
       ${CLASSIC_ED_CSS}
-      <div data-scroll-key="c:body:${activeTab}" style="height: ${classicEditorOpen() ? 240 : 110}px; overflow-y: auto; font-size: 0.8em; padding:5px; background:${SYS ? "rgba(var(--t-4_12_24, 4,12,24),0.55); border:1px solid rgba(var(--t-143_208_255, 143,208,255),0.22)" : "rgba(0,0,0,0.3)"}; scrollbar-gutter:${activeTab === "log" ? "auto" : "stable"};">
+      <div data-scroll-key="c:body:${activeTab}" style="height: ${hudBodyHeight()}px; overflow-y: auto; font-size: 0.8em; padding:5px; background:${SYS ? "rgba(var(--t-4_12_24, 4,12,24),0.55); border:1px solid rgba(var(--t-143_208_255, 143,208,255),0.22)" : "rgba(0,0,0,0.3)"}; scrollbar-gutter:${activeTab === "log" ? "auto" : "stable"};">
         ${activeTab === "party" ? renderPartyTab() : ""}
         ${activeTab === "log" ? classicLogHtml() : ""}
 		${activeTab === "bonds" ? renderBondsTab() : ""}
@@ -4658,9 +4676,16 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
       ${SYS ? "" : `<div style="position:absolute; right:10px; bottom:10px; font-size:0.8em; color:#FFD700;">💰 ${escHtml(coin)}</div>`}
 
-      <div id="rpg-resize-left" title="Resize"
-        style="position:absolute; left:-8px; top:0; bottom:0; width:16px;
+      <div id="rpg-resize-left" class="rpg-resize" data-resize="w" title="Drag to change the width"
+        style="position:absolute; left:0; top:0; bottom:14px; width:9px;
           cursor:ew-resize; z-index:200000; background:transparent; touch-action:none;"></div>
+      <div id="rpg-resize-bottom" class="rpg-resize" data-resize="h" title="Drag to change the height"
+        style="position:absolute; left:14px; right:0; bottom:0; height:7px;
+          cursor:ns-resize; z-index:200000; background:transparent; touch-action:none;"></div>
+      <div id="rpg-resize-corner" class="rpg-resize" data-resize="wh" title="Drag to change the width and height"
+        style="position:absolute; left:0; bottom:0; width:12px; height:12px;
+          cursor:nesw-resize; z-index:200001; background:transparent; touch-action:none; display:flex; align-items:flex-end; justify-content:flex-start; padding:0 0 1px 1px; box-sizing:border-box;">
+        <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true" style="opacity:.55; pointer-events:none;"><path d="M1 1v8h8M1 5l4 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></div>
 
       ${SYS && emblemEditOpen && !isSettingsOpen ? `<div id="rpg-emblem-drag" title="Drag to move the picture. Pinch or scroll to resize; twist with two fingers (or Shift+scroll) to rotate."></div><div class="em-guide"></div>` + emblemEditorHtml() : ""}
       ${settingsPanelHtml}
@@ -4668,38 +4693,48 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       ${classicInfoHtml()}
     `;
 
-{
-  const handle = container.querySelector("#rpg-resize-left");
-  if (handle) {
-    handle.addEventListener("pointerdown", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-
-      handle.setPointerCapture?.(ev.pointerId);
-
-      const startX = ev.clientX;
-      const startW = container.getBoundingClientRect().width;
-
-      const onMove = (e) => {
-        const dx = e.clientX - startX; 
-        const newW = Math.max(220, Math.min(700, startW - dx)); 
-        uiSettings.hudWidth = Math.round(newW);
-        container.style.width = uiSettings.hudWidth + "px";
-      };
-
-      const onUp = () => {
-        document.removeEventListener("pointermove", onMove);
-        document.removeEventListener("pointerup", onUp);
-        document.removeEventListener("pointercancel", onUp);
-        saveUiSettings();
-      };
-
-      document.addEventListener("pointermove", onMove);
-      document.addEventListener("pointerup", onUp);
-      document.addEventListener("pointercancel", onUp);
-    });
-  }
-}
+// Resize from the left edge (width), the bottom edge (height of the list box)
+// or the bottom-left corner (both). The panel is pinned top-right, so those
+// are the edges that move. Text follows the width live when Auto-size is on.
+container.querySelectorAll(".rpg-resize").forEach((handle) => {
+  handle.addEventListener("click", (ev) => ev.stopPropagation());
+  handle.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    handle.setPointerCapture?.(ev.pointerId);
+    const mode = handle.dataset.resize;
+    const body = container.querySelector('[data-scroll-key^="c:body:"]');
+    const r = container.getBoundingClientRect();
+    const k = r.width && container.offsetWidth ? r.width / container.offsetWidth : 1;   // a zoomed page
+    const start = { x: ev.clientX, y: ev.clientY, w: container.offsetWidth, bh: body ? (parseFloat(body.style.height) || body.clientHeight) : 0 };
+    const extra = classicEditorOpen() ? 130 : 0;
+    const onMove = (e) => {
+      if (mode.includes("w")) {
+        const maxW = Math.max(240, Math.min(900, Math.floor((window.innerWidth - 28) / k)));
+        uiSettings.hudWidth = Math.round(Math.max(220, Math.min(maxW, start.w - (e.clientX - start.x) / k)));
+        container.style.width = `${uiSettings.hudWidth}px`;
+        if (uiSettings.autoFont) container.style.fontSize = `${0.9 * hudFontScale()}em`;
+      }
+      if (mode.includes("h") && body) {
+        const bh = Math.max(56, Math.min(1600, Math.round(start.bh + (e.clientY - start.y) / k)));
+        uiSettings.hudBodyH = Math.max(56, bh - extra);
+        body.style.height = `${bh}px`;
+        body.dataset.baseH = String(bh);              // so fitting to the screen works from the new size
+        container.style.maxHeight = ""; container.style.overflowY = "";
+      }
+    };
+    const onUp = () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
+      saveUiSettings();
+      try { fitHudToScreen(); } catch {}
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
+  });
+});
 
 {
   const newStrip = container.querySelector("#rpg-tab-strip");
@@ -4976,20 +5011,38 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	      };
 	    }
 	
+	    const scaleNum = document.getElementById("rpg-font-scale-num");
+	    const setScale = (v, from) => {
+	      const n = Math.max(FONT_SCALE_MIN, Math.min(FONT_SCALE_MAX, Number(v) || 1.0));
+	      uiSettings.fontScale = Math.round(n * 100) / 100;
+	      saveUiSettings();
+	      applyHudTypography(container);
+	      if (scaleEl && from !== scaleEl) scaleEl.value = String(uiSettings.fontScale);
+	      if (scaleNum && from !== scaleNum) scaleNum.value = String(Math.round(uiSettings.fontScale * 100));
+	    };
 	    if (scaleEl) {
 	      scaleEl.value = String(uiSettings.fontScale || 1.0);
-	      const updateLabel = () => {
-	        if (scaleLabel) scaleLabel.textContent = `${Math.round((Number(scaleEl.value) || 1) * 100)}%`;
-	      };
-	      updateLabel();
-	
-	      scaleEl.oninput = () => {
-	        uiSettings.fontScale = Number(scaleEl.value) || 1.0;
-	        saveUiSettings();
-	        applyHudTypography(container);
-	        updateLabel();
-	      };
+	      scaleEl.onclick = (e) => e.stopPropagation();
+	      scaleEl.oninput = () => setScale(scaleEl.value, scaleEl);
 	    }
+	    if (scaleNum) {
+	      scaleNum.value = String(Math.round((uiSettings.fontScale || 1) * 100));
+	      scaleNum.onclick = (e) => e.stopPropagation();
+	      scaleNum.onkeydown = (e) => e.stopPropagation();
+	      scaleNum.oninput = () => { const v = parseFloat(scaleNum.value); if (Number.isFinite(v) && v >= FONT_SCALE_MIN * 100 && v <= FONT_SCALE_MAX * 100) setScale(v / 100, scaleNum); };
+	      scaleNum.onchange = () => setScale((parseFloat(scaleNum.value) || 100) / 100, null);   // out of range snaps to the limit
+	    }
+	    const autoEl = document.getElementById("rpg-font-auto");
+	    if (autoEl) {
+	      autoEl.onclick = (e) => e.stopPropagation();
+	      autoEl.onchange = () => { uiSettings.autoFont = autoEl.checked; saveUiSettings(); applyHudTypography(container); };
+	    }
+	    const sizeReset = document.getElementById("rpg-size-reset");
+	    if (sizeReset) sizeReset.onclick = (e) => {
+	      e.stopPropagation();
+	      uiSettings.hudWidth = 280; uiSettings.hudBodyH = 110; uiSettings.hudHeight = 0; uiSettings.fontScale = 1.0;
+	      saveUiSettings(); renderRPG();
+	    };
 	  } catch {}
 	}
   } catch (e) {
@@ -8555,6 +8608,11 @@ function classicQuestHtml() {
 }
 
 // the classic tab body grows while an editor is open, so rows aren't cramped
+// the list box's height: what you dragged it to, and 130px more while an editor is open
+function hudBodyHeight() {
+  const h = Math.max(56, Math.min(1600, Math.round(Number(uiSettings.hudBodyH) || 110)));
+  return classicEditorOpen() ? h + 130 : h;
+}
 function classicEditorOpen() {
   if (activeTab === "notes") return true;          // notes get the tall box, for writing
   return !!(saoListEdit && (LIST_TAB_KEYS[activeTab] === saoListEdit.key || (activeTab === "quests" && saoListEdit.key === "quests")))
@@ -10095,6 +10153,10 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-11-14.2", items: [
+    "Panel size (Classic, System, Gray Fog): drag the left edge for width, the new bottom edge for height (the list box grows), or the bottom-left corner for both. Settings has Reset panel size.",
+    "Text size now goes from 50% to 250% and can be typed in as a number. New option, Auto-size text with the panel: text grows and shrinks with the panel's width.",
+  ] },
   { build: "2026-11-14.1", items: [
     "Notes: a new Notes tab (in SAO, a Notes button) for your own notes, never sent to the AI. Keep them per chat (saved with the chat, so clearing your cache won't lose them) or for all chats. Select text in the chat, like an NPC's description, then press + New or + Selected text to drop it in. Notes save as you type, can be searched once there are a few, and can move between this chat and all chats.",
   ] },
