@@ -522,7 +522,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-06.4";
+const HUD_BUILD = "2026-11-15.6";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -557,13 +557,18 @@ const defaultUiSettings = {
   fogFold: true,          // Gray Fog: fold the panel into the round button and back
   fogFoldSpeed: "normal", // "slow" | "normal" | "fast" | "instant"
   fogOrbPos: null,        // Gray Fog: where the folded-away button was dragged to, { fx, fy } as screen fractions
-  fogOrbLock: false,      // Gray Fog: the folded-away button can't be dragged
+  fogOrbLock: false,      // (old) Gray Fog's button lock; now minLock
+  fogMinStyle: "orb",     // Gray Fog minimized: "orb" (floating round button) | "tab" (side tab)
+  minTabY: null,          // where the side tab was slid to: its centre, as a fraction of the screen height
+  minLock: false,         // the minimized tab / button can't be moved
   meterIcons: {},         // System and Gray Fog: icons chosen for meters, by meter name (like meterColors)
   fontPreset: "retro_mono",
   fontFamily: "'Courier New', Courier, monospace",
   fontScale: 1.0,
+  autoFont: false,        // text grows and shrinks with the panel's width
   hudWidth: 280,
   hudHeight: 0,
+  hudBodyH: 110,          // height of the list box (Items, Skills, Log...); editors get 130px more
   changeAlerts: true,
   toastSeconds: 8,        // how long the HUD's toasts stay up; 0 = until tapped
   ignoreCountChanges: true, // Change Alerts skip a description where only amounts changed ("4 hours" -> "3.5 hours")
@@ -579,6 +584,9 @@ let uiSettings = (() => {
     return { ...defaultUiSettings };
   }
 })();
+
+// the old Gray Fog-only lock now covers every minimized tab and button
+if (uiSettings.fogOrbLock) { uiSettings.minLock = true; uiSettings.fogOrbLock = false; try { localStorage.setItem(UI_SETTINGS_KEY, JSON.stringify(uiSettings)); } catch {} }
 
 // Puts every HUD setting back to its default. The skin choice is kept, since
 // being thrown into the other skin is rarely what "reset" is meant to do, and
@@ -628,10 +636,19 @@ function fontPresetToFamily(preset) {
   }
 }
 
+// Text size: your own size, times the panel's width over the usual 280px when Auto-size is on.
+const FONT_SCALE_MIN = 0.5, FONT_SCALE_MAX = 2.5;
+function hudFontScale(width = Number(uiSettings.hudWidth) || 280) {
+  const own = Math.max(FONT_SCALE_MIN, Math.min(FONT_SCALE_MAX, Number(uiSettings.fontScale) || 1.0));
+  if (!uiSettings.autoFont || isSaoSkin()) return own;
+  // gentle: grows with the square root of the width, so twice as wide is about 1.4x the text, not 2x
+  return own * Math.max(0.85, Math.min(1.6, Math.sqrt(Math.max(1, width) / 280)));
+}
+function isSaoSkin() { return (uiSettings.skin || "classic") === "sao"; }
 function applyHudTypography(container) {
   if (!container) return;
-  const scale = Math.max(0.85, Math.min(1.15, Number(uiSettings.fontScale) || 1.0));
-  uiSettings.fontScale = scale;
+  uiSettings.fontScale = Math.max(FONT_SCALE_MIN, Math.min(FONT_SCALE_MAX, Number(uiSettings.fontScale) || 1.0));
+  const scale = hudFontScale();
 
   if (uiSettings.fontPreset) {
     uiSettings.fontFamily = fontPresetToFamily(uiSettings.fontPreset);
@@ -3668,6 +3685,63 @@ function fogOrbPlaceCss() {
       transform: translateY(-50%);`;
   return "left: 0px; top: 0px;";            // placed exactly by fogOrbPlace() once it's laid out
 }
+// The side tab (Classic, System, Gray Fog's tab form) can be slid up and down
+// the edge; where it was left is kept as its centre, a fraction of the screen height.
+function minTabTopCss(h) {
+  const fy = uiSettings.minTabY;
+  if (!Number.isFinite(fy))
+    return `top: clamp(calc(env(safe-area-inset-top, 0px) + 50px), 20vh, calc(100vh - env(safe-area-inset-bottom, 0px) - 50px)); transform: translateY(-50%);`;
+  return `top: clamp(calc(env(safe-area-inset-top, 0px) + ${FOG_ORB_EDGE}px), calc(${(fy * 100).toFixed(3)}vh - ${h / 2}px), calc(100vh - env(safe-area-inset-bottom, 0px) - ${h + FOG_ORB_EDGE}px)); transform: none;`;
+}
+// the open panel mustn't keep the tab's slide handlers
+function clearMinTabHandlers(c) {
+  c.onpointerdown = c.onpointermove = c.onpointerup = c.onpointercancel = c.oncontextmenu = null;
+  c.style.touchAction = "";
+}
+function bindMinTabDrag(container) {
+  const locked = !!uiSettings.minLock;
+  container.classList.toggle("locked", locked);
+  container.style.touchAction = locked ? "manipulation" : "none";
+  let start = null, dragged = false;
+  container.onpointerdown = (e) => {
+    if (locked || (e.button !== undefined && e.button !== 0)) return;
+    start = { y: e.clientY, id: e.pointerId };
+    dragged = false;
+    container.setPointerCapture?.(e.pointerId);
+  };
+  container.onpointermove = (e) => {
+    if (!start || e.pointerId !== start.id) return;
+    if (!dragged && Math.abs(e.clientY - start.y) < 6) return;     // a tap, not a slide (yet)
+    if (!dragged) {
+      // from the default spot (centred with a transform) to a plain top, measured so a zoomed page still tracks the finger
+      const r = container.getBoundingClientRect(), k = r.height && container.offsetHeight ? r.height / container.offsetHeight : 1;
+      Object.assign(container.style, { top: `${r.top / k}px`, transform: "none" });
+      const r2 = container.getBoundingClientRect();
+      start.k = k; start.a = r2.top - k * (parseFloat(getComputedStyle(container).top) || 0); start.top = r2.top; start.h = r2.height;
+      container.classList.add("dragging");
+    }
+    dragged = true;
+    const vh = window.visualViewport?.height || window.innerHeight;
+    const top = Math.max(FOG_ORB_EDGE, Math.min(vh - start.h - FOG_ORB_EDGE, start.top + (e.clientY - start.y)));
+    container.style.top = `${((top - start.a) / start.k).toFixed(1)}px`;
+    uiSettings.minTabY = (top + start.h / 2) / vh;                   // kept live, so a re-render mid-slide keeps it
+  };
+  const end = (e) => {
+    if (!start || e.pointerId !== start.id) return;
+    start = null;
+    container.classList.remove("dragging");
+    if (dragged) saveUiSettings();
+  };
+  container.onpointerup = end;
+  container.onpointercancel = end;
+  container.oncontextmenu = (e) => e.preventDefault();
+  container.onclick = (e) => {
+    e.stopPropagation();
+    if (dragged) { dragged = false; return; }                       // the end of a slide isn't a tap
+    toggleMinimize(e);
+  };
+}
+
 // How the button's style position maps to where it shows on screen (screen = a + k * style).
 // Measured rather than assumed, so a zoomed or scaled page still puts it right under the finger.
 function fogOrbMap(container) {
@@ -3699,7 +3773,7 @@ function fogBindOrbDrag(container) {
     const vw = window.visualViewport?.width || window.innerWidth, vh = window.visualViewport?.height || window.innerHeight;
     fogOrbPlace(container, p.fx * vw, p.fy * vh);
   }
-  const locked = !!uiSettings.fogOrbLock;
+  const locked = !!uiSettings.minLock;
   container.classList.toggle("locked", locked);
   let start = null, dragged = false;
   btn.onpointerdown = (e) => {
@@ -4046,7 +4120,7 @@ function renderClassicSkin() {
   const BOX_RADIUS = "0px";
   const BAR_RADIUS = "4px";
   const FONT_FAMILY = uiSettings.fontFamily || "'Courier New', Courier, monospace";
-  const FONT_SIZE = `${0.9 * (uiSettings.fontScale || 1)}em`;
+  const FONT_SIZE = `${0.9 * hudFontScale()}em`;
 
   let latest = { status: "nochat", label: "", detail: "" };
   try {
@@ -4060,10 +4134,21 @@ function renderClassicSkin() {
       const latestTitle = latest?.detail ? `${latest.label}\n${latest.detail}` : (latest?.label || "");
 
       container.className = "";
+      if (FOG && uiSettings.fogMinStyle === "tab") {
+        // Gray Fog as a side tab: the same turning star, tinted by the status
+        container.className = "rpg-fog-tab";
+        container.style.cssText = `position: fixed; right: 0; ${minTabTopCss(64)} z-index: 99999; --orb-tint: ${fogStatusTint(latest?.status)};`;
+        fogFoldClasses(container, true);
+        container.innerHTML = `<button class="fog-tab" title="${escAttr(latestTitle || "Open the HUD")}${uiSettings.minLock ? "" : "\n(slide up or down to move)"}" aria-label="Open the HUD">
+          <svg viewBox="0 0 24 24" aria-hidden="true" style="animation-delay:-${Date.now() % 14000}ms">${FOG_STAR_GLYPH("var(--orb-tint)")}</svg></button>`;
+        bindMinTabDrag(container);
+        return;
+      }
       if (FOG) {
         // Gray Fog: a floating round button with the slowly turning star, coloured like the status dot
         const tint = fogStatusTint(latest?.status);
         container.className = "rpg-fog-orb";
+        clearMinTabHandlers(container);
         container.style.cssText = `position: fixed; ${fogOrbPlaceCss()} z-index: 99999; --orb-tint: ${tint};`;
         fogFoldClasses(container, true);
         container.innerHTML = `<button class="fog-orb" title="${escAttr(latestTitle || "Open the HUD")}${"\n"}(drag to move)" aria-label="Open the HUD">
@@ -4073,8 +4158,7 @@ function renderClassicSkin() {
       }
       container.style.cssText = SYS ? `
         position: fixed; right: 0;
-        top: clamp(calc(env(safe-area-inset-top, 0px) + 50px), 20vh, calc(100vh - env(safe-area-inset-bottom, 0px) - 50px));
-        transform: translateY(-50%);
+        ${minTabTopCss(58)}
         width: 26px; height: 58px;
         background: ${FOG ? "rgba(26,26,32,0.94)" : "rgba(5,12,24,0.92)"};
         border: 1px solid ${FOG ? "#c9ccd6" : "#8fd0ff"}; border-right: 0;
@@ -4085,13 +4169,7 @@ function renderClassicSkin() {
       ` : `
         position: fixed;
         right: 0;
-
-		top: clamp(
-		  calc(env(safe-area-inset-top, 0px) + 50px),
-		  20vh,
-		  calc(100vh - env(safe-area-inset-bottom, 0px) - 50px)
-		);
-        transform: translateY(-50%);
+        ${minTabTopCss(58)}
 
         width: 26px;
         height: 58px;
@@ -4127,7 +4205,7 @@ function renderClassicSkin() {
         "></div>
       `;
 
-      container.onclick = toggleMinimize;
+      bindMinTabDrag(container);
       return;
     }
 
@@ -4135,7 +4213,7 @@ const hudW = Math.max(220, Number(uiSettings.hudWidth) || 280);
 const hudH = Math.max(0, Number(uiSettings.hudHeight) || 0);
 
 container.style.cssText = `position: fixed; top: 50px; right: 20px;
-  width: ${hudW}px;
+  width: min(${hudW}px, calc(100% - 28px));
   ${hudH ? `height:${hudH}px;` : ""}
   ${SYS ? `background: var(--sys-bg); border: 1px solid var(--sc); color: #e4f3ff;` : `
   background: rgba(10, 10, 15, 0.95);
@@ -4156,6 +4234,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
   container.className = SYS ? `rpg-sys${FOG ? " rpg-fog" : ""}` : "";
   if (FOG) fogFoldClasses(container, false);
   container.onclick = null;
+  clearMinTabHandlers(container);
 
   try {
     const { root, display, type, isVehicle } = getActiveData();
@@ -4392,6 +4471,13 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         </div>`; })() : ""}
 
         <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Appearance</div>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;">
+          <span style="font-size:0.8em; color:#ddd;" title="Stop the minimized tab (or Gray Fog's round button) from being moved">Lock minimized tab position</span>
+          <input type="checkbox" id="rpg-settings-minlock" ${uiSettings.minLock ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
+        </div>
+        ${(() => { const moved = Number.isFinite(uiSettings.minTabY) || !!uiSettings.fogOrbPos;
+          return `<button id="rpg-settings-minreset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:6px; cursor:pointer;${moved ? "" : " opacity:.45;"}" ${moved ? "" : "disabled"} title="Put the minimized tab (and Gray Fog's round button) back where they started">⇕ Reset minimized tab position</button>`; })()}
+        <button id="rpg-settings-transfer" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:6px; cursor:pointer;" title="Copy all your HUD settings as a code, or paste one in">⇄ Transfer settings (copy / paste)</button>
         <button id="rpg-settings-reset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:6px; cursor:pointer;">↺ Reset settings to defaults</button>
         <button id="rpg-settings-resetlayout" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px; cursor:pointer;">✥ Reset SAO layout</button>
 
@@ -4417,13 +4503,24 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
             <option value="story_serif">Story Serif (Georgia)</option>
         </select>
 
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-top:10px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-top:10px; gap:8px;">
             <div style="font-size:0.75em; color:#bbb;">Size</div>
-            <div id="rpg-font-scale-label" style="font-size:0.75em; color:#bbb;">100%</div>
+            <label style="display:flex; align-items:center; gap:2px; font-size:0.75em; color:#bbb;">
+              <input id="rpg-font-scale-num" type="number" min="${FONT_SCALE_MIN * 100}" max="${FONT_SCALE_MAX * 100}" step="5" inputmode="numeric"
+                style="width:58px; background:#111; color:#ddd; border:1px solid #555; padding:2px 4px; text-align:right;">%</label>
         </div>
 
-        <input id="rpg-font-scale" type="range" min="0.85" max="1.15" step="0.01"
+        <input id="rpg-font-scale" type="range" min="${FONT_SCALE_MIN}" max="${FONT_SCALE_MAX}" step="0.05"
                 style="width:100%; margin-top:6px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:6px;">
+          <span style="font-size:0.75em; color:#bbb;" title="Text grows and shrinks with the panel's width (dragging the left edge or corner). Size above still applies on top.">Auto-size text with the panel</span>
+          <input type="checkbox" id="rpg-font-auto" ${uiSettings.autoFont ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
+        </div>
+        <div style="display:flex; gap:6px; margin-top:8px;">
+          <button id="rpg-size-fit-tabs" style="flex:1; background:#222; border:1px solid #555; color:#ddd; padding:5px; cursor:pointer; font-size:0.85em;" title="Make the panel exactly as wide as the tab row, so every tab shows with no spare room">Fit width to tabs</button>
+          <button id="rpg-size-reset" style="flex:1; background:#222; border:1px solid #555; color:#ddd; padding:5px; cursor:pointer; font-size:0.85em;" title="Width 280, list box 110 high, text 100%">Reset panel size</button>
+        </div>
+        <div style="font-size:0.7em; color:#888; margin-top:4px; line-height:1.3;">Drag the panel's left edge for width, the bottom edge for height, or the bottom-left corner for both. Dragging the width snaps to the size where the tabs fit exactly.</div>
         </div>
 
           <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Notes</div>
@@ -4524,10 +4621,11 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         <div id="tab-quest" style="${tabStyle("quests")}">Quest</div>
         <div id="tab-env" style="${tabStyle("env")}">Environment</div>
         <div id="tab-log" style="${tabStyle("log")}">Log</div>
+        <div id="tab-notes" style="${tabStyle("notes")}">Notes</div>
       </div>
 
       ${CLASSIC_ED_CSS}
-      <div data-scroll-key="c:body:${activeTab}" style="height: ${classicEditorOpen() ? 240 : 110}px; overflow-y: auto; font-size: 0.8em; padding:5px; background:${SYS ? "rgba(var(--t-4_12_24, 4,12,24),0.55); border:1px solid rgba(var(--t-143_208_255, 143,208,255),0.22)" : "rgba(0,0,0,0.3)"}; scrollbar-gutter:${activeTab === "log" ? "auto" : "stable"};">
+      <div data-scroll-key="c:body:${activeTab}" style="height: ${hudBodyHeight()}px; overflow-y: auto; font-size: 0.8em; padding:5px; background:${SYS ? "rgba(var(--t-4_12_24, 4,12,24),0.55); border:1px solid rgba(var(--t-143_208_255, 143,208,255),0.22)" : "rgba(0,0,0,0.3)"}; scrollbar-gutter:${activeTab === "log" ? "auto" : "stable"};">
         ${activeTab === "party" ? renderPartyTab() : ""}
         ${activeTab === "log" ? classicLogHtml() : ""}
 		${activeTab === "bonds" ? renderBondsTab() : ""}
@@ -4538,6 +4636,7 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         ${activeTab === "mastery" ? classicMasteryHtml(masteries) : ""}
         ${activeTab === "quests" ? classicQuestHtml() : ""}
         ${activeTab === "env" ? makeList(rpgState.env_effects, "No Environmental Effects") : ""}
+        ${activeTab === "notes" ? notesHtml() : ""}
       </div>
 
       ${renderEnemySummary()}
@@ -4581,9 +4680,16 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 
       ${SYS ? "" : `<div style="position:absolute; right:10px; bottom:10px; font-size:0.8em; color:#FFD700;">💰 ${escHtml(coin)}</div>`}
 
-      <div id="rpg-resize-left" title="Resize"
-        style="position:absolute; left:-8px; top:0; bottom:0; width:16px;
+      <div id="rpg-resize-left" class="rpg-resize" data-resize="w" title="Drag to change the width"
+        style="position:absolute; left:0; top:0; bottom:14px; width:9px;
           cursor:ew-resize; z-index:200000; background:transparent; touch-action:none;"></div>
+      <div id="rpg-resize-bottom" class="rpg-resize" data-resize="h" title="Drag to change the height"
+        style="position:absolute; left:14px; right:0; bottom:0; height:7px;
+          cursor:ns-resize; z-index:200000; background:transparent; touch-action:none;"></div>
+      <div id="rpg-resize-corner" class="rpg-resize" data-resize="wh" title="Drag to change the width and height"
+        style="position:absolute; left:0; bottom:0; width:12px; height:12px;
+          cursor:nesw-resize; z-index:200001; background:transparent; touch-action:none; display:flex; align-items:flex-end; justify-content:flex-start; padding:0 0 1px 1px; box-sizing:border-box;">
+        <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true" style="opacity:.55; pointer-events:none;"><path d="M1 1v8h8M1 5l4 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></div>
 
       ${SYS && emblemEditOpen && !isSettingsOpen ? `<div id="rpg-emblem-drag" title="Drag to move the picture. Pinch or scroll to resize; twist with two fingers (or Shift+scroll) to rotate."></div><div class="em-guide"></div>` + emblemEditorHtml() : ""}
       ${settingsPanelHtml}
@@ -4591,38 +4697,56 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
       ${classicInfoHtml()}
     `;
 
-{
-  const handle = container.querySelector("#rpg-resize-left");
-  if (handle) {
-    handle.addEventListener("pointerdown", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-
-      handle.setPointerCapture?.(ev.pointerId);
-
-      const startX = ev.clientX;
-      const startW = container.getBoundingClientRect().width;
-
-      const onMove = (e) => {
-        const dx = e.clientX - startX; 
-        const newW = Math.max(220, Math.min(700, startW - dx)); 
-        uiSettings.hudWidth = Math.round(newW);
-        container.style.width = uiSettings.hudWidth + "px";
-      };
-
-      const onUp = () => {
-        document.removeEventListener("pointermove", onMove);
-        document.removeEventListener("pointerup", onUp);
-        document.removeEventListener("pointercancel", onUp);
-        saveUiSettings();
-      };
-
-      document.addEventListener("pointermove", onMove);
-      document.addEventListener("pointerup", onUp);
-      document.addEventListener("pointercancel", onUp);
-    });
-  }
-}
+// Resize from the left edge (width), the bottom edge (height of the list box)
+// or the bottom-left corner (both). The panel is pinned top-right, so those
+// are the edges that move. Text follows the width live when Auto-size is on.
+container.querySelectorAll(".rpg-resize").forEach((handle) => {
+  handle.addEventListener("click", (ev) => ev.stopPropagation());
+  handle.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    handle.setPointerCapture?.(ev.pointerId);
+    const mode = handle.dataset.resize;
+    const body = container.querySelector('[data-scroll-key^="c:body:"]');
+    const r = container.getBoundingClientRect();
+    const k = r.width && container.offsetWidth ? r.width / container.offsetWidth : 1;   // a zoomed page
+    const start = { x: ev.clientX, y: ev.clientY, w: container.offsetWidth, bh: body ? (parseFloat(body.style.height) || body.clientHeight) : 0, bottom: r.bottom };
+    const extra = classicEditorOpen() ? 130 : 0;
+    // dragging the width snaps to the size where the tabs fit exactly (not with Auto-size, where that point moves)
+    const snapW = mode.includes("w") && !uiSettings.autoFont && !isSettingsOpen ? hudTabsFitWidth(container) : 0;
+    const onMove = (e) => {
+      if (mode.includes("w")) {
+        // as wide as the screen allows: the left edge stops 8px from the screen's edge
+        const maxW = Math.max(240, Math.floor((r.right - 8) / k));
+        let w = Math.round(Math.max(220, Math.min(maxW, start.w - (e.clientX - start.x) / k)));
+        if (snapW && snapW <= maxW && Math.abs(w - snapW) <= 12) w = snapW;
+        uiSettings.hudWidth = w;
+        container.style.width = `${uiSettings.hudWidth}px`;
+        if (uiSettings.autoFont) container.style.fontSize = `${0.9 * hudFontScale()}em`;
+      }
+      if (mode.includes("h") && body) {
+        // as tall as the screen allows: the panel's bottom stops just above the screen's edge
+        const vv = window.visualViewport;
+        const room = ((vv ? vv.height + vv.offsetTop : window.innerHeight) - HUD_SCREEN_GAP - start.bottom) / k;
+        const bh = Math.max(56, Math.round(Math.min(start.bh + room, start.bh + (e.clientY - start.y) / k)));
+        uiSettings.hudBodyH = Math.max(56, bh - extra);
+        body.style.height = `${bh}px`;
+        body.dataset.baseH = String(bh);              // so fitting to the screen works from the new size
+        container.style.maxHeight = ""; container.style.overflowY = "";
+      }
+    };
+    const onUp = () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
+      saveUiSettings();
+      try { fitHudToScreen(); } catch {}
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
+  });
+});
 
 {
   const newStrip = container.querySelector("#rpg-tab-strip");
@@ -4734,6 +4858,8 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
     bind("tab-quest", () => switchTab("quests"));
     bind("tab-env", () => switchTab("env"));
     bind("tab-log", () => switchTab("log"));
+    bind("tab-notes", () => switchTab("notes"));
+    if (activeTab === "notes") bindNotes(container);
     classicBindLog();
     classicBindEditors();
     classicBindInfo();
@@ -4836,6 +4962,16 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	    };
 	  });
 
+	  const mlEl = document.getElementById("rpg-settings-minlock");
+	  if (mlEl) { mlEl.onclick = (e) => e.stopPropagation(); mlEl.onchange = () => { uiSettings.minLock = mlEl.checked; saveUiSettings(); }; }
+	  const mrEl = document.getElementById("rpg-settings-minreset");
+	  if (mrEl) mrEl.onclick = (e) => {
+	    e.stopPropagation();
+	    uiSettings.minTabY = null; uiSettings.fogOrbPos = null; saveUiSettings(); renderRPG();
+	    if (window.toastr) hudToast.success("The minimized tab is back in its usual spot.");
+	  };
+	  const trEl = document.getElementById("rpg-settings-transfer");
+	  if (trEl) trEl.onclick = openTransferDialog;
 	  const resetEl = document.getElementById("rpg-settings-reset");
 	  if (resetEl) resetEl.onclick = resetUiSettings;
 
@@ -4887,20 +5023,47 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
 	      };
 	    }
 	
+	    const scaleNum = document.getElementById("rpg-font-scale-num");
+	    const setScale = (v, from) => {
+	      const n = Math.max(FONT_SCALE_MIN, Math.min(FONT_SCALE_MAX, Number(v) || 1.0));
+	      uiSettings.fontScale = Math.round(n * 100) / 100;
+	      saveUiSettings();
+	      applyHudTypography(container);
+	      if (scaleEl && from !== scaleEl) scaleEl.value = String(uiSettings.fontScale);
+	      if (scaleNum && from !== scaleNum) scaleNum.value = String(Math.round(uiSettings.fontScale * 100));
+	    };
 	    if (scaleEl) {
 	      scaleEl.value = String(uiSettings.fontScale || 1.0);
-	      const updateLabel = () => {
-	        if (scaleLabel) scaleLabel.textContent = `${Math.round((Number(scaleEl.value) || 1) * 100)}%`;
-	      };
-	      updateLabel();
-	
-	      scaleEl.oninput = () => {
-	        uiSettings.fontScale = Number(scaleEl.value) || 1.0;
-	        saveUiSettings();
-	        applyHudTypography(container);
-	        updateLabel();
-	      };
+	      scaleEl.onclick = (e) => e.stopPropagation();
+	      scaleEl.oninput = () => setScale(scaleEl.value, scaleEl);
 	    }
+	    if (scaleNum) {
+	      scaleNum.value = String(Math.round((uiSettings.fontScale || 1) * 100));
+	      scaleNum.onclick = (e) => e.stopPropagation();
+	      scaleNum.onkeydown = (e) => e.stopPropagation();
+	      scaleNum.oninput = () => { const v = parseFloat(scaleNum.value); if (Number.isFinite(v) && v >= FONT_SCALE_MIN * 100 && v <= FONT_SCALE_MAX * 100) setScale(v / 100, scaleNum); };
+	      scaleNum.onchange = () => setScale((parseFloat(scaleNum.value) || 100) / 100, null);   // out of range snaps to the limit
+	    }
+	    const autoEl = document.getElementById("rpg-font-auto");
+	    if (autoEl) {
+	      autoEl.onclick = (e) => e.stopPropagation();
+	      autoEl.onchange = () => { uiSettings.autoFont = autoEl.checked; saveUiSettings(); applyHudTypography(container); };
+	    }
+	    const fitTabs = document.getElementById("rpg-size-fit-tabs");
+	    if (fitTabs) fitTabs.onclick = (e) => {
+	      e.stopPropagation();
+	      // measure with the settings closed, where the tab row actually is
+	      isSettingsOpen = false; renderRPG();
+	      hudFitWidthToTabs();
+	      isSettingsOpen = true; renderRPG();
+	      if (window.toastr) hudToast.info(`Width set to ${uiSettings.hudWidth}px, so all the tabs fit.`);
+	    };
+	    const sizeReset = document.getElementById("rpg-size-reset");
+	    if (sizeReset) sizeReset.onclick = (e) => {
+	      e.stopPropagation();
+	      uiSettings.hudWidth = 280; uiSettings.hudBodyH = 110; uiSettings.hudHeight = 0; uiSettings.fontScale = 1.0;
+	      saveUiSettings(); renderRPG();
+	    };
 	  } catch {}
 	}
   } catch (e) {
@@ -5080,15 +5243,39 @@ function tDiffLists(out, a, b, owner = "", who = null) {
   WATCHED_LISTS.forEach(({ key, label }) => {
     const tag = owner ? `${owner} \u00B7 ${label}` : label;
     const A = tListMap(a?.[key]), B = tListMap(b?.[key]);
+    const isMastery = key === "masteries";
     B.forEach((text, k) => {
-      if (!A.has(k)) { out.push({ tone: "good", text: `+ ${tag}: ${text}`, u: { f: "list", key, k, who } }); return; }
+      if (!A.has(k)) {
+        out.push({ tone: "good", text: isMastery ? `+ ${tag} ${masteryPretty(text)}` : `+ ${tag}: ${text}`, u: { f: "list", key, k, who } });
+        return;
+      }
       const before = A.get(k);
       if (before === text || stripStatusTags(before) === stripStatusTags(text)) return;
+      // a mastery whose numbers moved reads like a stat: "Mastery Swordsmanship: 45 → 46/100 (+1)"
+      if (isMastery) {
+        const p0 = saoParseProgress(stripStatusTags(before)), p1 = saoParseProgress(stripStatusTags(text));
+        const c0 = tNum(p0.curr), c1 = tNum(p1.curr);
+        if (c0 !== null && c1 !== null && p0.tail.trim() === p1.tail.trim()) {
+          const maxMoved = String(p0.max) !== String(p1.max);
+          if (c0 === c1 && !maxMoved) return;
+          const from = maxMoved ? `${c0}/${p0.max}` : `${c0}`;
+          out.push({ tone: c1 > c0 ? "good" : c1 < c0 ? "bad" : "neutral", u: { f: "list", key, k, who },
+            text: `${tag} ${p1.name}: ${from} \u2192 ${c1}/${p1.max}${c1 !== c0 ? ` (${tSigned(c1 - c0)})` : ""}` });
+          return;
+        }
+      }
       out.push({ tone: "neutral", text: `~ ${tag}: ${stripStatusTags(before)} \u2192 ${stripStatusTags(text)}`, u: { f: "list", key, k, who },
         diff: { label: tag, name: tItemName(text), before: stripStatusTags(before), after: stripStatusTags(text) } });
     });
-    A.forEach((text, k) => { if (!B.has(k)) out.push({ tone: "bad", text: `\u2212 ${tag}: ${text}`, u: { f: "list", key, k, who } }); });
+    A.forEach((text, k) => { if (!B.has(k)) out.push({ tone: "bad", text: isMastery ? `\u2212 ${tag} ${masteryPretty(text)}` : `\u2212 ${tag}: ${text}`, u: { f: "list", key, k, who } }); });
   });
+}
+
+// "Swordsmanship:45/100" -> "Swordsmanship: 45/100"
+function masteryPretty(text) {
+  const p = saoParseProgress(text);
+  if (p.curr === "") return String(text ?? "").trim();
+  return `${p.name}: ${p.curr}/${p.max}${p.tail}`;
 }
 
 const tTimerKey = (t) => `${String(t?.owner || "").toLowerCase()}|${String(t?.name || "").toLowerCase()}`;
@@ -5314,8 +5501,45 @@ function setSkin(name) {
 
 function renderRPG() {
   if ((uiSettings.skin || "classic") === "sao") return renderSaoSkin();
-  return renderClassicSkin();
+  const out = renderClassicSkin();
+  try { fitHudToScreen(); } catch (e) { console.warn("RPG HUD: fit to screen failed", e); }
+  return out;
 }
+
+// Classic, System and Gray Fog: keep the whole panel on screen. On a short
+// screen (a phone, or with the keyboard up) the scrolling list box gives up
+// height first, so Save, the menu and the settings stay reachable; if that
+// isn't enough, the panel itself scrolls.
+const HUD_SCREEN_GAP = 8;     // px kept clear below the panel
+const HUD_LIST_MIN = 56;      // the list box never shrinks below this
+function fitHudToScreen() {
+  const c = document.getElementById("rpg-hud-container");
+  if (!c || isMinimized || c.classList.contains("rpg-fog-orb")) return;
+  const body = c.querySelector('[data-scroll-key^="c:body:"]');
+  const base = body ? Number(body.dataset.baseH || parseFloat(body.style.height) || 0) : 0;
+  if (body && !body.dataset.baseH) body.dataset.baseH = String(base);
+  if (body && base) body.style.height = `${base}px`;
+  c.style.maxHeight = "";
+  if (c.dataset.fitScroll) { c.style.overflowY = ""; c.style.overflow = "hidden"; delete c.dataset.fitScroll; }
+  const vv = window.visualViewport;
+  const limit = (vv ? vv.height + vv.offsetTop : window.innerHeight) - HUD_SCREEN_GAP;
+  let over = c.getBoundingClientRect().bottom - limit;
+  if (over <= 0) return;
+  if (body && base) {
+    body.style.height = `${Math.max(HUD_LIST_MIN, Math.floor(base - over))}px`;
+    over = c.getBoundingClientRect().bottom - limit;
+    if (over <= 0) return;
+  }
+  // still too tall (a very short screen, or a long editor up top): scroll the panel
+  c.style.maxHeight = `${Math.max(160, Math.floor(limit - c.getBoundingClientRect().top))}px`;
+  // the settings sheet covers the panel and scrolls by itself, so the panel stays put under it
+  c.style.overflowY = isSettingsOpen ? "hidden" : "auto";
+  c.dataset.fitScroll = "1";
+}
+let hudFitTimer = 0;
+const hudFitSoon = () => { clearTimeout(hudFitTimer); hudFitTimer = setTimeout(() => { try { if ((uiSettings.skin || "classic") !== "sao") fitHudToScreen(); } catch {} }, 80); };
+window.addEventListener("resize", hudFitSoon);
+window.visualViewport?.addEventListener("resize", hudFitSoon);
 
 // ---------------------------------------------------------------- SAO SKIN
 let saoPanel = null;        // null | "status" | "bonds" | "quests" | "place" | "gear"
@@ -6676,39 +6900,59 @@ function saoMetersSection(display) {
 // Tapping an icon opens that list for editing in place.
 // =====================================================================
 const ico = (d, extra = "") => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/>${extra}</svg>`;
+const icoRaw = (inner) => `<svg viewBox="0 0 24 24" aria-hidden="true">${inner}</svg>`;
 const LIST_ICONS = {
   sword:   ico("M20 4v4l-9.5 9.5-4-4L16 4z M5 13l6 6 M7.5 16.5 4 20"),
   dagger:  ico("M8.96 11.64Q13.6 7 20 4Q17 10.4 12.36 15.04z M7.9 11l5.1 5.1 M9.9 14.1 6.4 17.6", '<circle cx="5.1" cy="18.7" r="1.5"/>'),
   spear:   ico("M4 20 14.5 9.5 M14.5 9.5l1.6-5.2 4.6-1.6-1.6 4.6z"),
-  axe:     ico("M5 20 14 11 M12.5 3.5c4.5.3 7.7 3.5 8 8l-3.2 1L11.5 6.7z"),
-  hammer:  ico("M5 20l8-8 M10.6 5.6l4.2-2.4 5.9 5.9-2.4 4.2z"),
+  axe:     ico("M4 20L12.3 11.7", '<path d="M11.44 10.44L14.62 7.26L16.74 8.38L20.28 10.8Q19.04 14.86 14.98 16.1L13.56 12.56z" fill="currentColor" fill-opacity=".15"/>'),
+  hammer:  ico("M4.5 19.5L11.9 12.1", '<path d="M8.39 8.53L11.21 5.71L17.22 11.72L14.4 14.54z" fill="currentColor" fill-opacity=".15"/>'),
   bow:     ico("M5 3.5c8.3 0 15.5 7.2 15.5 15.5 M5 3.5 20.5 19 M3.5 9.5 9 4"),
   gun:     ico("M3 8.5h16l1 2.5h-8.5l-1.3 2.5H7.6L6.6 19H3.5z M12 11v2"),
-  staff:   ico("M5 20l9.5-9.5", '<circle cx="17" cy="7" r="3.2"/>'),
+  staff:   ico("M4.5 19.5L14.2 9.8", '<path d="M17 3.2l.9 2.4 2.4.9-2.4.9-.9 2.4-.9-2.4-2.4-.9 2.4-.9z" fill="currentColor" fill-opacity=".3"/>'),
   shield:  ico("M12 3l7 2.8v5.4c0 4.4-2.9 7.8-7 9.8-4.1-2-7-5.4-7-9.8V5.8z"),
   armor:   ico("M8 3.5h8l4 3.7-3 3V20.5H7V10.2l-3-3z M10 3.5c0 1.4.9 2.4 2 2.4s2-1 2-2.4"),
   ring:    ico("M10 6.5l2-3 2 3-2 2z", '<circle cx="12" cy="14.5" r="5.3"/>'),
   potion:  ico("M9.5 3h5 M10.5 3v5.2L5.7 16.8a2.6 2.6 0 0 0 2.3 3.9h8a2.6 2.6 0 0 0 2.3-3.9L13.5 8.2V3 M7.4 14.5h9.2"),
   food:    ico("M12 7.5c-3-2-7.2 0-7.2 4.9s3 8.1 5.2 8.1c1 0 1.4-.5 2-.5s1 .5 2 .5c2.2 0 5.2-3.2 5.2-8.1S15 5.5 12 7.5z M12 7.5c0-2 1-3.3 3-4"),
   key:     ico("M10.4 12.6 20 3 M17 6l2.2 2.2 M14.6 8.4l2.2 2.2", '<circle cx="7.6" cy="15.4" r="3.6"/>'),
-  book:    ico("M5 4.5h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z M5 17.5a3 3 0 0 1 3-3h11"),
-  gem:     ico("M5.5 9.5l3.2-5h6.6l3.2 5L12 20.5z M5.5 9.5h13 M9.5 9.5 12 20.5l2.5-11"),
+  book:    ico("M5 4.5h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z", '<path d="M5 17.5a3 3 0 0 1 3-3h11" stroke-width="1.3"/>'),
+  gem:     icoRaw('<path d="M7.5 4h9l4 5.2L12 20.5 3.5 9.2z"/><path d="M3.5 9.2h17 M8.3 9.2 12 4.2l3.7 5 M8.3 9.2 12 20.5l3.7-11.3" stroke-width="1"/>'),
   coin:    ico("", '<circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="4"/>'),
   bag:     ico("M5.5 8.5h13l1.2 12H4.3z M9 8.5V7a3 3 0 0 1 6 0v1.5"),
   phone:   ico("M8 2.5h8a1.6 1.6 0 0 1 1.6 1.6v15.8a1.6 1.6 0 0 1-1.6 1.6H8a1.6 1.6 0 0 1-1.6-1.6V4.1A1.6 1.6 0 0 1 8 2.5z M10.5 18.3h3"),
   laptop:  ico("M5.5 5.5h13v9h-13z M2.8 18.5h18.4l-1.7-4H4.5z"),
   camera:  ico("M4 8.2h3.4l1.6-2.6h6l1.6 2.6H20v10.6H4z", '<circle cx="12" cy="13.4" r="3.4"/>'),
   misc:    ico("M9 9.2a3 3 0 1 1 4.6 2.5c-1 .6-1.6 1.3-1.6 2.6 M12 17.6v.4"),
+  hat:     icoRaw('<path d="M2.8 17.6c0 1.5 4.1 2.6 9.2 2.6s9.2-1.1 9.2-2.6c0-.9-1.4-1.6-3.6-2.1"/><path d="M5.4 15.5c-1.6.5-2.6 1.2-2.6 2.1"/><path d="M6.2 16.6V9.8c0-2.6 2.6-4.3 5.8-4.3s5.8 1.7 5.8 4.3v6.8c-1.6.6-3.6.9-5.8.9s-4.2-.3-5.8-.9z"/><path d="M6.2 13.4c1.6.6 3.6.9 5.8.9s4.2-.3 5.8-.9" stroke-width="1.1"/>'),
+  glasses: icoRaw('<circle cx="6.8" cy="13.6" r="3.6"/><circle cx="17.2" cy="13.6" r="3.6"/><path d="M10.4 13.3c1.1-.9 2.1-.9 3.2 0 M3.3 12.6 2.3 9.6M20.7 12.6l1-3"/>'),
+  tie:     icoRaw('<path d="M10 3.5h4l-.8 2.6h-2.4z"/><path d="M10.8 6.1 9 16.2l3 4.3 3-4.3-1.8-10.1"/><path d="M10.3 10.4l3.7-2.2M9.6 14l4.8-2.8" stroke-width=".9"/>'),
+  gloves:  icoRaw('<path d="M8 21v-5.2L5.4 12.3a1.4 1.4 0 0 1 2.1-1.9L9 12V5.2a1.2 1.2 0 0 1 2.4 0V11V3.9a1.2 1.2 0 0 1 2.4 0V11V5a1.2 1.2 0 0 1 2.4 0v6V7.4a1.2 1.2 0 0 1 2.4 0v7.6L16.8 21z"/><path d="M8 18.2h8.8" stroke-width="1.1"/>'),
+  gauntlet: icoRaw('<path d="M8.4 16.2L5.6 12.6a1.5 1.5 0 0 1 2.2-2L9.2 12V5.4a1.2 1.2 0 0 1 2.4 0V11V4.1a1.2 1.2 0 0 1 2.4 0V11V5.2a1.2 1.2 0 0 1 2.4 0v6V7.6a1.2 1.2 0 0 1 2.4 0v7.6l-1 1z"/><path d="M9.2 8.4h7.2M9.2 11h9.6" stroke-width=".9"/><path d="M8.4 16.2h10l1.6 5.3H6.4z" fill="currentColor" fill-opacity=".2"/>'),
+  bra:     icoRaw('<path d="M3.5 9.5c0 3.6 2.6 6 5.3 6 1.4 0 2.5-.8 3.2-2 .7 1.2 1.8 2 3.2 2 2.7 0 5.3-2.4 5.3-6"/><path d="M3.5 9.5c2.6-1 5.6-.3 8.5 3.5 2.9-3.8 5.9-4.5 8.5-3.5"/><path d="M5 9.1 6.6 3.8M19 9.1l-1.6-5.3" stroke-width="1.1"/>'),
+  panties: icoRaw('<path d="M3.5 7.5h17l-.4 2.3c-3.4.5-5.5 2.7-6.2 6.7h-3.8c-.7-4-2.8-6.2-6.2-6.7z"/><path d="M12 9.8 9.7 8.6v2.4zM12 9.8l2.3-1.2v2.4z" stroke-width=".9"/><circle cx="12" cy="9.8" r=".55" fill="currentColor" stroke="none"/>'),
+  boxers:  icoRaw('<path d="M4.5 5.5h15l.8 13.5h-6.6L12 12.4 10.3 19H3.7z"/><path d="M4.3 8.6h15.4" stroke-width="1.1"/><path d="M12 8.6v3.8" stroke-width="1"/>'),
+  socks:   icoRaw('<path d="M9 3.5h6.2v9.4l3.9 2.5a2.6 2.6 0 0 1-1.4 4.8h-6.4a3.4 3.4 0 0 1-2.7-5.4l.4-.6z"/><path d="M9 5.6h6.2M9 7.6h6.2M16.3 14.3c-.9 1.2-1 3.6.1 5.9" stroke-width="1"/>'),
+  charm:   icoRaw('<path d="M8.5 2.8h7v14.6L12 20.8l-3.5-3.4z"/><circle cx="12" cy="6.4" r="1.4" stroke-width="1.1"/><path d="M12 9.8v5.8M10.3 11.4h3.4M10.6 14h2.8" stroke-width="1"/>'),
+  rock:    icoRaw('<path d="M3.5 17.5 5.6 11l4.5-4 5.6.8 4.4 4.6.4 5.1-2.8 2.1H6.4z"/><path d="M10.1 7l1.3 5.2 4.3-4.4M11.4 12.2 8.6 19.6M11.4 12.2l8.7 0" stroke-width="1"/><path d="M15.3 14.6l.7.7-.7.7-.7-.7z M7.3 13.6l.6.6-.6.6-.6-.6z" fill="currentColor" stroke-width=".8"/>'),
+  ingot:   icoRaw('<path d="M3 19.5h8.6l-1.8-4.2H4.8zM12.4 19.5H21l-1.8-4.2h-5z M7.7 15.3h8.6l-1.8-4.2H9.5z" fill="currentColor" fill-opacity=".12"/>'),
+  ticket:  ico("M3 6h18v4a2 2 0 0 0 0 4v4H3v-4a2 2 0 0 0 0-4z", '<path d="M6.5 10h5 M6.5 14h3.5" stroke-width="1.1"/><path d="M15 6.6v1.8M15 11.1v1.8M15 15.6v1.8" stroke-width="1.1"/>'),
+  card:    ico("M5 5.5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z", '<g stroke-width="1.1"><circle cx="8.2" cy="10.3" r="1.6"/><path d="M5.6 15.4c.4-1.5 1.4-2.3 2.6-2.3s2.2.8 2.6 2.3 M13.2 9.6h5 M13.2 12.4h5 M13.2 15.2h3"/></g>'),
+  medal:   ico("M7.6 2.6h3.1L12 6.8l1.3-4.2h3.1L13.6 9.8h-3.2z", '<circle cx="12" cy="15.2" r="5.2"/><path d="M12.00 12.70 12.62 14.35 14.38 14.43 13.00 15.52 13.47 17.22 12.00 16.25 10.53 17.22 11.00 15.52 9.62 14.43 11.38 14.35z" stroke-width="1"/>'),
+  paper:   ico("M6 3h8.6L19 7.4V21H6z M14.6 3v4.4H19", '<path d="M8.8 11h7.4 M8.8 14h7.4 M8.8 17h4.6" stroke-width="1.1"/>'),
+  pen:     ico("M15.6 4.4l4 4L9 19l-5 1 1-5z M13.6 6.4l4 4 M5 15l4 4"),
+  brush:   ico("M19.6 3.2a1.3 1.3 0 0 1 1.2 1.2l-7 8.3-2.5-2.5z M11.3 10.2l2.5 2.5 M10.3 11.5c1.9-.5 3 .6 2.6 2.5-.7 2.9-3.6 5.1-8.4 5.8.6-4.8 2.6-7.8 5.8-8.3z"),
+  herb:    ico("M19.6 4.4C10.2 4.4 4.6 8.8 4.9 17.3c8.6.3 14.7-4.3 14.7-12.9z M4 20l11-11 M10 14h4.2 M12.6 11.4V7.6 M7.6 16.4V13"),
   quest:   ico("M6 21V3.5 M6 4.5h11.5l-2.5 4 2.5 4H6"),
   // skills and passives
   fire:    ico("M12 3c.9 3.1 5 5 5 10.2a5 5 0 0 1-10 0c0-3 1.8-4.2 2-6.2 1.1.9 1.9 2 2 3.3 1.2-2.1 1.3-4.6 1-7.3z"),
-  ice:     ico("M12 3v18 M4.2 7.5l15.6 9 M4.2 16.5l15.6-9 M9.5 4.5 12 7l2.5-2.5 M9.5 19.5 12 17l2.5 2.5"),
+  ice:     icoRaw('<path d="M12.00 12.00L12.00 3.40M12.00 6.40L10.26 4.47M12.00 6.40L13.74 4.47M12.00 12.00L19.45 7.70M16.85 9.20L17.65 6.73M16.85 9.20L19.39 9.74M12.00 12.00L19.45 16.30M16.85 14.80L19.39 14.26M16.85 14.80L17.65 17.27M12.00 12.00L12.00 20.60M12.00 17.60L13.74 19.53M12.00 17.60L10.26 19.53M12.00 12.00L4.55 16.30M7.15 14.80L6.35 17.27M7.15 14.80L4.61 14.26M12.00 12.00L4.55 7.70M7.15 9.20L4.61 9.74M7.15 9.20L6.35 6.73"/>'),
   bolt:    ico("M13.5 3 6 13.5h5.3L10.5 21 18 10.5h-5.3z"),
   heal:    ico("M9.5 4h5v5.5H20v5h-5.5V20h-5v-5.5H4v-5h5.5z"),
   dark:    ico("M15.5 4a8.2 8.2 0 1 0 4.8 13.2A6.4 6.4 0 0 1 15.5 4z"),
   wind:    ico("M3 9h11a3 3 0 1 0-3-3 M3 14h15a3 3 0 1 1-3 3 M3 19h6"),
   burst:   ico("M12 3l2.1 6H20l-4.8 3.6 1.9 6.9L12 15.6 6.9 19.5l1.9-6.9L4 9h5.9z"),
-  badge:   ico("M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z", '<circle cx="12" cy="12" r="2.4"/>'),
+  badge:   ico("M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z", '<circle cx="12" cy="12" r="2.4" stroke-width="1.3"/>'),
 };
 
 // first match wins, so weapons come before anything they might be mistaken for
@@ -6725,16 +6969,38 @@ const ITEM_KINDS = [
   ["phone",  /\b(phone|smartphone|cellphone|iphone|mobile|radio|walkie|walkie-talkie|communicator|comms?|pager|beeper|pda|handset|headset|earpiece|transceiver|transmitter|receiver|scanner|tracker|gadget|device|smartwatch)\b/],
   ["laptop", /\b(laptop|computer|pc|terminal|console|datapad|monitor|keyboard|usb|drive|disk|disc|server|hard drive|flash drive)\b/],
   ["camera", /\b(camera|camcorder|polaroid|binoculars|telescope|spyglass)\b/],
+  // writing and painting things
+  ["brush",  /\b(brush|brushes|paintbrush|paintbrushes|paints?|palette|easel|canvas)\b/],
+  ["pen",    /\b(pen|pens|pencil|pencils|quill|quills|marker|markers|crayons?|chalk|ink|inkwell|stylus|charcoal|highlighter|biro)\b/],
   ["staff",  /\b(staff|wand|rod|scepter|sceptre|orb|focus)\b/],
   ["shield", /\b(shield|buckler|aegis)\b/],
-  ["armor",  /\b(armou?r|mail|plate|helm|helmet|gauntlets?|greaves|boots|cloak|robes?|coat|shirt|dress|jacket|tunic|hood|gloves|cape|vest|pants|trousers|uniform|outfit|clothes|clothing|garb|leathers?|hat|mask|belt)\b/],
-  ["potion", /\b(potion|elixir|tonic|draught|vial|flask|antidote|salve|crystal|bandages?|medicine|pills?|herbs?)\b/],
+  // clothing with its own icon first, then the rest of what you wear
+  ["hat",      /\b(hats?|cap|beanies?|fedoras?|berets?|bonnets?|top hat|sombreros?|stetsons?|bowlers?|tricorns?|witch hat)\b/],
+  ["glasses",  /\b(glasses|spectacles|sunglasses|goggles|monocle|eyeglasses|shades|eyewear)\b/],
+  ["tie",      /\b(ties?|neckties?|bowties?|bow tie|cravats?|ascots?)\b/],
+  ["gauntlet", /\b(gauntlets?|vambraces?|bracers?|armguards?)\b/],
+  ["gloves",   /\b(gloves?|mittens?|mitts)\b/],
+  ["bra",      /\b(bras?|bralettes?|brassieres?|sports bra|bikini top)\b/],
+  ["panties",  /\b(panties|panty|knickers|thongs?|briefs|lingerie|underwear|undies|bikini bottoms?|g-string)\b/],
+  ["boxers",   /\b(boxers|boxer briefs|trunks|shorts|swim trunks)\b/],
+  ["socks",    /\b(socks?|stockings?|tights|pantyhose|knee[- ]?highs?|thigh[- ]?highs?|leg warmers?)\b/],
+  ["armor",  /\b(armou?r|mail|plate|helm|helmet|greaves|boots|cloak|robes?|coat|shirt|dress|jacket|tunic|hood|cape|vest|pants|trousers|uniform|outfit|clothes|clothing|garb|leathers?|mask|belt)\b/],
+  ["herb",   /\b(herbs?|herbal|leaf|leaves|plants?|flowers?|blossoms?|petals?|moss|roots?|mushrooms?|fungus|fungi|seeds?|sprigs?|weeds?|grass|ferns?|vines?|ginseng|mint|lavender|thyme|basil|rosemary|sage leaf|clover|nightshade|mandrake|lotus|bloom)\b/],
+  ["potion", /\b(potion|elixir|tonic|draught|vial|flask|antidote|salve|crystal|bandages?|medicine|pills?)\b/],
   ["food",   /\b(food|bread|rations?|meat|apple|fruit|stew|cheese|jerky|berr(y|ies)|fish|cake|pie|drink|water|ale|wine|tea|soup|meal)\b/],
-  ["key",    /\b(key|keycard|keys)\b/],
-  ["book",   /\b(scroll|book|tome|map|letter|note|journal|grimoire|manual|page|diary|contract)\b/],
-  ["ring",   /\b(ring|amulet|necklace|pendant|bracelet|earrings?|charm|talisman|brooch|circlet|crown|halo|locket|keychain|keyring|trinket|bauble|accessory|accessories|pin|badge|emblem|anklet|tiara|choker|strap|watch|wristwatch)\b/],
-  ["gem",    /\b(gem|jewel|ruby|emerald|sapphire|diamond|ore|ingot|shard|stone|pearl|materials?|hide|pelt|scales?|fang|claw|bone|crystals)\b/],
-  ["coin",   /\b(coins?|gold|purse|pouch|money|col)\b/],
+  // cards and papers before keys and books: "Keycard" is a card, "Seer Formula" a sheet of paper
+  ["ticket", /\b(tickets?|vouchers?|coupons?|pass|passes|stubs?|raffle|admission|boarding pass|gift card|giftcard)\b/],
+  ["card",   /\b(card|cards|keycard|id|license|licence|passport|permit|membership|credentials?)\b/],
+  ["key",    /\b(key|keys)\b/],
+  ["paper",  /\b(paper|papers|note|notes|notepad|formula|formulas|recipe|recipes|letter|letters|document|documents|blueprint|blueprints|schematic|deed|certificate|receipt|memo|flyer|poster|notice|page|pages|sheet|parchment|contract|invoice|manuscript|map|maps|report|dossier|warrant|bounty)\b/],
+  ["book",   /\b(scroll|book|tome|journal|grimoire|manual|diary|codex|bible|almanac|ledger)\b/],
+  ["medal",  /\b(badge|badges|medal|medals|medallion|insignia|emblem|crest|sigil|seal)\b/],
+  ["charm",  /\b(charms?|talismans?|omamori|ofuda|wards?|fetish|totems?|lucky charm|good luck charm|paper seal)\b/],
+  ["ring",   /\b(ring|amulet|necklace|pendant|bracelet|earrings?|brooch|circlet|crown|halo|locket|keychain|keyring|trinket|bauble|accessory|accessories|pin|anklet|tiara|choker|strap|watch|wristwatch)\b/],
+  ["ingot",  /\b(ingots?|bullion|billets?|(?:gold|silver|iron|steel|copper|bronze|brass|tin|lead|platinum|mithril|mythril|adamantite|adamantium|orichalcum|titanium|metal)\s+bars?)\b/],
+  ["rock",   /\b(rocks?|stones?|ores?|minerals?|pebbles?|boulders?|rubble|gravel|granite|marble|obsidian|slate|coal|nuggets?|geodes?)\b/],
+  ["gem",    /\b(gems?|jewels?|ruby|rubies|emeralds?|sapphires?|diamonds?|amethysts?|topaz|opals?|garnets?|shards?|pearls?|materials?|hide|pelt|scales?|fang|claw|bone|crystals)\b/],
+  ["coin",   /\b(coins?|gold|purse|pouch|money|col|bottle caps|caps)\b/],
   ["bag",    /\b(rope|torch|lantern|pickaxe|shovel|lockpicks?|tools?|kit|compass|tent|bedroll|bag|backpack|satchel|flint|whetstone|sheath|scabbard|holster|case)\b/],
 ];
 const SKILL_KINDS = [
@@ -6822,8 +7088,8 @@ function setIconOverride(listKey, text, kind) {
 }
 
 // every icon, the list's own kind first
-const ITEM_ICON_ORDER = ["sword", "dagger", "spear", "axe", "hammer", "bow", "gun", "staff", "shield", "armor", "ring", "potion",
-  "food", "key", "book", "gem", "coin", "bag", "phone", "laptop", "camera", "misc"];
+const ITEM_ICON_ORDER = ["sword", "dagger", "spear", "axe", "hammer", "bow", "gun", "staff", "shield", "armor", "hat", "glasses", "tie", "gloves", "gauntlet", "bra", "panties", "boxers", "socks", "ring", "potion",
+  "food", "herb", "key", "book", "paper", "pen", "brush", "card", "ticket", "medal", "charm", "gem", "rock", "ingot", "coin", "bag", "phone", "laptop", "camera", "misc"];
 const SKILL_ICON_ORDER = ["fire", "ice", "bolt", "heal", "dark", "wind", "burst", "badge"];
 function iconPickerHtml(listKey, i, current, isCustom) {
   const order = listKey === "inventory" ? [...ITEM_ICON_ORDER, ...SKILL_ICON_ORDER] : [...SKILL_ICON_ORDER, ...ITEM_ICON_ORDER];
@@ -6883,6 +7149,407 @@ function bestEntryIndex(items, key, text, taken = new Set()) {
   });
   return best;
 }
+
+// =====================================================================
+// NOTES
+// Personal notes, never sent to the model: an NPC's description to keep,
+// a theory, a reminder. "This chat" notes live in the chat's own metadata
+// (saved with the chat, so they survive a cleared cache); "All chats" notes
+// live in the extension's settings on the server.
+// =====================================================================
+let notesScope = "chat";        // "chat" | "all"
+let notesOpenId = null;         // the note open in the editor
+let notesQuery = "";
+let notesCaret = null;          // { field, start, end, at } to put the cursor back after a re-render
+let lastChatSelection = "";     // the last text selected in the chat, for "+ Selected text"
+const NOTES_LOCAL_KEY = "rpgHud:notes";
+const NOTES_SEARCH_AT = 6;
+
+document.addEventListener("selectionchange", () => {
+  try {
+    const sel = window.getSelection();
+    const t = String(sel || "").trim();
+    const chatEl = document.getElementById("chat");
+    if (t && chatEl && sel.anchorNode && chatEl.contains(sel.anchorNode)) lastChatSelection = t;
+  } catch {}
+});
+
+function notesStore(scope = notesScope) {
+  let ctx = null;
+  try { ctx = SillyTavern.getContext(); } catch {}
+  if (scope === "all") {
+    const ext = ctx?.extensionSettings;
+    if (ext) {
+      ext.rpgHud = ext.rpgHud || {};
+      if (!Array.isArray(ext.rpgHud.notes)) ext.rpgHud.notes = [];
+      return { list: ext.rpgHud.notes, save: () => { try { ctx.saveSettingsDebounced?.(); } catch {} } };
+    }
+  } else {
+    const md = ctx?.chatMetadata;
+    const saveMd = ctx?.saveMetadataDebounced || ctx?.saveMetadata;
+    if (md && typeof md === "object" && typeof saveMd === "function" && ctx?.chatId) {
+      if (!Array.isArray(md.rpgHudNotes)) md.rpgHudNotes = [];
+      return { list: md.rpgHudNotes, save: () => { try { saveMd.call(ctx); } catch {} } };
+    }
+  }
+  // no chat metadata / settings to hand: keep them on this device
+  let key = scope === "all" ? "@all" : "";
+  if (!key) { try { key = currentChatKey(ctx) || "@none"; } catch { key = "@none"; } }
+  let all = {};
+  try { all = JSON.parse(localStorage.getItem(NOTES_LOCAL_KEY) || "{}") || {}; } catch {}
+  if (!Array.isArray(all[key])) all[key] = [];
+  const list = all[key];
+  return { list, save: () => { try { localStorage.setItem(NOTES_LOCAL_KEY, JSON.stringify(all)); } catch {} } };
+}
+const noteTitleOf = (n) => (String(n?.title || "").trim() || String(n?.body || "").trim().split("\n")[0] || "Untitled note").slice(0, 80);
+const noteWhen = (t) => { try { return new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" }); } catch { return ""; } };
+
+function notesHtml() {
+  const store = notesStore();
+  const note = notesOpenId ? store.list.find((n) => n.id === notesOpenId) : null;
+  if (notesOpenId && !note) notesOpenId = null;
+  if (note) {
+    return `<div class="rpg-notes">
+      <input id="rpg-note-title" class="rpg-note-in" placeholder="Title (optional)" value="${escAttr(note.title || "")}">
+      <textarea id="rpg-note-body" class="rpg-note-in" placeholder="Write anything: an NPC's description, a lead, a reminder…">${escHtml(note.body || "")}</textarea>
+      <div class="rpg-notes-row">
+        <button id="rpg-note-back" title="Back to the list (it saves as you type)">◂ Back</button>
+        <button id="rpg-note-paste" title="Add the text you last selected in the chat">+ Selected text</button>
+        <button id="rpg-note-move" title="Move this note to ${notesScope === "chat" ? "All chats" : "this chat"}">${notesScope === "chat" ? "→ All chats" : "→ This chat"}</button>
+        <button id="rpg-note-del" class="danger" title="Delete this note">Delete</button>
+      </div>
+      <div class="rpg-notes-meta">Saved as you type · ${notesScope === "chat" ? "this chat only" : "every chat"} · never sent to the AI</div>
+    </div>`;
+  }
+  const other = notesStore(notesScope === "chat" ? "all" : "chat").list.length;
+  const counts = { chat: notesScope === "chat" ? store.list.length : other, all: notesScope === "all" ? store.list.length : other };
+  const q = notesQuery.trim().toLowerCase();
+  const items = [...store.list].sort((a, b) => (b.at || 0) - (a.at || 0));
+  const rows = items.map((n) => {
+    const hit = !q || `${n.title || ""}\n${n.body || ""}`.toLowerCase().includes(q);
+    const preview = String(n.title ? n.body || "" : (n.body || "").split("\n").slice(1).join(" ")).replace(/\s+/g, " ").trim().slice(0, 90);
+    return `<button class="rpg-note-item" data-id="${escAttr(n.id)}" data-text="${escAttr(`${n.title || ""} ${n.body || ""}`)}"${hit ? "" : ' style="display:none"'}>
+      <span class="t">${escHtml(noteTitleOf(n))}</span><span class="d">${escHtml(noteWhen(n.at))}</span>
+      ${preview ? `<span class="p">${escHtml(preview)}</span>` : ""}</button>`;
+  }).join("");
+  return `<div class="rpg-notes">
+    <div class="rpg-notes-row top">
+      <span class="rpg-notes-seg">
+        <button data-notes-scope="chat" class="${notesScope === "chat" ? "on" : ""}">This chat (${counts.chat})</button><button data-notes-scope="all" class="${notesScope === "all" ? "on" : ""}">All chats (${counts.all})</button>
+      </span>
+      <button id="rpg-note-new" title="New note${lastChatSelection ? ", starting with the text you selected in the chat" : ""}">+ New</button>
+    </div>
+    ${items.length >= NOTES_SEARCH_AT ? `<input type="search" id="rpg-notes-search" class="rpg-note-in" placeholder="Search notes" value="${escAttr(notesQuery)}">` : ""}
+    ${rows || `<p class="rpg-notes-empty">No notes ${notesScope === "chat" ? "in this chat" : "for all chats"} yet. Tip: select text in the chat (an NPC's description, say), then press + New to start a note with it.</p>`}
+    ${rows ? `<p class="rpg-notes-empty" id="rpg-notes-none"${q && !items.some((n) => `${n.title || ""}\n${n.body || ""}`.toLowerCase().includes(q)) ? "" : ' style="display:none"'}>No notes match.</p>` : ""}
+  </div>`;
+}
+
+function bindNotes(root) {
+  if (!root?.querySelector?.(".rpg-notes")) return;
+  const store = notesStore();
+  const $ = (sel) => root.querySelector(sel);
+  const stop = (el) => { if (el) { el.addEventListener("click", (e) => e.stopPropagation()); el.addEventListener("keydown", (e) => e.stopPropagation()); } };
+  root.querySelectorAll("[data-notes-scope]").forEach((b) => b.onclick = (e) => { e.stopPropagation(); notesScope = b.dataset.notesScope; notesQuery = ""; renderRPG(); });
+  const nb = $("#rpg-note-new");
+  if (nb) nb.onclick = (e) => {
+    e.stopPropagation();
+    const body = lastChatSelection || "";
+    const n = { id: `n${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, title: "", body, at: Date.now() };
+    store.list.push(n); store.save();
+    lastChatSelection = "";
+    notesOpenId = n.id; notesCaret = { field: "rpg-note-title", start: 0, end: 0, at: Date.now() };
+    renderRPG();
+  };
+  root.querySelectorAll(".rpg-note-item").forEach((b) => b.onclick = (e) => { e.stopPropagation(); notesOpenId = b.dataset.id; notesCaret = null; renderRPG(); });
+  const se = $("#rpg-notes-search");
+  if (se) {
+    stop(se);
+    se.oninput = () => {
+      notesQuery = se.value;
+      const q = se.value.trim().toLowerCase();
+      let shown = 0;
+      root.querySelectorAll(".rpg-note-item").forEach((r) => { const hit = !q || String(r.dataset.text || "").toLowerCase().includes(q); r.style.display = hit ? "" : "none"; if (hit) shown++; });
+      const none = $("#rpg-notes-none"); if (none) none.style.display = shown ? "none" : "";
+    };
+  }
+  const note = notesOpenId ? store.list.find((n) => n.id === notesOpenId) : null;
+  if (!note) return;
+  const title = $("#rpg-note-title"), body = $("#rpg-note-body");
+  const keep = (el) => { notesCaret = { field: el.id, start: el.selectionStart, end: el.selectionEnd, at: Date.now() }; };
+  [title, body].forEach((el) => {
+    if (!el) return;
+    stop(el);
+    el.addEventListener("input", () => { note[el === title ? "title" : "body"] = el.value; note.at = Date.now(); store.save(); keep(el); });
+    ["keyup", "click", "focus"].forEach((ev) => el.addEventListener(ev, () => keep(el)));
+  });
+  // a re-render while typing (a new reply, say) puts the cursor back where it was
+  if (notesCaret && Date.now() - notesCaret.at < 4000) {
+    const el = $(`#${notesCaret.field}`);
+    if (el) { try { el.focus({ preventScroll: true }); el.setSelectionRange(notesCaret.start, notesCaret.end); } catch {} }
+  }
+  const btn = (sel, fn) => { const el = $(sel); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
+  btn("#rpg-note-back", () => {
+    if (!String(note.title || "").trim() && !String(note.body || "").trim()) { store.list.splice(store.list.indexOf(note), 1); store.save(); }   // nothing written: no empty note left behind
+    notesOpenId = null; notesCaret = null; renderRPG();
+  });
+  btn("#rpg-note-paste", () => {
+    if (!lastChatSelection) { if (window.toastr) hudToast.info("Select some text in the chat first, then press this."); return; }
+    note.body = (note.body ? note.body.replace(/\s+$/, "") + "\n\n" : "") + lastChatSelection;
+    note.at = Date.now(); store.save();
+    notesCaret = { field: "rpg-note-body", start: note.body.length, end: note.body.length, at: Date.now() };
+    renderRPG();
+  });
+  btn("#rpg-note-move", () => {
+    const to = notesStore(notesScope === "chat" ? "all" : "chat");
+    store.list.splice(store.list.indexOf(note), 1); store.save();
+    to.list.push(note); to.save();
+    notesScope = notesScope === "chat" ? "all" : "chat";
+    if (window.toastr) hudToast.info(`Moved to ${notesScope === "all" ? "All chats" : "this chat"}.`);
+    renderRPG();
+  });
+  btn("#rpg-note-del", () => {
+    if (!confirm(`Delete "${noteTitleOf(note)}"?`)) return;
+    store.list.splice(store.list.indexOf(note), 1); store.save();
+    notesOpenId = null; notesCaret = null; renderRPG();
+  });
+}
+
+const NOTES_CSS = `
+/* the tab row centres itself when it doesn't need to scroll (auto margins drop to 0 once it overflows) */
+#rpg-tab-strip > :first-child{margin-left:auto}
+#rpg-tab-strip > :last-child{margin-right:auto}
+.rpg-notes{display:flex; flex-direction:column; gap:5px; font-size:1em}
+.rpg-notes button{font:inherit; color:inherit; cursor:pointer}
+.rpg-notes-row{display:flex; flex-wrap:wrap; gap:4px; align-items:center}
+.rpg-notes-row.top{justify-content:space-between}
+.rpg-notes-row > button,.rpg-notes-seg button{background:rgba(127,127,127,.14); border:1px solid rgba(127,127,127,.45); border-radius:3px; padding:3px 7px; font-size:.95em}
+.rpg-notes-row > button.danger{border-color:rgba(255,82,82,.6); color:#ff8a80}
+.rpg-notes-seg{display:inline-flex}
+.rpg-notes-seg button{border-radius:0}
+.rpg-notes-seg button:first-child{border-radius:3px 0 0 3px}
+.rpg-notes-seg button:last-child{border-radius:0 3px 3px 0; border-left:0}
+.rpg-notes-seg button.on{background:rgba(127,127,127,.38); font-weight:bold}
+.rpg-note-in{width:100%; box-sizing:border-box; background:rgba(127,127,127,.12); color:inherit; border:1px solid rgba(127,127,127,.45); border-radius:3px; padding:4px 6px; font:inherit}
+textarea.rpg-note-in{min-height:130px; resize:vertical; line-height:1.4}
+.rpg-note-item{display:grid; grid-template-columns:1fr auto; gap:1px 8px; width:100%; text-align:left; background:rgba(127,127,127,.08);
+  border:1px solid rgba(127,127,127,.3); border-radius:3px; padding:5px 7px}
+.rpg-note-item:hover{background:rgba(127,127,127,.18)}
+.rpg-note-item .t{font-weight:bold; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.rpg-note-item .d{opacity:.6; font-size:.85em}
+.rpg-note-item .p{grid-column:1 / -1; opacity:.75; font-size:.9em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.rpg-notes-empty,.rpg-notes-meta{opacity:.7; font-size:.9em; margin:2px 0}
+`;
+(() => { try { const st = document.createElement("style"); st.id = "rpg-notes-css"; st.textContent = NOTES_CSS; document.head.appendChild(st); } catch {} })();
+
+// =====================================================================
+// SETTINGS TRANSFER
+// One code (or a small file) carrying every HUD setting, so they survive a
+// cleared cache or move to another browser: sizes, skin choices, colours,
+// meter icons, item icons you picked, background layers (uploaded pictures
+// included, if you like) and, optionally, chat data kept on this device
+// (blocked bonds, position and change locks).
+// =====================================================================
+const TRANSFER_PREFIX_Z = "RPGHUD1z.";   // gzip, then base64
+const TRANSFER_PREFIX_P = "RPGHUD1p.";   // plain JSON, base64 (no CompressionStream)
+const TRANSFER_CHAT_KEYS = [BOND_BLOCK_KEY, "rpg_hud_bond_auto_v1", "rpg_hud_bond_hidden_v1", "rpg_hud_bond_block_names_v1", "rpgHud:posLocks", "rpgHud:turnLocks"];
+
+function transferImageKeys() {
+  const out = [];
+  try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith("rpgHud:emblemImg:")) out.push(k); } } catch {}
+  return out;
+}
+function transferImageBytes() {
+  let n = 0;
+  transferImageKeys().forEach((k) => { try { n += (localStorage.getItem(k) || "").length; } catch {} });
+  return n;
+}
+function transferPayload({ images = true, chatData = true } = {}) {
+  const out = { v: 1, build: HUD_BUILD, at: new Date().toISOString(), settings: { ...uiSettings }, icons: { ...iconOverridesAll() } };
+  if (images) {
+    out.images = {};
+    transferImageKeys().forEach((k) => { try { out.images[k] = localStorage.getItem(k); } catch {} });
+  }
+  if (chatData) {
+    out.chat = {};
+    TRANSFER_CHAT_KEYS.forEach((k) => { try { const v = localStorage.getItem(k); if (v) out.chat[k] = JSON.parse(v); } catch {} });
+  }
+  return out;
+}
+function bytesToB64(bytes) {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+function b64ToBytes(b64) {
+  const bin = atob(b64.replace(/\s+/g, ""));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+async function transferEncode(obj) {
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  if (typeof CompressionStream === "function") {
+    try {
+      const zipped = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
+      return TRANSFER_PREFIX_Z + bytesToB64(zipped);
+    } catch {}
+  }
+  return TRANSFER_PREFIX_P + bytesToB64(bytes);
+}
+async function transferDecode(code) {
+  const text = String(code || "").trim();
+  let bytes;
+  if (text.startsWith(TRANSFER_PREFIX_Z)) {
+    if (typeof DecompressionStream !== "function") throw new Error("This browser can't unpack compressed codes.");
+    const zipped = b64ToBytes(text.slice(TRANSFER_PREFIX_Z.length));
+    bytes = new Uint8Array(await new Response(new Blob([zipped]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+  } else if (text.startsWith(TRANSFER_PREFIX_P)) {
+    bytes = b64ToBytes(text.slice(TRANSFER_PREFIX_P.length));
+  } else if (text.startsWith("{")) {
+    bytes = new TextEncoder().encode(text);                       // a plain JSON export works too
+  } else {
+    throw new Error("That isn't an RPG HUD settings code.");
+  }
+  const obj = JSON.parse(new TextDecoder().decode(bytes));
+  if (!obj || obj.v !== 1 || typeof obj.settings !== "object") throw new Error("That code is damaged or from an unknown version.");
+  return obj;
+}
+function transferApply(obj) {
+  const failed = [];
+  uiSettings = { ...defaultUiSettings, ...obj.settings };
+  saveUiSettings();
+  if (obj.icons && typeof obj.icons === "object") saveIconOverrides({ ...obj.icons });
+  if (obj.images && typeof obj.images === "object") {
+    Object.entries(obj.images).forEach(([k, v]) => {
+      if (!k.startsWith("rpgHud:emblemImg:") || typeof v !== "string") return;
+      try { localStorage.setItem(k, v); } catch { failed.push(k); }
+    });
+    Object.keys(emblemImgCache).forEach((k) => delete emblemImgCache[k]);
+  }
+  if (obj.chat && typeof obj.chat === "object") {
+    TRANSFER_CHAT_KEYS.forEach((k) => {
+      const incoming = obj.chat[k];
+      if (!incoming || typeof incoming !== "object") return;
+      try {
+        const mine = JSON.parse(localStorage.getItem(k) || "{}") || {};
+        localStorage.setItem(k, JSON.stringify({ ...mine, ...incoming }));   // per chat: the code's chats win, others stay
+      } catch { failed.push(k); }
+    });
+    try { loadBondBlocklist(bondBlockChatKey); } catch {}
+  }
+  try { invalidateHistoryMemory(); } catch {}
+  return failed;
+}
+const fmtKB = (n) => n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
+
+// The dialog: a sheet of its own over the page, so it works the same in every skin.
+function openTransferDialog(e) {
+  if (e) e.stopPropagation();
+  document.getElementById("rpg-transfer")?.remove();
+  const imgBytes = transferImageBytes();
+  const wrap = document.createElement("div");
+  wrap.id = "rpg-transfer";
+  wrap.innerHTML = `
+    <div class="rpg-tr-sheet" role="dialog" aria-label="Transfer settings">
+      <div class="rpg-tr-head"><b>Transfer settings</b><button class="rpg-tr-x" title="Close">&#10005;</button></div>
+      <p class="rpg-tr-hint">Copy a code here, then paste it on the other browser (or after clearing your cache) to get the same HUD back.</p>
+      <div class="rpg-tr-sec">Copy</div>
+      <label class="rpg-tr-row"><input type="checkbox" id="rpg-tr-img" ${imgBytes ? "checked" : "disabled"}> Uploaded background pictures ${imgBytes ? `(${fmtKB(imgBytes)})` : "(none)"}</label>
+      <label class="rpg-tr-row"><input type="checkbox" id="rpg-tr-chat" checked> Chat data on this device (blocked bonds, locks)</label>
+      <div class="rpg-tr-btns">
+        <button id="rpg-tr-copy">Copy code</button>
+        <button id="rpg-tr-file">Save as file</button>
+      </div>
+      <textarea id="rpg-tr-out" readonly placeholder="The code appears here if it can't be copied automatically." style="display:none"></textarea>
+      <div class="rpg-tr-sec">Paste</div>
+      <textarea id="rpg-tr-in" placeholder="Paste a settings code here"></textarea>
+      <div class="rpg-tr-btns">
+        <label class="rpg-tr-filebtn">Open file<input type="file" id="rpg-tr-open" accept=".txt,.json,text/plain,application/json"></label>
+        <button id="rpg-tr-apply" class="primary">Apply</button>
+      </div>
+      <p class="rpg-tr-msg" id="rpg-tr-msg"></p>
+    </div>`;
+  document.body.appendChild(wrap);
+  const $id = (id) => wrap.querySelector(`#${id}`);
+  const msg = (t, bad) => { const m = $id("rpg-tr-msg"); m.textContent = t; m.classList.toggle("bad", !!bad); };
+  const close = () => wrap.remove();
+  wrap.querySelector(".rpg-tr-x").onclick = close;
+  wrap.onclick = (ev) => { if (ev.target === wrap) close(); };
+  wrap.addEventListener("keydown", (ev) => { ev.stopPropagation(); if (ev.key === "Escape") close(); });
+  const build = async () => transferEncode(transferPayload({ images: $id("rpg-tr-img").checked, chatData: $id("rpg-tr-chat").checked }));
+  $id("rpg-tr-copy").onclick = async () => {
+    try {
+      const code = await build();
+      let copied = false;
+      try { await navigator.clipboard.writeText(code); copied = true; } catch {}
+      if (copied) { msg(`Copied (${fmtKB(code.length)}). Paste it under Transfer settings on the other side.`); return; }
+      const out = $id("rpg-tr-out");
+      out.style.display = ""; out.value = code; out.focus(); out.select();
+      msg("Couldn't copy automatically. The code is selected below: copy it by hand, or use Save as file.");
+    } catch (err) { msg(`Couldn't make the code: ${err.message || err}`, true); }
+  };
+  $id("rpg-tr-file").onclick = async () => {
+    try {
+      const code = await build();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([code], { type: "text/plain" }));
+      a.download = `rpg-hud-settings-${new Date().toISOString().slice(0, 10)}.txt`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      msg(`Saved (${fmtKB(code.length)}).`);
+    } catch (err) { msg(`Couldn't save: ${err.message || err}`, true); }
+  };
+  $id("rpg-tr-open").onchange = async (ev) => {
+    const f = ev.target.files?.[0];
+    if (!f) return;
+    $id("rpg-tr-in").value = (await f.text()).trim();
+    msg(`Loaded ${f.name}. Press Apply.`);
+  };
+  $id("rpg-tr-apply").onclick = async () => {
+    let obj;
+    try { obj = await transferDecode($id("rpg-tr-in").value); }
+    catch (err) { msg(err.message || String(err), true); return; }
+    const parts = ["all HUD settings"];
+    if (obj.icons && Object.keys(obj.icons).length) parts.push(`${Object.keys(obj.icons).length} item icon choice(s)`);
+    if (obj.images && Object.keys(obj.images).length) parts.push(`${Object.keys(obj.images).length} background picture(s)`);
+    if (obj.chat && Object.keys(obj.chat).length) parts.push("chat data (blocked bonds, locks)");
+    const ok = confirm(`Replace your HUD settings with this code's?\n\nIt has ${parts.join(", ")}` +
+      `${obj.at ? `, saved ${new Date(obj.at).toLocaleString()}` : ""}.\n\nYour current settings are overwritten.`);
+    if (!ok) return;
+    const failed = transferApply(obj);
+    close();
+    isSettingsOpen = false;
+    const c = document.getElementById("rpg-hud-container");
+    if (c) { c.style.cssText = ""; c.className = ""; }
+    try { checkMessage(); } catch {}
+    renderRPG();
+    if (window.toastr) {
+      if (failed.length) hudToast.warning(`Settings applied, but ${failed.length} item(s) didn't fit in this browser's storage (likely a large background picture).`);
+      else hudToast.success("Settings applied.");
+    }
+  };
+}
+const TRANSFER_CSS = `
+#rpg-transfer{position:fixed; inset:0; z-index:200000; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; padding:12px; box-sizing:border-box}
+#rpg-transfer .rpg-tr-sheet{width:min(420px, 100%); max-height:calc(100dvh - 24px); overflow:auto; box-sizing:border-box; padding:12px 14px;
+  background:#16171c; color:#e2e2e8; border:1px solid #555; border-radius:6px; font:14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; box-shadow:0 10px 40px rgba(0,0,0,.6)}
+#rpg-transfer .rpg-tr-head{display:flex; justify-content:space-between; align-items:center; margin-bottom:6px}
+#rpg-transfer .rpg-tr-x{background:none; border:0; color:#aaa; font-size:16px; cursor:pointer; padding:2px 6px}
+#rpg-transfer .rpg-tr-hint{margin:0 0 8px; color:#a6a6b0; font-size:.88em}
+#rpg-transfer .rpg-tr-sec{margin:10px 0 4px; font-size:.78em; letter-spacing:.08em; text-transform:uppercase; color:#9a9aa6}
+#rpg-transfer .rpg-tr-row{display:flex; gap:8px; align-items:center; margin:4px 0; font-size:.92em}
+#rpg-transfer .rpg-tr-row input{width:16px; height:16px}
+#rpg-transfer .rpg-tr-btns{display:flex; gap:8px; margin:6px 0}
+#rpg-transfer button,#rpg-transfer .rpg-tr-filebtn{flex:1; background:#24252c; color:#e2e2e8; border:1px solid #5a5a66; border-radius:4px; padding:7px 8px; cursor:pointer; font:inherit; text-align:center}
+#rpg-transfer button.primary{background:#2f4a6e; border-color:#5d8ac2}
+#rpg-transfer .rpg-tr-x{flex:0 0 auto}
+#rpg-transfer .rpg-tr-filebtn input{display:none}
+#rpg-transfer textarea{width:100%; box-sizing:border-box; min-height:74px; resize:vertical; background:#0f1014; color:#d8d8e0; border:1px solid #444; border-radius:4px; padding:6px; font:12px/1.35 ui-monospace, Menlo, Consolas, monospace; word-break:break-all}
+#rpg-transfer .rpg-tr-msg{min-height:1.2em; margin:6px 0 0; font-size:.88em; color:#9fd29f}
+#rpg-transfer .rpg-tr-msg.bad{color:#ff8a80}
+`;
+(() => { try { const st = document.createElement("style"); st.id = "rpg-transfer-css"; st.textContent = TRANSFER_CSS; document.head.appendChild(st); } catch {} })();
 
 // ---- position locks ----
 // A locked entry keeps its place in its list (1st, 2nd, 3rd...). After each
@@ -7982,7 +8649,7 @@ function classicMasteryHtml(items) {
     return `<div class="rpg-c-ed">${saoMasteriesSection(items)}</div>`;
   }
   return `<div style="display:flex; justify-content:flex-end; margin-bottom:3px;">${editBtn("rpg-sao-ms-edit", "✎", "#4FC3F7")}</div>` +
-    makeList(items, "No Mastery Tracking");
+    makeList((Array.isArray(items) ? items : []).map((x) => typeof x === "string" ? masteryPretty(x) : x), "No Mastery Tracking");
 }
 
 function classicQuestHtml() {
@@ -7993,7 +8660,41 @@ function classicQuestHtml() {
 }
 
 // the classic tab body grows while an editor is open, so rows aren't cramped
+// The panel width at which the tab row fits exactly: first and last tab at the
+// edges, nothing to scroll, no spare room. Measured from what's on screen.
+function hudTabsFitWidth(container) {
+  const strip = container?.querySelector("#rpg-tab-strip");
+  const tabs = strip ? [...strip.children].filter((t) => t.offsetParent) : [];
+  if (!tabs.length) return 0;
+  const r = container.getBoundingClientRect();
+  const k = r.width && container.offsetWidth ? r.width / container.offsetWidth : 1;
+  const span = (tabs[tabs.length - 1].getBoundingClientRect().right - tabs[0].getBoundingClientRect().left) / k;
+  return Math.ceil(container.offsetWidth - strip.clientWidth + span + 1);
+}
+// Set the width to that fit; with Auto-size text the tabs change size with the
+// width, so it settles over a few rounds.
+function hudFitWidthToTabs() {
+  const c = document.getElementById("rpg-hud-container");
+  if (!c) return false;
+  const maxW = Math.max(240, Math.floor(c.getBoundingClientRect().right - 8));
+  for (let i = 0; i < 6; i++) {
+    const w = Math.max(220, Math.min(maxW, hudTabsFitWidth(c)));
+    if (!w || Math.abs(w - c.offsetWidth) < 1) break;
+    uiSettings.hudWidth = w;
+    c.style.width = `${w}px`;
+    if (uiSettings.autoFont) c.style.fontSize = `${0.9 * hudFontScale()}em`;
+  }
+  saveUiSettings();
+  return true;
+}
+
+// the list box's height: what you dragged it to, and 130px more while an editor is open
+function hudBodyHeight() {
+  const h = Math.max(56, Math.round(Number(uiSettings.hudBodyH) || 110));   // no fixed cap; fitting to the screen trims it
+  return classicEditorOpen() ? h + 130 : h;
+}
 function classicEditorOpen() {
+  if (activeTab === "notes") return true;          // notes get the tall box, for writing
   return !!(saoListEdit && (LIST_TAB_KEYS[activeTab] === saoListEdit.key || (activeTab === "quests" && saoListEdit.key === "quests")))
     || (activeTab === "mastery" && Array.isArray(saoMasteryEdit));
 }
@@ -8430,6 +9131,18 @@ const FOG_CSS = `
 .rpg-fog-orb .fog-orb svg{width:26px; height:26px; overflow:visible; animation:fogDockSpin 14s linear infinite;
   filter:drop-shadow(0 0 3px var(--orb-tint)) drop-shadow(0 0 1px rgba(0,0,0,.8))}
 @media (prefers-reduced-motion: reduce){.rpg-fog-orb .fog-orb svg{animation:none}}
+/* Gray Fog's side-tab form: a silver-edged tab on the right edge with the same star */
+.rpg-fog-tab{width:32px; height:64px; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none}
+.rpg-fog-tab .fog-tab{width:100%; height:100%; padding:0; cursor:pointer; display:grid; place-items:center; box-sizing:border-box;
+  background:radial-gradient(circle at 40% 35%, #3c3e48, #18181d 75%); border:1px solid rgba(214,217,226,.8); border-right:0; border-radius:8px 0 0 8px;
+  box-shadow:inset 0 0 0 2px rgba(18,18,23,.9), inset 0 0 0 3px rgba(214,217,226,.22), 0 2px 12px rgba(0,0,0,.6), 0 0 12px rgba(200,205,225,.22);
+  -webkit-tap-highlight-color:transparent}
+.rpg-fog-tab .fog-tab svg{width:22px; height:22px; overflow:visible; animation:fogDockSpin 14s linear infinite;
+  filter:drop-shadow(0 0 3px var(--orb-tint)) drop-shadow(0 0 1px rgba(0,0,0,.8))}
+.rpg-fog-tab.dragging .fog-tab{cursor:grabbing}
+.rpg-fog-tab.fog-orb-in{animation:fogTabIn ${FOG_ORB_MS}ms cubic-bezier(.3,1.3,.5,1) both}
+@keyframes fogTabIn{from{translate:100% 0; opacity:.2} to{translate:0 0; opacity:1}}
+@media (prefers-reduced-motion: reduce){.rpg-fog-tab .fog-tab svg{animation:none}}
 .rpg-fog-orb.fog-orb-in .fog-orb{animation:fogOrbIn ${FOG_ORB_MS}ms cubic-bezier(.3,1.4,.5,1) both; animation-delay:inherit; animation-duration:inherit}
 @keyframes fogOrbIn{from{opacity:0; transform:scale(.3) rotate(-60deg)} to{opacity:1; transform:none}}
 /* the status mark in the header: the star, still, in the status colour */
@@ -8502,7 +9215,17 @@ function fogSequenceOf(display) {
   if (m) return tNum(m.curr);
   const st = display?.stats || {};
   const k = Object.keys(st).find((x) => /^seq(uence)?$/i.test(x));
-  return k ? tNum(st[k]) : null;
+  if (k) return tNum(st[k]);
+  // a mastery naming it: "Sequence 9: Seer", "Seer (Sequence 8)", "Seq 7 Magician: 40/100".
+  // Lower is further along, so with several the lowest one counts.
+  let best = null;
+  (Array.isArray(display?.masteries) ? display.masteries : []).forEach((x) => {
+    const name = saoParseProgress(String(typeof x === "object" ? x?.name ?? "" : x ?? "")).name;
+    const mm = name.match(/\bseq(?:uence)?\b\.?\s*[:#-]?\s*(\d{1,2})\b/i);
+    const n = mm ? parseInt(mm[1], 10) : NaN;
+    if (Number.isFinite(n) && (best === null || n < best)) best = n;
+  });
+  return best;
 }
 function fogNumberHtml(display, time) {
   const mode = uiSettings.fogNumber || "auto";
@@ -8956,7 +9679,7 @@ const METER_ICONS = [
   ["m-brain", "Brain (sanity)", '<path d="M8 3.4C7.2 2.4 5.3 2.4 4.6 3.6 3.2 3.6 2.4 5 2.9 6.2 1.9 7 1.9 8.6 2.9 9.4 2.6 10.8 3.7 12 5.1 11.9 5.7 13.1 7.2 13.4 8 12.6"/><path d="M8 3.4c.8-1 2.7-1 3.4.2 1.4 0 2.2 1.4 1.7 2.6 1 .8 1 2.4 0 3.2.3 1.4-.8 2.6-2.2 2.5-.6 1.2-2.1 1.5-2.9.7"/><path d="M8 3.4v9.2"/><path d="M5 6c.9-.1 1.6.5 1.7 1.3M4.4 9.1c.8-.4 1.8-.1 2.2.7M11 6c-.9-.1-1.6.5-1.7 1.3M11.6 9.1c-.8-.4-1.8-.1-2.2.7" stroke-width="1.1"/>'],
   ["m-energy", "Energy", '<path d="M9.2 1.6L3.8 9h3.8l-.9 5.4L12.2 7H8.4z"/>'],
   ["m-heat", "Temperature", '<path d="M6.4 9.6V3.4a1.6 1.6 0 0 1 3.2 0v6.2a2.9 2.9 0 1 1-3.2 0z"/><path d="M8 6.2v5.4"/><circle cx="8" cy="12" r="1" fill="currentColor"/><path d="M11.4 4h1.4M11.4 6.2h1M11.4 8.4h1.4" stroke-width="1.1"/>'],
-  ["m-cold", "Cold", '<path d="M8 1.8v12.4M2.6 4.9l10.8 6.2M2.6 11.1l10.8-6.2"/><path d="M6.6 2.8L8 4.2l1.4-1.4M6.6 13.2L8 11.8l1.4 1.4M2.9 7.2l1.9-.5-.5-1.9M13.1 8.8l-1.9.5.5 1.9M2.9 8.8l1.9.5-.5 1.9M13.1 7.2l-1.9-.5.5-1.9" stroke-width="1.1"/>'],
+  ["m-cold", "Cold", '<path d="M8.00 8.00L8.00 1.90M8.00 4.10L6.80 2.76M8.00 4.10L9.20 2.76M8.00 8.00L13.28 4.95M11.38 6.05L11.93 4.34M11.38 6.05L13.14 6.42M8.00 8.00L13.28 11.05M11.38 9.95L13.14 9.58M11.38 9.95L11.93 11.66M8.00 8.00L8.00 14.10M8.00 11.90L9.20 13.24M8.00 11.90L6.80 13.24M8.00 8.00L2.72 11.05M4.62 9.95L4.07 11.66M4.62 9.95L2.86 9.58M8.00 8.00L2.72 4.95M4.62 6.05L2.86 6.42M4.62 6.05L4.07 4.34"/>'],
   ["m-corrupt", "Corruption", '<path d="M8.00 7.50 L8.15 7.42 L8.33 7.40 L8.54 7.43 L8.74 7.53 L8.93 7.70 L9.07 7.93 L9.14 8.22 L9.14 8.54 L9.04 8.86 L8.85 9.17 L8.57 9.44 L8.21 9.63 L7.78 9.72 L7.33 9.70 L6.87 9.56 L6.44 9.29 L6.09 8.90 L5.83 8.41 L5.70 7.86 L5.72 7.26 L5.89 6.66 L6.23 6.11 L6.71 5.65 L7.31 5.31 L8.00 5.12 L8.74 5.12 L9.48 5.31 L10.16 5.70 L10.75 6.26 L11.19 6.96 L11.44 7.78 L11.48 8.66 L11.29 9.55 L10.87 10.38 L10.25 11.09 L9.44 11.64 L8.50 11.98 L7.48 12.08 L6.45 11.91 L5.47 11.48 L4.61 10.80 L3.94 9.91 L3.50 8.86 L3.33 7.71 L3.46 6.52 L3.89 5.39 L4.60 4.38 L5.56 3.57 L6.72 3.01 L8.00 2.75 L9.33 2.82 L10.62 3.23 L11.79 3.97 L12.75 4.98 L13.44 6.23 L13.81 7.63 L13.81 9.11 L13.44 10.56 L12.70 11.89 L11.64 13.02"/>'],
   ["m-rad", "Radiation", '<path d="M6.75 5.83L4.95 2.72A6.1 6.1 0 0 1 11.05 2.72L9.25 5.83A2.5 2.5 0 0 0 6.75 5.83zM10.50 8.00L14.10 8.00A6.1 6.1 0 0 1 11.05 13.28L9.25 10.17A2.5 2.5 0 0 0 10.50 8.00zM6.75 10.17L4.95 13.28A6.1 6.1 0 0 1 1.90 8.00L5.50 8.00A2.5 2.5 0 0 0 6.75 10.17z" fill="currentColor" fill-opacity=".25" stroke-width="1.1"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/>'],
   ["m-poison", "Poison", '<path d="M6.2 2h3.6M6.9 2v4.2L3.4 12.4a1.2 1.2 0 0 0 1 1.8h7.2a1.2 1.2 0 0 0 1-1.8L9.1 6.2V2"/><path d="M4.6 10.4h6.8" stroke-width="1.1"/><circle cx="7" cy="12.2" r=".7" fill="currentColor"/><circle cx="9.4" cy="11.6" r=".5" fill="currentColor"/>'],
@@ -9345,11 +10068,8 @@ function sysSettingsHtml() {
       </div>
       <div style="${lab}${uiSettings.fogFold === false ? " opacity:.45;" : ""}">Fold speed</div>
       <select id="rpg-fog-fold-speed" style="${sel}${uiSettings.fogFold === false ? " opacity:.45;" : ""}" ${uiSettings.fogFold === false ? "disabled" : ""}>${["slow", "normal", "fast", "instant"].map((v) => opt(v, { slow: "Slow", normal: "Normal", fast: "Fast", instant: "Very fast" }[v], FOG_FOLD_SPEEDS[uiSettings.fogFoldSpeed] ? uiSettings.fogFoldSpeed : "normal")).join("")}</select>
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
-        <span title="Stop the round button (the folded-away HUD) from being dragged">Lock button position</span>
-        <input type="checkbox" id="rpg-fog-orb-lock" ${uiSettings.fogOrbLock ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
-      </div>
-      <button id="rpg-fog-orb-reset" style="width:100%; background:var(--t-0d1a2c, #0d1a2c); border:1px solid var(--t-3d6a94, #3d6a94); color:var(--t-dff1ff, #dff1ff); padding:6px; cursor:pointer; margin-bottom:8px;${uiSettings.fogOrbPos ? "" : " opacity:.45;"}" ${uiSettings.fogOrbPos ? "" : "disabled"}>Reset button position</button>` : ""}
+      <div style="${lab}">When minimized</div>
+      <select id="rpg-fog-minstyle" style="${sel}">${opt("orb", "Floating round button", uiSettings.fogMinStyle === "tab" ? "tab" : "orb")}${opt("tab", "Side tab", uiSettings.fogMinStyle === "tab" ? "tab" : "orb")}</select>` : ""}
       <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
         <span title="A System popup when a reply gives you items, skills or passives, adds quests, timers or party members, or starts a fight">Notifications</span>
         <input type="checkbox" id="rpg-sys-notices-cb" ${uiSettings.sysNotices !== false ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
@@ -9371,10 +10091,8 @@ function sysBindSettings() {
   if (fc) { stop(fc); fc.onchange = () => { uiSettings.fogFold = fc.checked; saveUiSettings(); renderRPG(); }; }
   const fs = document.getElementById("rpg-fog-fold-speed");
   if (fs) { stop(fs); fs.onchange = () => { uiSettings.fogFoldSpeed = fs.value; saveUiSettings(); }; }
-  const ol = document.getElementById("rpg-fog-orb-lock");
-  if (ol) { stop(ol); ol.onchange = () => { uiSettings.fogOrbLock = ol.checked; saveUiSettings(); }; }
-  const orr = document.getElementById("rpg-fog-orb-reset");
-  if (orr) orr.onclick = (e) => { e.stopPropagation(); uiSettings.fogOrbPos = null; saveUiSettings(); renderRPG(); hudToast.success("The button is back in its usual spot."); };
+  const ms = document.getElementById("rpg-fog-minstyle");
+  if (ms) { stop(ms); ms.onchange = () => { uiSettings.fogMinStyle = ms.value; saveUiSettings(); }; }
   const nt = document.getElementById("rpg-sys-notices-cb");
   if (nt) { stop(nt); nt.onchange = () => { uiSettings.sysNotices = nt.checked; saveUiSettings(); }; }
   const emb = document.getElementById("rpg-sys-emblem-open");
@@ -9515,6 +10233,36 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
+  { build: "2026-11-15.4", items: [
+    "More item icons: hats, glasses, ties, gloves, gauntlets (armoured, with a plated cuff), bras, panties, boxers, charms and talismans, rocks and ores, and ingots or metal bars. The snowflake and gem icons are redrawn.",
+    "The tab row centres itself when the panel is wide enough not to scroll. Dragging the width snaps to the size where all the tabs fit exactly, and Settings has a Fit width to tabs button.",
+    "New ticket icon (tickets, vouchers, coupons, passes, stubs); the axe, hammer and staff/wand icons are redrawn.",
+    "Panel size (Classic, System, Gray Fog): drag the left edge for width, the new bottom edge for height (the list box grows), or the bottom-left corner for both, as far as your screen allows. Settings has Reset panel size.",
+    "Text size now goes from 50% to 250% and can be typed in as a number. New option, Auto-size text with the panel: text grows and shrinks gently with the panel's width.",
+  ] },
+  { build: "2026-11-14.1", items: [
+    "Notes: a new Notes tab (in SAO, a Notes button) for your own notes, never sent to the AI. Keep them per chat (saved with the chat, so clearing your cache won't lose them) or for all chats. Select text in the chat, like an NPC's description, then press + New or + Selected text to drop it in. Notes save as you type, can be searched once there are a few, and can move between this chat and all chats.",
+  ] },
+  { build: "2026-11-12.3", items: [
+    "The minimized tab (Classic, System, and Gray Fog's new tab form) can be slid up and down the edge of the screen and stays where you leave it; tapping still opens the HUD. Settings can lock it or put it back.",
+    "Gray Fog: choose what it minimizes into (Settings, When minimized): the floating round button or a side tab, both with the turning star.",
+  ] },
+  { build: "2026-11-12.2", items: [
+    "New item icons: a pencil (pens, pencils, quills, markers, chalk, ink, styluses), a paintbrush (brushes, paints, palettes, canvases) and a leaf (herbs, leaves, plants, flowers, roots, mushrooms, seeds and named herbs like mandrake or lavender). Herbs used to share the potion icon.",
+  ] },
+  { build: "2026-11-12.1", items: [
+    "Transfer settings (in Settings): copy every HUD setting as one code, or save it as a file, then paste or open it elsewhere (or after clearing your cache) to get the same HUD back: size, skin options, the rewrite number, colours, icons, background layers and, if you like, uploaded pictures and this device's chat data (blocked bonds, locks).",
+  ] },
+  { build: "2026-11-11.1", items: [
+    "New item icons: a card (adventurer or guild cards, IDs, credit cards, keycards, tickets, passes, licences), a badge (badges, medals, insignia, emblems, crests) and a sheet of paper (notes, letters, formulas like \"Sequence 9: Seer Formula\", recipes, documents, maps, contracts, blueprints).",
+    "Gray Fog's tarot number now also finds the Sequence in the Mastery tab (\"Sequence 9: Seer\", \"Seer (Sequence 8)\" and the like); with more than one, the lowest counts.",
+  ] },
+  { build: "2026-11-10.1", items: [
+    "Mastery progress in the turn log now reads like a stat (\"Mastery Swordsmanship: 45 \u2192 46/100 (+1)\") instead of crossing out the old entry, and masteries show as \"Name: 45/100\" with a space after the colon.",
+  ] },
+  { build: "2026-11-09.1", items: [
+    "The panel (Classic, System and Gray Fog) now stays on screen on short screens like phones: the list box gives up height first so editors' Save, the settings and the bottom buttons stay reachable, and if that isn't enough the panel scrolls. It also refits when the keyboard opens.",
+  ] },
   { build: "2026-11-06.4", items: [
     "New setting, Block removed bonds (on by default). Turn it off and a bond you remove is only gone until a newer reply gives that character a bond again; older replies still can't bring it back.",
     "Blocked bonds no longer linger in older replies. The blocked list shows when earlier replies still name them in their |Bonds:| ledger (which the model reads, and which can set off lorebook entries) and can remove them in one go, and a new reply that copies a blocked name into its ledger has it taken back out.",
@@ -9966,6 +10714,8 @@ function saoHelpPanel() {
           "The other way to solve the same problem: a faint card behind that text instead of a shadow. Use one or the other, or neither.")
       + item("Panel brightness",
           "Dims the panels while they stay solid. Take it below halfway and they go dark, with the text inverting to light \u2014 small light-on-dark text renders crisper than dark-on-light.")
+      + item("Transfer settings",
+          "Copies every HUD setting as one code (or a file) to paste in elsewhere, for example after clearing your cache. Uploaded background pictures and this device's chat data (blocked bonds, locks) can go along too.")
       + item("Reset settings",
           "Puts every slider and toggle back to its default. Your skin choice and chat data stay as they are.")
       + item("Move HUD pieces",
@@ -10040,6 +10790,7 @@ function saoSettingsHtml() {
     + row("rpg-sao-help", "?", saoHelpOpen === true ? "Hide help" : "What these do")
     + row("rpg-sao-whatsnew", "\u2726", saoHelpOpen === "log" ? "Hide what's new" : `What's new${changelogUnseen() ? " \u2022" : ""}`)
     + row("rpg-sao-move", "\u2725", "Move HUD pieces")
+    + row("rpg-sao-transfer", "\u21C4", "Transfer settings")
     + row("rpg-sao-reset", "\u21BA", "Reset settings")
     + row("rpg-sao-layoutrep", "\u2316", saoHelpOpen === "layout" ? "Hide layout report" : "Layout report")
     + row("rpg-sao-insert", "&#8595;", "Insert state")
@@ -10134,6 +10885,7 @@ const SAO_TABS = [
   { id: "bonds", label: "Bonds", icon: `<svg viewBox="0 0 24 24"><circle cx="8.1" cy="7.8" r="3.5"/><path d="M1.5 20.6c0-3.8 2.9-6.2 6.6-6.2s6.6 2.4 6.6 6.2z"/><circle cx="17.7" cy="9.4" r="2.6"/><path d="M12.8 20.6c0-2.8 2.2-4.6 4.9-4.6s4.9 1.8 4.9 4.6z"/></svg>` },
   { id: "quests", label: "Quests", icon: `<svg viewBox="0 0 24 24"><defs><mask id="rpgSaoMsg"><rect width="24" height="24" fill="#fff"/><rect x="0.2" y="7.1" width="16.6" height="11.3" rx="3" fill="#000"/><path d="M3.6 15.6h6v6.6l-6-3.4z" fill="#000"/></mask></defs><g mask="url(#rpgSaoMsg)"><rect x="8.4" y="2.4" width="14.4" height="10.2" rx="2.4"/><path d="M17.4 10.4h4.4v5.9l-4.4-2.9z"/></g><rect x="1.6" y="8.5" width="13.8" height="8.5" rx="2.2"/><path d="M5 15.1h4.6v5.5L5 17.8z"/></svg>` },
   { id: "place", label: "Location", icon: `<svg viewBox="0 0 24 24"><path d="M12 1.4c-3.7 0-6.7 2.9-6.7 6.6 0 4.8 6.7 11.5 6.7 11.5s6.7-6.7 6.7-11.5c0-3.7-3-6.6-6.7-6.6zm0 9.1a2.5 2.5 0 110-5 2.5 2.5 0 010 5z"/><rect x="3.6" y="20.8" width="16.8" height="1.7" rx="0.85"/></svg>` },
+  { id: "notes", label: "Notes", icon: `<svg viewBox="0 0 24 24"><path d="M5.5 2.5h9l4.5 4.5v14.5h-13.5z"/><path d="M14.5 2.5V7H19" fill="none" stroke="#000" stroke-opacity=".35" stroke-width="1.2"/><rect x="8" y="10.4" width="8" height="1.5" rx=".75" fill="#000" fill-opacity=".35"/><rect x="8" y="13.6" width="8" height="1.5" rx=".75" fill="#000" fill-opacity=".35"/><rect x="8" y="16.8" width="5" height="1.5" rx=".75" fill="#000" fill-opacity=".35"/></svg>` },
   { id: "gear", label: "Settings", icon: SAO_COG },
 ];
 
@@ -10180,6 +10932,7 @@ function renderSaoSkin() {
     font-family:${saoFontStack()};
     font-size:${0.9 * (uiSettings.fontScale || 1)}em;`;
   container.onclick = null;
+  clearMinTabHandlers(container);
 
   try {
     const { root, display, type, isVehicle } = getActiveData();
@@ -10327,6 +11080,7 @@ function renderSaoSkin() {
                   : saoPanel === "bonds" ? saoBondsPanel()
                   : saoPanel === "quests" ? saoQuestsPanel()
                   : saoPanel === "error" ? saoErrorPanel()
+                  : saoPanel === "notes" ? { title: "Notes", body: notesHtml() }
                   : saoPlacePanel();
       panelHtml = `<div class="rpg-sao-panelwrap"><div class="rpg-sao-panel">
         <h2>${escHtml(built.title)}</h2>
@@ -10454,6 +11208,7 @@ function saoBind() {
     else if (window.toastr) hudToast.info("That message isn't loaded in the chat view.");
   });
 
+  if (saoPanel === "notes") bindNotes(document.getElementById("rpg-hud-container"));
   const clock = document.getElementById("rpg-sao-clock");
   if (clock) clock.onclick = (e) => { e.stopPropagation(); saoTimersOpen = !saoTimersOpen; renderRPG(); };
 
@@ -10578,6 +11333,7 @@ function saoBind() {
     renderRPG();
   });
   bind("rpg-sao-reset", resetUiSettings);
+  bind("rpg-sao-transfer", openTransferDialog);
   // the embedded error panel closes itself via isErrorOpen, which this skin
   // doesn't use — its visibility is saoPanel, so close that instead
   bind("rpg-error-close", () => { isErrorOpen = false; saoPanel = null; renderRPG(); });
