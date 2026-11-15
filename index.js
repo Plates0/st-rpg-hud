@@ -522,7 +522,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-14.2";
+const HUD_BUILD = "2026-11-15.1";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -641,7 +641,8 @@ const FONT_SCALE_MIN = 0.5, FONT_SCALE_MAX = 2.5;
 function hudFontScale(width = Number(uiSettings.hudWidth) || 280) {
   const own = Math.max(FONT_SCALE_MIN, Math.min(FONT_SCALE_MAX, Number(uiSettings.fontScale) || 1.0));
   if (!uiSettings.autoFont || isSaoSkin()) return own;
-  return own * Math.max(0.75, Math.min(2, width / 280));
+  // gentle: grows with the square root of the width, so twice as wide is about 1.4x the text, not 2x
+  return own * Math.max(0.85, Math.min(1.6, Math.sqrt(Math.max(1, width) / 280)));
 }
 function isSaoSkin() { return (uiSettings.skin || "classic") === "sao"; }
 function applyHudTypography(container) {
@@ -4706,17 +4707,21 @@ container.querySelectorAll(".rpg-resize").forEach((handle) => {
     const body = container.querySelector('[data-scroll-key^="c:body:"]');
     const r = container.getBoundingClientRect();
     const k = r.width && container.offsetWidth ? r.width / container.offsetWidth : 1;   // a zoomed page
-    const start = { x: ev.clientX, y: ev.clientY, w: container.offsetWidth, bh: body ? (parseFloat(body.style.height) || body.clientHeight) : 0 };
+    const start = { x: ev.clientX, y: ev.clientY, w: container.offsetWidth, bh: body ? (parseFloat(body.style.height) || body.clientHeight) : 0, bottom: r.bottom };
     const extra = classicEditorOpen() ? 130 : 0;
     const onMove = (e) => {
       if (mode.includes("w")) {
-        const maxW = Math.max(240, Math.min(900, Math.floor((window.innerWidth - 28) / k)));
+        // as wide as the screen allows: the left edge stops 8px from the screen's edge
+        const maxW = Math.max(240, Math.floor((r.right - 8) / k));
         uiSettings.hudWidth = Math.round(Math.max(220, Math.min(maxW, start.w - (e.clientX - start.x) / k)));
         container.style.width = `${uiSettings.hudWidth}px`;
         if (uiSettings.autoFont) container.style.fontSize = `${0.9 * hudFontScale()}em`;
       }
       if (mode.includes("h") && body) {
-        const bh = Math.max(56, Math.min(1600, Math.round(start.bh + (e.clientY - start.y) / k)));
+        // as tall as the screen allows: the panel's bottom stops just above the screen's edge
+        const vv = window.visualViewport;
+        const room = ((vv ? vv.height + vv.offsetTop : window.innerHeight) - HUD_SCREEN_GAP - start.bottom) / k;
+        const bh = Math.max(56, Math.round(Math.min(start.bh + room, start.bh + (e.clientY - start.y) / k)));
         uiSettings.hudBodyH = Math.max(56, bh - extra);
         body.style.height = `${bh}px`;
         body.dataset.baseH = String(bh);              // so fitting to the screen works from the new size
@@ -8610,7 +8615,7 @@ function classicQuestHtml() {
 // the classic tab body grows while an editor is open, so rows aren't cramped
 // the list box's height: what you dragged it to, and 130px more while an editor is open
 function hudBodyHeight() {
-  const h = Math.max(56, Math.min(1600, Math.round(Number(uiSettings.hudBodyH) || 110)));
+  const h = Math.max(56, Math.round(Number(uiSettings.hudBodyH) || 110));   // no fixed cap; fitting to the screen trims it
   return classicEditorOpen() ? h + 130 : h;
 }
 function classicEditorOpen() {
@@ -10153,9 +10158,9 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
-  { build: "2026-11-14.2", items: [
-    "Panel size (Classic, System, Gray Fog): drag the left edge for width, the new bottom edge for height (the list box grows), or the bottom-left corner for both. Settings has Reset panel size.",
-    "Text size now goes from 50% to 250% and can be typed in as a number. New option, Auto-size text with the panel: text grows and shrinks with the panel's width.",
+  { build: "2026-11-15.1", items: [
+    "Panel size (Classic, System, Gray Fog): drag the left edge for width, the new bottom edge for height (the list box grows), or the bottom-left corner for both, as far as your screen allows. Settings has Reset panel size.",
+    "Text size now goes from 50% to 250% and can be typed in as a number. New option, Auto-size text with the panel: text grows and shrinks gently with the panel's width.",
   ] },
   { build: "2026-11-14.1", items: [
     "Notes: a new Notes tab (in SAO, a Notes button) for your own notes, never sent to the AI. Keep them per chat (saved with the chat, so clearing your cache won't lose them) or for all chats. Select text in the chat, like an NPC's description, then press + New or + Selected text to drop it in. Notes save as you type, can be searched once there are a few, and can move between this chat and all chats.",
