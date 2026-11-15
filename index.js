@@ -522,7 +522,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-15.1";
+const HUD_BUILD = "2026-11-15.6";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -4516,8 +4516,11 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
           <span style="font-size:0.75em; color:#bbb;" title="Text grows and shrinks with the panel's width (dragging the left edge or corner). Size above still applies on top.">Auto-size text with the panel</span>
           <input type="checkbox" id="rpg-font-auto" ${uiSettings.autoFont ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
         </div>
-        <button id="rpg-size-reset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:5px; margin-top:8px; cursor:pointer; font-size:0.85em;" title="Width 280, list box 110 high, text 100%">Reset panel size</button>
-        <div style="font-size:0.7em; color:#888; margin-top:4px; line-height:1.3;">Drag the panel's left edge for width, the bottom edge for height, or the bottom-left corner for both.</div>
+        <div style="display:flex; gap:6px; margin-top:8px;">
+          <button id="rpg-size-fit-tabs" style="flex:1; background:#222; border:1px solid #555; color:#ddd; padding:5px; cursor:pointer; font-size:0.85em;" title="Make the panel exactly as wide as the tab row, so every tab shows with no spare room">Fit width to tabs</button>
+          <button id="rpg-size-reset" style="flex:1; background:#222; border:1px solid #555; color:#ddd; padding:5px; cursor:pointer; font-size:0.85em;" title="Width 280, list box 110 high, text 100%">Reset panel size</button>
+        </div>
+        <div style="font-size:0.7em; color:#888; margin-top:4px; line-height:1.3;">Drag the panel's left edge for width, the bottom edge for height, or the bottom-left corner for both. Dragging the width snaps to the size where the tabs fit exactly.</div>
         </div>
 
           <div style="font-size:0.75em; color:#aaa; margin-bottom:6px;">Notes</div>
@@ -4709,11 +4712,15 @@ container.querySelectorAll(".rpg-resize").forEach((handle) => {
     const k = r.width && container.offsetWidth ? r.width / container.offsetWidth : 1;   // a zoomed page
     const start = { x: ev.clientX, y: ev.clientY, w: container.offsetWidth, bh: body ? (parseFloat(body.style.height) || body.clientHeight) : 0, bottom: r.bottom };
     const extra = classicEditorOpen() ? 130 : 0;
+    // dragging the width snaps to the size where the tabs fit exactly (not with Auto-size, where that point moves)
+    const snapW = mode.includes("w") && !uiSettings.autoFont && !isSettingsOpen ? hudTabsFitWidth(container) : 0;
     const onMove = (e) => {
       if (mode.includes("w")) {
         // as wide as the screen allows: the left edge stops 8px from the screen's edge
         const maxW = Math.max(240, Math.floor((r.right - 8) / k));
-        uiSettings.hudWidth = Math.round(Math.max(220, Math.min(maxW, start.w - (e.clientX - start.x) / k)));
+        let w = Math.round(Math.max(220, Math.min(maxW, start.w - (e.clientX - start.x) / k)));
+        if (snapW && snapW <= maxW && Math.abs(w - snapW) <= 12) w = snapW;
+        uiSettings.hudWidth = w;
         container.style.width = `${uiSettings.hudWidth}px`;
         if (uiSettings.autoFont) container.style.fontSize = `${0.9 * hudFontScale()}em`;
       }
@@ -5042,6 +5049,15 @@ container.querySelectorAll(".rpg-resize").forEach((handle) => {
 	      autoEl.onclick = (e) => e.stopPropagation();
 	      autoEl.onchange = () => { uiSettings.autoFont = autoEl.checked; saveUiSettings(); applyHudTypography(container); };
 	    }
+	    const fitTabs = document.getElementById("rpg-size-fit-tabs");
+	    if (fitTabs) fitTabs.onclick = (e) => {
+	      e.stopPropagation();
+	      // measure with the settings closed, where the tab row actually is
+	      isSettingsOpen = false; renderRPG();
+	      hudFitWidthToTabs();
+	      isSettingsOpen = true; renderRPG();
+	      if (window.toastr) hudToast.info(`Width set to ${uiSettings.hudWidth}px, so all the tabs fit.`);
+	    };
 	    const sizeReset = document.getElementById("rpg-size-reset");
 	    if (sizeReset) sizeReset.onclick = (e) => {
 	      e.stopPropagation();
@@ -6884,45 +6900,59 @@ function saoMetersSection(display) {
 // Tapping an icon opens that list for editing in place.
 // =====================================================================
 const ico = (d, extra = "") => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/>${extra}</svg>`;
+const icoRaw = (inner) => `<svg viewBox="0 0 24 24" aria-hidden="true">${inner}</svg>`;
 const LIST_ICONS = {
   sword:   ico("M20 4v4l-9.5 9.5-4-4L16 4z M5 13l6 6 M7.5 16.5 4 20"),
   dagger:  ico("M8.96 11.64Q13.6 7 20 4Q17 10.4 12.36 15.04z M7.9 11l5.1 5.1 M9.9 14.1 6.4 17.6", '<circle cx="5.1" cy="18.7" r="1.5"/>'),
   spear:   ico("M4 20 14.5 9.5 M14.5 9.5l1.6-5.2 4.6-1.6-1.6 4.6z"),
-  axe:     ico("M5 20 14 11 M12.5 3.5c4.5.3 7.7 3.5 8 8l-3.2 1L11.5 6.7z"),
-  hammer:  ico("M5 20l8-8 M10.6 5.6l4.2-2.4 5.9 5.9-2.4 4.2z"),
+  axe:     ico("M4 20L12.3 11.7", '<path d="M11.44 10.44L14.62 7.26L16.74 8.38L20.28 10.8Q19.04 14.86 14.98 16.1L13.56 12.56z" fill="currentColor" fill-opacity=".15"/>'),
+  hammer:  ico("M4.5 19.5L11.9 12.1", '<path d="M8.39 8.53L11.21 5.71L17.22 11.72L14.4 14.54z" fill="currentColor" fill-opacity=".15"/>'),
   bow:     ico("M5 3.5c8.3 0 15.5 7.2 15.5 15.5 M5 3.5 20.5 19 M3.5 9.5 9 4"),
   gun:     ico("M3 8.5h16l1 2.5h-8.5l-1.3 2.5H7.6L6.6 19H3.5z M12 11v2"),
-  staff:   ico("M5 20l9.5-9.5", '<circle cx="17" cy="7" r="3.2"/>'),
+  staff:   ico("M4.5 19.5L14.2 9.8", '<path d="M17 3.2l.9 2.4 2.4.9-2.4.9-.9 2.4-.9-2.4-2.4-.9 2.4-.9z" fill="currentColor" fill-opacity=".3"/>'),
   shield:  ico("M12 3l7 2.8v5.4c0 4.4-2.9 7.8-7 9.8-4.1-2-7-5.4-7-9.8V5.8z"),
   armor:   ico("M8 3.5h8l4 3.7-3 3V20.5H7V10.2l-3-3z M10 3.5c0 1.4.9 2.4 2 2.4s2-1 2-2.4"),
   ring:    ico("M10 6.5l2-3 2 3-2 2z", '<circle cx="12" cy="14.5" r="5.3"/>'),
   potion:  ico("M9.5 3h5 M10.5 3v5.2L5.7 16.8a2.6 2.6 0 0 0 2.3 3.9h8a2.6 2.6 0 0 0 2.3-3.9L13.5 8.2V3 M7.4 14.5h9.2"),
   food:    ico("M12 7.5c-3-2-7.2 0-7.2 4.9s3 8.1 5.2 8.1c1 0 1.4-.5 2-.5s1 .5 2 .5c2.2 0 5.2-3.2 5.2-8.1S15 5.5 12 7.5z M12 7.5c0-2 1-3.3 3-4"),
   key:     ico("M10.4 12.6 20 3 M17 6l2.2 2.2 M14.6 8.4l2.2 2.2", '<circle cx="7.6" cy="15.4" r="3.6"/>'),
-  book:    ico("M5 4.5h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z M5 17.5a3 3 0 0 1 3-3h11"),
-  gem:     ico("M5.5 9.5l3.2-5h6.6l3.2 5L12 20.5z M5.5 9.5h13 M9.5 9.5 12 20.5l2.5-11"),
+  book:    ico("M5 4.5h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z", '<path d="M5 17.5a3 3 0 0 1 3-3h11" stroke-width="1.3"/>'),
+  gem:     icoRaw('<path d="M7.5 4h9l4 5.2L12 20.5 3.5 9.2z"/><path d="M3.5 9.2h17 M8.3 9.2 12 4.2l3.7 5 M8.3 9.2 12 20.5l3.7-11.3" stroke-width="1"/>'),
   coin:    ico("", '<circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="4"/>'),
   bag:     ico("M5.5 8.5h13l1.2 12H4.3z M9 8.5V7a3 3 0 0 1 6 0v1.5"),
   phone:   ico("M8 2.5h8a1.6 1.6 0 0 1 1.6 1.6v15.8a1.6 1.6 0 0 1-1.6 1.6H8a1.6 1.6 0 0 1-1.6-1.6V4.1A1.6 1.6 0 0 1 8 2.5z M10.5 18.3h3"),
   laptop:  ico("M5.5 5.5h13v9h-13z M2.8 18.5h18.4l-1.7-4H4.5z"),
   camera:  ico("M4 8.2h3.4l1.6-2.6h6l1.6 2.6H20v10.6H4z", '<circle cx="12" cy="13.4" r="3.4"/>'),
   misc:    ico("M9 9.2a3 3 0 1 1 4.6 2.5c-1 .6-1.6 1.3-1.6 2.6 M12 17.6v.4"),
-  card:    ico("M5 5.5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z M5.6 15.4c.4-1.5 1.4-2.3 2.6-2.3s2.2.8 2.6 2.3 M13.2 9.6h5 M13.2 12.4h5 M13.2 15.2h3", '<circle cx="8.2" cy="10.3" r="1.6"/>'),
-  medal:   ico("M7.6 2.6h3.1L12 6.8l1.3-4.2h3.1L13.6 9.8h-3.2z", '<circle cx="12" cy="15.2" r="5.2"/><path d="M12.00 12.70 12.62 14.35 14.38 14.43 13.00 15.52 13.47 17.22 12.00 16.25 10.53 17.22 11.00 15.52 9.62 14.43 11.38 14.35z" stroke-width="1.2"/>'),
-  paper:   ico("M6 3h8.6L19 7.4V21H6z M14.6 3v4.4H19 M8.8 11h7.4 M8.8 14h7.4 M8.8 17h4.6"),
+  hat:     icoRaw('<path d="M2.8 17.6c0 1.5 4.1 2.6 9.2 2.6s9.2-1.1 9.2-2.6c0-.9-1.4-1.6-3.6-2.1"/><path d="M5.4 15.5c-1.6.5-2.6 1.2-2.6 2.1"/><path d="M6.2 16.6V9.8c0-2.6 2.6-4.3 5.8-4.3s5.8 1.7 5.8 4.3v6.8c-1.6.6-3.6.9-5.8.9s-4.2-.3-5.8-.9z"/><path d="M6.2 13.4c1.6.6 3.6.9 5.8.9s4.2-.3 5.8-.9" stroke-width="1.1"/>'),
+  glasses: icoRaw('<circle cx="6.8" cy="13.6" r="3.6"/><circle cx="17.2" cy="13.6" r="3.6"/><path d="M10.4 13.3c1.1-.9 2.1-.9 3.2 0 M3.3 12.6 2.3 9.6M20.7 12.6l1-3"/>'),
+  tie:     icoRaw('<path d="M10 3.5h4l-.8 2.6h-2.4z"/><path d="M10.8 6.1 9 16.2l3 4.3 3-4.3-1.8-10.1"/><path d="M10.3 10.4l3.7-2.2M9.6 14l4.8-2.8" stroke-width=".9"/>'),
+  gloves:  icoRaw('<path d="M8 21v-5.2L5.4 12.3a1.4 1.4 0 0 1 2.1-1.9L9 12V5.2a1.2 1.2 0 0 1 2.4 0V11V3.9a1.2 1.2 0 0 1 2.4 0V11V5a1.2 1.2 0 0 1 2.4 0v6V7.4a1.2 1.2 0 0 1 2.4 0v7.6L16.8 21z"/><path d="M8 18.2h8.8" stroke-width="1.1"/>'),
+  gauntlet: icoRaw('<path d="M8.4 16.2L5.6 12.6a1.5 1.5 0 0 1 2.2-2L9.2 12V5.4a1.2 1.2 0 0 1 2.4 0V11V4.1a1.2 1.2 0 0 1 2.4 0V11V5.2a1.2 1.2 0 0 1 2.4 0v6V7.6a1.2 1.2 0 0 1 2.4 0v7.6l-1 1z"/><path d="M9.2 8.4h7.2M9.2 11h9.6" stroke-width=".9"/><path d="M8.4 16.2h10l1.6 5.3H6.4z" fill="currentColor" fill-opacity=".2"/>'),
+  bra:     icoRaw('<path d="M3.5 9.5c0 3.6 2.6 6 5.3 6 1.4 0 2.5-.8 3.2-2 .7 1.2 1.8 2 3.2 2 2.7 0 5.3-2.4 5.3-6"/><path d="M3.5 9.5c2.6-1 5.6-.3 8.5 3.5 2.9-3.8 5.9-4.5 8.5-3.5"/><path d="M5 9.1 6.6 3.8M19 9.1l-1.6-5.3" stroke-width="1.1"/>'),
+  panties: icoRaw('<path d="M3.5 7.5h17l-.4 2.3c-3.4.5-5.5 2.7-6.2 6.7h-3.8c-.7-4-2.8-6.2-6.2-6.7z"/><path d="M12 9.8 9.7 8.6v2.4zM12 9.8l2.3-1.2v2.4z" stroke-width=".9"/><circle cx="12" cy="9.8" r=".55" fill="currentColor" stroke="none"/>'),
+  boxers:  icoRaw('<path d="M4.5 5.5h15l.8 13.5h-6.6L12 12.4 10.3 19H3.7z"/><path d="M4.3 8.6h15.4" stroke-width="1.1"/><path d="M12 8.6v3.8" stroke-width="1"/>'),
+  socks:   icoRaw('<path d="M9 3.5h6.2v9.4l3.9 2.5a2.6 2.6 0 0 1-1.4 4.8h-6.4a3.4 3.4 0 0 1-2.7-5.4l.4-.6z"/><path d="M9 5.6h6.2M9 7.6h6.2M16.3 14.3c-.9 1.2-1 3.6.1 5.9" stroke-width="1"/>'),
+  charm:   icoRaw('<path d="M8.5 2.8h7v14.6L12 20.8l-3.5-3.4z"/><circle cx="12" cy="6.4" r="1.4" stroke-width="1.1"/><path d="M12 9.8v5.8M10.3 11.4h3.4M10.6 14h2.8" stroke-width="1"/>'),
+  rock:    icoRaw('<path d="M3.5 17.5 5.6 11l4.5-4 5.6.8 4.4 4.6.4 5.1-2.8 2.1H6.4z"/><path d="M10.1 7l1.3 5.2 4.3-4.4M11.4 12.2 8.6 19.6M11.4 12.2l8.7 0" stroke-width="1"/><path d="M15.3 14.6l.7.7-.7.7-.7-.7z M7.3 13.6l.6.6-.6.6-.6-.6z" fill="currentColor" stroke-width=".8"/>'),
+  ingot:   icoRaw('<path d="M3 19.5h8.6l-1.8-4.2H4.8zM12.4 19.5H21l-1.8-4.2h-5z M7.7 15.3h8.6l-1.8-4.2H9.5z" fill="currentColor" fill-opacity=".12"/>'),
+  ticket:  ico("M3 6h18v4a2 2 0 0 0 0 4v4H3v-4a2 2 0 0 0 0-4z", '<path d="M6.5 10h5 M6.5 14h3.5" stroke-width="1.1"/><path d="M15 6.6v1.8M15 11.1v1.8M15 15.6v1.8" stroke-width="1.1"/>'),
+  card:    ico("M5 5.5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z", '<g stroke-width="1.1"><circle cx="8.2" cy="10.3" r="1.6"/><path d="M5.6 15.4c.4-1.5 1.4-2.3 2.6-2.3s2.2.8 2.6 2.3 M13.2 9.6h5 M13.2 12.4h5 M13.2 15.2h3"/></g>'),
+  medal:   ico("M7.6 2.6h3.1L12 6.8l1.3-4.2h3.1L13.6 9.8h-3.2z", '<circle cx="12" cy="15.2" r="5.2"/><path d="M12.00 12.70 12.62 14.35 14.38 14.43 13.00 15.52 13.47 17.22 12.00 16.25 10.53 17.22 11.00 15.52 9.62 14.43 11.38 14.35z" stroke-width="1"/>'),
+  paper:   ico("M6 3h8.6L19 7.4V21H6z M14.6 3v4.4H19", '<path d="M8.8 11h7.4 M8.8 14h7.4 M8.8 17h4.6" stroke-width="1.1"/>'),
   pen:     ico("M15.6 4.4l4 4L9 19l-5 1 1-5z M13.6 6.4l4 4 M5 15l4 4"),
   brush:   ico("M19.6 3.2a1.3 1.3 0 0 1 1.2 1.2l-7 8.3-2.5-2.5z M11.3 10.2l2.5 2.5 M10.3 11.5c1.9-.5 3 .6 2.6 2.5-.7 2.9-3.6 5.1-8.4 5.8.6-4.8 2.6-7.8 5.8-8.3z"),
   herb:    ico("M19.6 4.4C10.2 4.4 4.6 8.8 4.9 17.3c8.6.3 14.7-4.3 14.7-12.9z M4 20l11-11 M10 14h4.2 M12.6 11.4V7.6 M7.6 16.4V13"),
   quest:   ico("M6 21V3.5 M6 4.5h11.5l-2.5 4 2.5 4H6"),
   // skills and passives
   fire:    ico("M12 3c.9 3.1 5 5 5 10.2a5 5 0 0 1-10 0c0-3 1.8-4.2 2-6.2 1.1.9 1.9 2 2 3.3 1.2-2.1 1.3-4.6 1-7.3z"),
-  ice:     ico("M12 3v18 M4.2 7.5l15.6 9 M4.2 16.5l15.6-9 M9.5 4.5 12 7l2.5-2.5 M9.5 19.5 12 17l2.5 2.5"),
+  ice:     icoRaw('<path d="M12.00 12.00L12.00 3.40M12.00 6.40L10.26 4.47M12.00 6.40L13.74 4.47M12.00 12.00L19.45 7.70M16.85 9.20L17.65 6.73M16.85 9.20L19.39 9.74M12.00 12.00L19.45 16.30M16.85 14.80L19.39 14.26M16.85 14.80L17.65 17.27M12.00 12.00L12.00 20.60M12.00 17.60L13.74 19.53M12.00 17.60L10.26 19.53M12.00 12.00L4.55 16.30M7.15 14.80L6.35 17.27M7.15 14.80L4.61 14.26M12.00 12.00L4.55 7.70M7.15 9.20L4.61 9.74M7.15 9.20L6.35 6.73"/>'),
   bolt:    ico("M13.5 3 6 13.5h5.3L10.5 21 18 10.5h-5.3z"),
   heal:    ico("M9.5 4h5v5.5H20v5h-5.5V20h-5v-5.5H4v-5h5.5z"),
   dark:    ico("M15.5 4a8.2 8.2 0 1 0 4.8 13.2A6.4 6.4 0 0 1 15.5 4z"),
   wind:    ico("M3 9h11a3 3 0 1 0-3-3 M3 14h15a3 3 0 1 1-3 3 M3 19h6"),
   burst:   ico("M12 3l2.1 6H20l-4.8 3.6 1.9 6.9L12 15.6 6.9 19.5l1.9-6.9L4 9h5.9z"),
-  badge:   ico("M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z", '<circle cx="12" cy="12" r="2.4"/>'),
+  badge:   ico("M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z", '<circle cx="12" cy="12" r="2.4" stroke-width="1.3"/>'),
 };
 
 // first match wins, so weapons come before anything they might be mistaken for
@@ -6944,19 +6974,33 @@ const ITEM_KINDS = [
   ["pen",    /\b(pen|pens|pencil|pencils|quill|quills|marker|markers|crayons?|chalk|ink|inkwell|stylus|charcoal|highlighter|biro)\b/],
   ["staff",  /\b(staff|wand|rod|scepter|sceptre|orb|focus)\b/],
   ["shield", /\b(shield|buckler|aegis)\b/],
-  ["armor",  /\b(armou?r|mail|plate|helm|helmet|gauntlets?|greaves|boots|cloak|robes?|coat|shirt|dress|jacket|tunic|hood|gloves|cape|vest|pants|trousers|uniform|outfit|clothes|clothing|garb|leathers?|hat|mask|belt)\b/],
+  // clothing with its own icon first, then the rest of what you wear
+  ["hat",      /\b(hats?|cap|beanies?|fedoras?|berets?|bonnets?|top hat|sombreros?|stetsons?|bowlers?|tricorns?|witch hat)\b/],
+  ["glasses",  /\b(glasses|spectacles|sunglasses|goggles|monocle|eyeglasses|shades|eyewear)\b/],
+  ["tie",      /\b(ties?|neckties?|bowties?|bow tie|cravats?|ascots?)\b/],
+  ["gauntlet", /\b(gauntlets?|vambraces?|bracers?|armguards?)\b/],
+  ["gloves",   /\b(gloves?|mittens?|mitts)\b/],
+  ["bra",      /\b(bras?|bralettes?|brassieres?|sports bra|bikini top)\b/],
+  ["panties",  /\b(panties|panty|knickers|thongs?|briefs|lingerie|underwear|undies|bikini bottoms?|g-string)\b/],
+  ["boxers",   /\b(boxers|boxer briefs|trunks|shorts|swim trunks)\b/],
+  ["socks",    /\b(socks?|stockings?|tights|pantyhose|knee[- ]?highs?|thigh[- ]?highs?|leg warmers?)\b/],
+  ["armor",  /\b(armou?r|mail|plate|helm|helmet|greaves|boots|cloak|robes?|coat|shirt|dress|jacket|tunic|hood|cape|vest|pants|trousers|uniform|outfit|clothes|clothing|garb|leathers?|mask|belt)\b/],
   ["herb",   /\b(herbs?|herbal|leaf|leaves|plants?|flowers?|blossoms?|petals?|moss|roots?|mushrooms?|fungus|fungi|seeds?|sprigs?|weeds?|grass|ferns?|vines?|ginseng|mint|lavender|thyme|basil|rosemary|sage leaf|clover|nightshade|mandrake|lotus|bloom)\b/],
   ["potion", /\b(potion|elixir|tonic|draught|vial|flask|antidote|salve|crystal|bandages?|medicine|pills?)\b/],
   ["food",   /\b(food|bread|rations?|meat|apple|fruit|stew|cheese|jerky|berr(y|ies)|fish|cake|pie|drink|water|ale|wine|tea|soup|meal)\b/],
   // cards and papers before keys and books: "Keycard" is a card, "Seer Formula" a sheet of paper
-  ["card",   /\b(card|cards|keycard|id|license|licence|passport|ticket|tickets|pass|permit|membership|credentials?)\b/],
+  ["ticket", /\b(tickets?|vouchers?|coupons?|pass|passes|stubs?|raffle|admission|boarding pass|gift card|giftcard)\b/],
+  ["card",   /\b(card|cards|keycard|id|license|licence|passport|permit|membership|credentials?)\b/],
   ["key",    /\b(key|keys)\b/],
   ["paper",  /\b(paper|papers|note|notes|notepad|formula|formulas|recipe|recipes|letter|letters|document|documents|blueprint|blueprints|schematic|deed|certificate|receipt|memo|flyer|poster|notice|page|pages|sheet|parchment|contract|invoice|manuscript|map|maps|report|dossier|warrant|bounty)\b/],
   ["book",   /\b(scroll|book|tome|journal|grimoire|manual|diary|codex|bible|almanac|ledger)\b/],
   ["medal",  /\b(badge|badges|medal|medals|medallion|insignia|emblem|crest|sigil|seal)\b/],
-  ["ring",   /\b(ring|amulet|necklace|pendant|bracelet|earrings?|charm|talisman|brooch|circlet|crown|halo|locket|keychain|keyring|trinket|bauble|accessory|accessories|pin|anklet|tiara|choker|strap|watch|wristwatch)\b/],
-  ["gem",    /\b(gem|jewel|ruby|emerald|sapphire|diamond|ore|ingot|shard|stone|pearl|materials?|hide|pelt|scales?|fang|claw|bone|crystals)\b/],
-  ["coin",   /\b(coins?|gold|purse|pouch|money|col)\b/],
+  ["charm",  /\b(charms?|talismans?|omamori|ofuda|wards?|fetish|totems?|lucky charm|good luck charm|paper seal)\b/],
+  ["ring",   /\b(ring|amulet|necklace|pendant|bracelet|earrings?|brooch|circlet|crown|halo|locket|keychain|keyring|trinket|bauble|accessory|accessories|pin|anklet|tiara|choker|strap|watch|wristwatch)\b/],
+  ["ingot",  /\b(ingots?|bullion|billets?|(?:gold|silver|iron|steel|copper|bronze|brass|tin|lead|platinum|mithril|mythril|adamantite|adamantium|orichalcum|titanium|metal)\s+bars?)\b/],
+  ["rock",   /\b(rocks?|stones?|ores?|minerals?|pebbles?|boulders?|rubble|gravel|granite|marble|obsidian|slate|coal|nuggets?|geodes?)\b/],
+  ["gem",    /\b(gems?|jewels?|ruby|rubies|emeralds?|sapphires?|diamonds?|amethysts?|topaz|opals?|garnets?|shards?|pearls?|materials?|hide|pelt|scales?|fang|claw|bone|crystals)\b/],
+  ["coin",   /\b(coins?|gold|purse|pouch|money|col|bottle caps|caps)\b/],
   ["bag",    /\b(rope|torch|lantern|pickaxe|shovel|lockpicks?|tools?|kit|compass|tent|bedroll|bag|backpack|satchel|flint|whetstone|sheath|scabbard|holster|case)\b/],
 ];
 const SKILL_KINDS = [
@@ -7044,8 +7088,8 @@ function setIconOverride(listKey, text, kind) {
 }
 
 // every icon, the list's own kind first
-const ITEM_ICON_ORDER = ["sword", "dagger", "spear", "axe", "hammer", "bow", "gun", "staff", "shield", "armor", "ring", "potion",
-  "food", "herb", "key", "book", "paper", "pen", "brush", "card", "medal", "gem", "coin", "bag", "phone", "laptop", "camera", "misc"];
+const ITEM_ICON_ORDER = ["sword", "dagger", "spear", "axe", "hammer", "bow", "gun", "staff", "shield", "armor", "hat", "glasses", "tie", "gloves", "gauntlet", "bra", "panties", "boxers", "socks", "ring", "potion",
+  "food", "herb", "key", "book", "paper", "pen", "brush", "card", "ticket", "medal", "charm", "gem", "rock", "ingot", "coin", "bag", "phone", "laptop", "camera", "misc"];
 const SKILL_ICON_ORDER = ["fire", "ice", "bolt", "heal", "dark", "wind", "burst", "badge"];
 function iconPickerHtml(listKey, i, current, isCustom) {
   const order = listKey === "inventory" ? [...ITEM_ICON_ORDER, ...SKILL_ICON_ORDER] : [...SKILL_ICON_ORDER, ...ITEM_ICON_ORDER];
@@ -7272,6 +7316,9 @@ function bindNotes(root) {
 }
 
 const NOTES_CSS = `
+/* the tab row centres itself when it doesn't need to scroll (auto margins drop to 0 once it overflows) */
+#rpg-tab-strip > :first-child{margin-left:auto}
+#rpg-tab-strip > :last-child{margin-right:auto}
 .rpg-notes{display:flex; flex-direction:column; gap:5px; font-size:1em}
 .rpg-notes button{font:inherit; color:inherit; cursor:pointer}
 .rpg-notes-row{display:flex; flex-wrap:wrap; gap:4px; align-items:center}
@@ -8613,6 +8660,34 @@ function classicQuestHtml() {
 }
 
 // the classic tab body grows while an editor is open, so rows aren't cramped
+// The panel width at which the tab row fits exactly: first and last tab at the
+// edges, nothing to scroll, no spare room. Measured from what's on screen.
+function hudTabsFitWidth(container) {
+  const strip = container?.querySelector("#rpg-tab-strip");
+  const tabs = strip ? [...strip.children].filter((t) => t.offsetParent) : [];
+  if (!tabs.length) return 0;
+  const r = container.getBoundingClientRect();
+  const k = r.width && container.offsetWidth ? r.width / container.offsetWidth : 1;
+  const span = (tabs[tabs.length - 1].getBoundingClientRect().right - tabs[0].getBoundingClientRect().left) / k;
+  return Math.ceil(container.offsetWidth - strip.clientWidth + span + 1);
+}
+// Set the width to that fit; with Auto-size text the tabs change size with the
+// width, so it settles over a few rounds.
+function hudFitWidthToTabs() {
+  const c = document.getElementById("rpg-hud-container");
+  if (!c) return false;
+  const maxW = Math.max(240, Math.floor(c.getBoundingClientRect().right - 8));
+  for (let i = 0; i < 6; i++) {
+    const w = Math.max(220, Math.min(maxW, hudTabsFitWidth(c)));
+    if (!w || Math.abs(w - c.offsetWidth) < 1) break;
+    uiSettings.hudWidth = w;
+    c.style.width = `${w}px`;
+    if (uiSettings.autoFont) c.style.fontSize = `${0.9 * hudFontScale()}em`;
+  }
+  saveUiSettings();
+  return true;
+}
+
 // the list box's height: what you dragged it to, and 130px more while an editor is open
 function hudBodyHeight() {
   const h = Math.max(56, Math.round(Number(uiSettings.hudBodyH) || 110));   // no fixed cap; fitting to the screen trims it
@@ -9604,7 +9679,7 @@ const METER_ICONS = [
   ["m-brain", "Brain (sanity)", '<path d="M8 3.4C7.2 2.4 5.3 2.4 4.6 3.6 3.2 3.6 2.4 5 2.9 6.2 1.9 7 1.9 8.6 2.9 9.4 2.6 10.8 3.7 12 5.1 11.9 5.7 13.1 7.2 13.4 8 12.6"/><path d="M8 3.4c.8-1 2.7-1 3.4.2 1.4 0 2.2 1.4 1.7 2.6 1 .8 1 2.4 0 3.2.3 1.4-.8 2.6-2.2 2.5-.6 1.2-2.1 1.5-2.9.7"/><path d="M8 3.4v9.2"/><path d="M5 6c.9-.1 1.6.5 1.7 1.3M4.4 9.1c.8-.4 1.8-.1 2.2.7M11 6c-.9-.1-1.6.5-1.7 1.3M11.6 9.1c-.8-.4-1.8-.1-2.2.7" stroke-width="1.1"/>'],
   ["m-energy", "Energy", '<path d="M9.2 1.6L3.8 9h3.8l-.9 5.4L12.2 7H8.4z"/>'],
   ["m-heat", "Temperature", '<path d="M6.4 9.6V3.4a1.6 1.6 0 0 1 3.2 0v6.2a2.9 2.9 0 1 1-3.2 0z"/><path d="M8 6.2v5.4"/><circle cx="8" cy="12" r="1" fill="currentColor"/><path d="M11.4 4h1.4M11.4 6.2h1M11.4 8.4h1.4" stroke-width="1.1"/>'],
-  ["m-cold", "Cold", '<path d="M8 1.8v12.4M2.6 4.9l10.8 6.2M2.6 11.1l10.8-6.2"/><path d="M6.6 2.8L8 4.2l1.4-1.4M6.6 13.2L8 11.8l1.4 1.4M2.9 7.2l1.9-.5-.5-1.9M13.1 8.8l-1.9.5.5 1.9M2.9 8.8l1.9.5-.5 1.9M13.1 7.2l-1.9-.5.5-1.9" stroke-width="1.1"/>'],
+  ["m-cold", "Cold", '<path d="M8.00 8.00L8.00 1.90M8.00 4.10L6.80 2.76M8.00 4.10L9.20 2.76M8.00 8.00L13.28 4.95M11.38 6.05L11.93 4.34M11.38 6.05L13.14 6.42M8.00 8.00L13.28 11.05M11.38 9.95L13.14 9.58M11.38 9.95L11.93 11.66M8.00 8.00L8.00 14.10M8.00 11.90L9.20 13.24M8.00 11.90L6.80 13.24M8.00 8.00L2.72 11.05M4.62 9.95L4.07 11.66M4.62 9.95L2.86 9.58M8.00 8.00L2.72 4.95M4.62 6.05L2.86 6.42M4.62 6.05L4.07 4.34"/>'],
   ["m-corrupt", "Corruption", '<path d="M8.00 7.50 L8.15 7.42 L8.33 7.40 L8.54 7.43 L8.74 7.53 L8.93 7.70 L9.07 7.93 L9.14 8.22 L9.14 8.54 L9.04 8.86 L8.85 9.17 L8.57 9.44 L8.21 9.63 L7.78 9.72 L7.33 9.70 L6.87 9.56 L6.44 9.29 L6.09 8.90 L5.83 8.41 L5.70 7.86 L5.72 7.26 L5.89 6.66 L6.23 6.11 L6.71 5.65 L7.31 5.31 L8.00 5.12 L8.74 5.12 L9.48 5.31 L10.16 5.70 L10.75 6.26 L11.19 6.96 L11.44 7.78 L11.48 8.66 L11.29 9.55 L10.87 10.38 L10.25 11.09 L9.44 11.64 L8.50 11.98 L7.48 12.08 L6.45 11.91 L5.47 11.48 L4.61 10.80 L3.94 9.91 L3.50 8.86 L3.33 7.71 L3.46 6.52 L3.89 5.39 L4.60 4.38 L5.56 3.57 L6.72 3.01 L8.00 2.75 L9.33 2.82 L10.62 3.23 L11.79 3.97 L12.75 4.98 L13.44 6.23 L13.81 7.63 L13.81 9.11 L13.44 10.56 L12.70 11.89 L11.64 13.02"/>'],
   ["m-rad", "Radiation", '<path d="M6.75 5.83L4.95 2.72A6.1 6.1 0 0 1 11.05 2.72L9.25 5.83A2.5 2.5 0 0 0 6.75 5.83zM10.50 8.00L14.10 8.00A6.1 6.1 0 0 1 11.05 13.28L9.25 10.17A2.5 2.5 0 0 0 10.50 8.00zM6.75 10.17L4.95 13.28A6.1 6.1 0 0 1 1.90 8.00L5.50 8.00A2.5 2.5 0 0 0 6.75 10.17z" fill="currentColor" fill-opacity=".25" stroke-width="1.1"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/>'],
   ["m-poison", "Poison", '<path d="M6.2 2h3.6M6.9 2v4.2L3.4 12.4a1.2 1.2 0 0 0 1 1.8h7.2a1.2 1.2 0 0 0 1-1.8L9.1 6.2V2"/><path d="M4.6 10.4h6.8" stroke-width="1.1"/><circle cx="7" cy="12.2" r=".7" fill="currentColor"/><circle cx="9.4" cy="11.6" r=".5" fill="currentColor"/>'],
@@ -10158,7 +10233,10 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
-  { build: "2026-11-15.1", items: [
+  { build: "2026-11-15.4", items: [
+    "More item icons: hats, glasses, ties, gloves, gauntlets (armoured, with a plated cuff), bras, panties, boxers, charms and talismans, rocks and ores, and ingots or metal bars. The snowflake and gem icons are redrawn.",
+    "The tab row centres itself when the panel is wide enough not to scroll. Dragging the width snaps to the size where all the tabs fit exactly, and Settings has a Fit width to tabs button.",
+    "New ticket icon (tickets, vouchers, coupons, passes, stubs); the axe, hammer and staff/wand icons are redrawn.",
     "Panel size (Classic, System, Gray Fog): drag the left edge for width, the new bottom edge for height (the list box grows), or the bottom-left corner for both, as far as your screen allows. Settings has Reset panel size.",
     "Text size now goes from 50% to 250% and can be typed in as a number. New option, Auto-size text with the panel: text grows and shrinks gently with the panel's width.",
   ] },
