@@ -522,7 +522,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-15.7";
+const HUD_BUILD = "2026-11-15.8";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -562,6 +562,9 @@ const defaultUiSettings = {
   minTabY: null,          // where the side tab was slid to: its centre, as a fraction of the screen height
   minLock: false,         // the minimized tab / button can't be moved
   meterIcons: {},         // System and Gray Fog: icons chosen for meters, by meter name (like meterColors)
+  statusCorner: false,    // Classic / System / Gray Fog: your current statuses and timers in the top-left corner
+  statusCornerMin: false, // ...and keep them there while the HUD is minimized
+  statusCornerOpen: false, // the corner shows names (true) or just icons (false); tap it to switch
   fontPreset: "retro_mono",
   fontFamily: "'Courier New', Courier, monospace",
   fontScale: 1.0,
@@ -4477,6 +4480,14 @@ container.style.cssText = `position: fixed; top: 50px; right: 20px;
         </div>
         ${(() => { const moved = Number.isFinite(uiSettings.minTabY) || !!uiSettings.fogOrbPos;
           return `<button id="rpg-settings-minreset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:6px; cursor:pointer;${moved ? "" : " opacity:.45;"}" ${moved ? "" : "disabled"} title="Put the minimized tab (and Gray Fog's round button) back where they started">⇕ Reset minimized tab position</button>`; })()}
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;">
+          <span style="font-size:0.8em; color:#ddd;" title="Your current statuses, buffs, debuffs and timers as small icons in the top-left corner. Tap them to show names and time left.">Show status in the top-left corner</span>
+          <input type="checkbox" id="rpg-settings-sc" ${uiSettings.statusCorner ? "checked" : ""} style="cursor:pointer; width:18px; height:18px;">
+        </div>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; padding-left:12px;${uiSettings.statusCorner ? "" : " opacity:.45;"}">
+          <span style="font-size:0.8em; color:#ddd;" title="Off: only while the HUD is open. On: also while it's minimized.">Keep it showing when minimized</span>
+          <input type="checkbox" id="rpg-settings-scmin" ${uiSettings.statusCornerMin ? "checked" : ""} ${uiSettings.statusCorner ? "" : "disabled"} style="cursor:pointer; width:18px; height:18px;">
+        </div>
         <button id="rpg-settings-transfer" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:6px; cursor:pointer;" title="Copy all your HUD settings as a code, or paste one in">⇄ Transfer settings (copy / paste)</button>
         <button id="rpg-settings-reset" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:6px; cursor:pointer;">↺ Reset settings to defaults</button>
         <button id="rpg-settings-resetlayout" style="width:100%; background:#222; border:1px solid #555; color:#ddd; padding:6px; margin-bottom:10px; cursor:pointer;">✥ Reset SAO layout</button>
@@ -4970,6 +4981,10 @@ container.querySelectorAll(".rpg-resize").forEach((handle) => {
 	    uiSettings.minTabY = null; uiSettings.fogOrbPos = null; saveUiSettings(); renderRPG();
 	    if (window.toastr) hudToast.success("The minimized tab is back in its usual spot.");
 	  };
+	  const scEl = document.getElementById("rpg-settings-sc");
+	  if (scEl) { scEl.onclick = (e) => e.stopPropagation(); scEl.onchange = () => { uiSettings.statusCorner = scEl.checked; saveUiSettings(); renderRPG(); }; }
+	  const scmEl = document.getElementById("rpg-settings-scmin");
+	  if (scmEl) { scmEl.onclick = (e) => e.stopPropagation(); scmEl.onchange = () => { uiSettings.statusCornerMin = scmEl.checked; saveUiSettings(); renderRPG(); }; }
 	  const trEl = document.getElementById("rpg-settings-transfer");
 	  if (trEl) trEl.onclick = openTransferDialog;
 	  const resetEl = document.getElementById("rpg-settings-reset");
@@ -5500,10 +5515,194 @@ function setSkin(name) {
 }
 
 function renderRPG() {
-  if ((uiSettings.skin || "classic") === "sao") return renderSaoSkin();
+  if ((uiSettings.skin || "classic") === "sao") { try { renderStatusCorner(); } catch {} return renderSaoSkin(); }
   const out = renderClassicSkin();
   try { fitHudToScreen(); } catch (e) { console.warn("RPG HUD: fit to screen failed", e); }
+  try { renderStatusCorner(); } catch (e) { console.warn("RPG HUD: status corner failed", e); }
   return out;
+}
+
+// ---- status corner (Classic, System, Gray Fog) ----
+// Your current statuses and running timers as small tiles in the top-left
+// corner, like the SAO overlay's status chips. Off by default. Tap it to
+// switch between icons only and icons with names and time left.
+const SC_FALLBACK = { DEBUFF: "#ff9800", BUFF: "#69f0ae", DOOM: "#ff5252", EVENT: "#ce93d8", CD: "#90caf9", STATUS: "#b0bec5" };
+// Classic's tiles are filled, so they take deeper colours that white icons show up on
+const SC_TILE = { DEBUFF: "#a86a1c", BUFF: "#3a8f5c", DOOM: "#b3261e", EVENT: "#7b4db3", CD: "#3b6f9e", STATUS: "#5f6b77" };
+const SC_KIND_RANK = { STATUS: 0, DEBUFF: 1, BUFF: 2, DOOM: 3, EVENT: 4, CD: 5 };
+
+function scLighten(hex, f) {
+  const m = String(hex).match(/^#([0-9a-f]{6})$/i);
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const ch = (v) => Math.round(v + (255 - v) * f).toString(16).padStart(2, "0");
+  return `#${ch(n >> 16)}${ch((n >> 8) & 255)}${ch(n & 255)}`;
+}
+
+function scShortTime(info) {
+  if (!info) return "";
+  const lab = String(info.label || "");
+  if (info.mode === "turns") return (lab.match(/^-?\d+/) || [""])[0] + "t";
+  if (info.mode === "charges") return (lab.match(/^-?\d+/) || [""])[0] + "\u00D7";
+  if (info.mode === "time") return lab.split(" ")[0];
+  return lab.length > 5 ? lab.slice(0, 4) + "\u2026" : lab;
+}
+
+// The player's statuses, then their running timers. A buff or debuff timer
+// with the same effect as a status is folded into it, adding its time.
+function statusCornerItems() {
+  const items = [];
+  const byKey = new Map();
+  const keyOf = (label) => {
+    const n = BLK_STATUS.findIndex((b) => b.re.test(label));
+    return n >= 0 ? `icon${n}` : label.toLowerCase();
+  };
+  (Array.isArray(rpgState?.status_effects) ? rpgState.status_effects : []).forEach((x) => {
+    const label = String(x ?? "").trim();
+    if (!label || BLK_NO_STATUS.test(label)) return;
+    const k = keyOf(label);
+    if (byKey.has(k)) return;
+    const it = { label, kind: "STATUS", info: null };
+    byKey.set(k, it); items.push(it);
+  });
+  const playerKey = normBondName(rpgState?.name);
+  (Array.isArray(rpgState?.timers) ? rpgState.timers : []).forEach((t) => {
+    const label = String(t?.name || "").trim();
+    if (!label) return;
+    const owner = String(t?.owner || "").trim();
+    const mine = !owner || /\{\{\s*user\s*\}\}/i.test(owner) || (playerKey && normBondName(owner) === playerKey);
+    if (!mine) return;
+    const info = timerInfo(t);
+    if (info.done) return;
+    const kind = SC_FALLBACK[info.kind] ? info.kind : "CD";
+    if (kind === "BUFF" || kind === "DEBUFF") {
+      const k = keyOf(label);
+      const had = byKey.get(k);
+      if (had && !had.info) { had.info = info; had.tkind = kind; return; }
+      if (had) return;
+      const it = { label, kind, info };
+      byKey.set(k, it); items.push(it);
+      return;
+    }
+    items.push({ label, kind, info, timer: true });
+  });
+  return items.sort((a, b) => (SC_KIND_RANK[a.kind] ?? 9) - (SC_KIND_RANK[b.kind] ?? 9)
+    || (a.info?.sortKey ?? 0) - (b.info?.sortKey ?? 0));
+}
+
+function statusCornerChip(it, skin, open) {
+  const hit = it.timer ? null : BLK_STATUS.find((b) => b.re.test(it.label));
+  const k = it.tkind || it.kind;
+  // System and Gray Fog draw the icon in the effect's colour on a dark tile, so dark colours are lifted
+  const color = hit ? (skin === "classic" ? hit.c : scLighten(hit.c, 0.35))
+    : (skin === "classic" ? SC_TILE : SC_FALLBACK)[k] || (skin === "classic" ? SC_TILE : SC_FALLBACK).STATUS;
+  let icon;
+  if (hit?.i) icon = hit.i.replace(/#fff/g, "currentColor");
+  else if (it.timer || (!hit && it.info && it.kind !== "STATUS")) icon = sysIcon(SYS_TIMER_ICON[k] || "hourglass");
+  else icon = `<b>${escHtml(hit?.t || it.label.replace(/[^\p{L}\p{N}]/gu, "").slice(0, 2).toUpperCase() || "?")}</b>`;
+  const short = scShortTime(it.info);
+  const tip = it.info ? `${it.label} \u00B7 ${it.info.label}` : it.label;
+  return `<div class="sc-chip" title="${escAttr(tip)}" style="--c:${color}">
+      <span class="sc-tile">${icon}</span>
+      ${open ? `<span class="sc-name">${escHtml(it.label)}</span>${it.info ? `<span class="sc-time">${escHtml(it.info.label)}</span>` : ""}`
+        : short ? `<span class="sc-t">${escHtml(short)}</span>` : ""}
+    </div>`;
+}
+
+const SC_MAX_ICONS = 10;
+function renderStatusCorner(squeeze = false) {
+  const skin = uiSettings.skin || "classic";
+  let el = document.getElementById("rpg-status-corner");
+  const want = uiSettings.statusCorner && skin !== "sao" && (!isMinimized || uiSettings.statusCornerMin);
+  const items = want ? statusCornerItems() : [];
+  if (!items.length) { if (el) el.remove(); return; }
+  statusCornerEnsureCss();
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "rpg-status-corner";
+    document.body.appendChild(el);
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      uiSettings.statusCornerOpen = !uiSettings.statusCornerOpen;
+      saveUiSettings();
+      renderStatusCorner();
+    });
+  }
+  const kind = isFogSkin() ? "fog" : isSysSkin() ? "system" : "classic";
+  const open = !!uiSettings.statusCornerOpen && !squeeze;
+  el.className = `sc-${kind}${open ? " open" : ""}`;
+  el.style.fontFamily = kind === "classic" ? (uiSettings.fontFamily || "'Courier New', Courier, monospace") : sysFontStack();
+  el.title = open ? "Tap for icons only" : "Tap to show names";
+  const shown = open ? items : items.slice(0, SC_MAX_ICONS);
+  el.innerHTML = shown.map((it) => statusCornerChip(it, kind, open)).join("") +
+    (items.length > shown.length ? `<div class="sc-more">+${items.length - shown.length}</div>` : "");
+  // names on a phone with the panel open: if the list won't fit under the
+  // panel, show the icons there instead of covering the panel
+  if (!placeStatusCorner(open) && open) renderStatusCorner(true);
+}
+
+// Top left, under SillyTavern's top bar. If the open panel covers that spot
+// (a phone, where the panel spans the screen), the corner moves just below the
+// panel; if there's no room there either, it sits over the panel's corner.
+function placeStatusCorner(canSqueeze = false) {
+  const el = document.getElementById("rpg-status-corner");
+  if (!el) return true;
+  el.style.top = "50px"; el.style.zIndex = "9998";
+  const c = document.getElementById("rpg-hud-container");
+  if (!c || isMinimized || c.classList.contains("rpg-fog-orb")) return true;
+  const p = c.getBoundingClientRect(), r = el.getBoundingClientRect();
+  if (!p.width || p.left >= r.right + 4 || p.top >= r.bottom + 4) return true;
+  const vv = window.visualViewport;
+  const limit = (vv ? vv.height + vv.offsetTop : window.innerHeight) - 6;
+  if (p.bottom + 6 + r.height <= limit) { el.style.top = `${Math.round(p.bottom + 6)}px`; return true; }
+  if (canSqueeze) return false;
+  el.style.top = `${Math.round(p.top + 6)}px`; el.style.zIndex = "10000";
+  return true;
+}
+window.addEventListener("resize", () => { try { if (document.getElementById("rpg-status-corner")) renderStatusCorner(); } catch {} });
+
+const STATUS_CORNER_CSS = `
+#rpg-status-corner{position:fixed; left:8px; top:50px; z-index:9998; display:flex; flex-wrap:wrap; gap:4px;
+  max-width:min(calc(100vw - 50px), 340px); cursor:pointer; user-select:none; -webkit-tap-highlight-color:transparent; touch-action:manipulation;
+  font-size:12px; line-height:1.15}
+#rpg-status-corner.open{flex-direction:column; flex-wrap:nowrap; align-items:stretch; gap:3px; max-width:min(calc(100vw - 50px), 300px)}
+#rpg-status-corner .sc-chip{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px;
+  min-width:26px; padding:3px 3px 2px; box-sizing:border-box}
+#rpg-status-corner.open .sc-chip{flex-direction:row; justify-content:flex-start; gap:6px; padding:3px 7px 3px 3px; max-width:100%}
+#rpg-status-corner .sc-tile{display:grid; place-items:center; width:20px; height:16px; flex:0 0 auto; color:var(--c)}
+#rpg-status-corner .sc-tile svg{width:12px; height:12px; display:block}
+#rpg-status-corner .sc-tile b{font-size:10px; font-weight:700; letter-spacing:.02em}
+#rpg-status-corner .sys-svg{fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round}
+#rpg-status-corner .sc-t{font-size:9px; opacity:.9; white-space:nowrap}
+#rpg-status-corner .sc-name{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+#rpg-status-corner .sc-time{flex:0 0 auto; margin-left:auto; padding-left:6px; font-size:.9em; color:var(--c); white-space:nowrap}
+#rpg-status-corner .sc-more{align-self:center; font-size:11px; padding:0 4px}
+
+/* Classic: black and gold, with SAO-style coloured tiles */
+#rpg-status-corner.sc-classic .sc-chip{background:rgba(0,0,0,.78); border:1px solid #C0A040; color:#E0E0E0; box-shadow:0 0 6px #000}
+#rpg-status-corner.sc-classic .sc-tile{background:var(--c); color:#fff; border-radius:2px}
+#rpg-status-corner.sc-classic .sc-t{color:#C0A040}
+#rpg-status-corner.sc-classic .sc-more{color:#C0A040; text-shadow:0 0 3px #000}
+
+/* System: dark glass with a blue edge, icons glowing in their own colour */
+#rpg-status-corner.sc-system .sc-chip{background:rgba(4,9,18,.9); border:1px solid rgba(143,208,255,.55); color:#dff1ff;
+  box-shadow:0 0 8px rgba(90,180,255,.35), inset 0 0 6px rgba(60,140,230,.18)}
+#rpg-status-corner.sc-system .sc-tile{filter:drop-shadow(0 0 3px var(--c))}
+#rpg-status-corner.sc-system .sc-t{color:#8fd0ff}
+#rpg-status-corner.sc-system .sc-more{color:#8fd0ff; text-shadow:0 0 4px rgba(90,180,255,.8)}
+
+/* Gray Fog: dark pewter with a silver hairline */
+#rpg-status-corner.sc-fog .sc-chip{background:linear-gradient(180deg, #2c2e35, #18181d); border:1px solid rgba(205,208,218,.42); color:#e6e6ec;
+  box-shadow:0 2px 8px rgba(0,0,0,.5), inset 0 0 0 1px rgba(20,20,25,.8)}
+#rpg-status-corner.sc-fog .sc-tile{filter:drop-shadow(0 0 2px rgba(0,0,0,.6))}
+#rpg-status-corner.sc-fog .sc-t{color:#c9ccd6}
+#rpg-status-corner.sc-fog .sc-more{color:#c9ccd6; text-shadow:0 0 3px #000}
+`;
+function statusCornerEnsureCss() {
+  let st = document.getElementById("rpg-status-corner-css");
+  if (st && st.textContent === STATUS_CORNER_CSS) return;
+  if (!st) { st = document.createElement("style"); st.id = "rpg-status-corner-css"; document.head.appendChild(st); }
+  st.textContent = STATUS_CORNER_CSS;
 }
 
 // Classic, System and Gray Fog: keep the whole panel on screen. On a short
@@ -10235,7 +10434,8 @@ function sysShowNotices(list, replyKey = "") {
 // button shows a dot until the log is opened once.
 // =====================================================================
 const CHANGELOG = [
-  { build: "2026-11-15.4", items: [
+  { build: "2026-11-15.8", items: [
+    "New option, Show status in the top-left corner (Classic, System, Gray Fog; off by default): your current statuses, buffs, debuffs and timers as small icons styled to the skin, like the SAO overlay's status tiles. Tap them to show names and time left. Another option keeps them showing while the HUD is minimized.",
     "More item icons: hats, glasses, ties, gloves, gauntlets (armoured, with a plated cuff), bras, panties, boxers, charms and talismans, rocks and ores, and ingots or metal bars. The snowflake and gem icons are redrawn.",
     "The tab row centres itself when the panel is wide enough not to scroll. Dragging the width snaps to the size where all the tabs fit exactly, and Settings has a Fit width to tabs button.",
     "New ticket icon (tickets, vouchers, coupons, passes, stubs); the axe, hammer and staff/wand icons are redrawn.",
