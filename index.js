@@ -522,7 +522,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-15.6";
+const HUD_BUILD = "2026-11-15.7";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -6938,6 +6938,7 @@ const LIST_ICONS = {
   ingot:   icoRaw('<path d="M3 19.5h8.6l-1.8-4.2H4.8zM12.4 19.5H21l-1.8-4.2h-5z M7.7 15.3h8.6l-1.8-4.2H9.5z" fill="currentColor" fill-opacity=".12"/>'),
   ticket:  ico("M3 6h18v4a2 2 0 0 0 0 4v4H3v-4a2 2 0 0 0 0-4z", '<path d="M6.5 10h5 M6.5 14h3.5" stroke-width="1.1"/><path d="M15 6.6v1.8M15 11.1v1.8M15 15.6v1.8" stroke-width="1.1"/>'),
   card:    ico("M5 5.5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z", '<g stroke-width="1.1"><circle cx="8.2" cy="10.3" r="1.6"/><path d="M5.6 15.4c.4-1.5 1.4-2.3 2.6-2.3s2.2.8 2.6 2.3 M13.2 9.6h5 M13.2 12.4h5 M13.2 15.2h3"/></g>'),
+  emblem:  icoRaw('<path d="M5.5 6.2 8 4.2l2 1.5 2-2.2 2 2.2 2-1.5 2.5 2V12c0 4.1-3 7-6.5 8.5C8.5 19 5.5 16.1 5.5 12z"/><path d="M12.00 9.10 12.76 11.15 14.95 11.24 13.24 12.60 13.82 14.71 12.00 13.50 10.18 14.71 10.76 12.60 9.05 11.24 11.24 11.15z" stroke-width="1"/>'),
   medal:   ico("M7.6 2.6h3.1L12 6.8l1.3-4.2h3.1L13.6 9.8h-3.2z", '<circle cx="12" cy="15.2" r="5.2"/><path d="M12.00 12.70 12.62 14.35 14.38 14.43 13.00 15.52 13.47 17.22 12.00 16.25 10.53 17.22 11.00 15.52 9.62 14.43 11.38 14.35z" stroke-width="1"/>'),
   paper:   ico("M6 3h8.6L19 7.4V21H6z M14.6 3v4.4H19", '<path d="M8.8 11h7.4 M8.8 14h7.4 M8.8 17h4.6" stroke-width="1.1"/>'),
   pen:     ico("M15.6 4.4l4 4L9 19l-5 1 1-5z M13.6 6.4l4 4 M5 15l4 4"),
@@ -6994,7 +6995,8 @@ const ITEM_KINDS = [
   ["key",    /\b(key|keys)\b/],
   ["paper",  /\b(paper|papers|note|notes|notepad|formula|formulas|recipe|recipes|letter|letters|document|documents|blueprint|blueprints|schematic|deed|certificate|receipt|memo|flyer|poster|notice|page|pages|sheet|parchment|contract|invoice|manuscript|map|maps|report|dossier|warrant|bounty)\b/],
   ["book",   /\b(scroll|book|tome|journal|grimoire|manual|diary|codex|bible|almanac|ledger)\b/],
-  ["medal",  /\b(badge|badges|medal|medals|medallion|insignia|emblem|crest|sigil|seal)\b/],
+  ["emblem", /\b(badge|badges|insignia|emblem|emblems|crest|crests|sigil|sigils)\b/],
+  ["medal",  /\b(medal|medals|medallion|seal)\b/],
   ["charm",  /\b(charms?|talismans?|omamori|ofuda|wards?|fetish|totems?|lucky charm|good luck charm|paper seal)\b/],
   ["ring",   /\b(ring|amulet|necklace|pendant|bracelet|earrings?|brooch|circlet|crown|halo|locket|keychain|keyring|trinket|bauble|accessory|accessories|pin|anklet|tiara|choker|strap|watch|wristwatch)\b/],
   ["ingot",  /\b(ingots?|bullion|billets?|(?:gold|silver|iron|steel|copper|bronze|brass|tin|lead|platinum|mithril|mythril|adamantite|adamantium|orichalcum|titanium|metal)\s+bars?)\b/],
@@ -7089,7 +7091,7 @@ function setIconOverride(listKey, text, kind) {
 
 // every icon, the list's own kind first
 const ITEM_ICON_ORDER = ["sword", "dagger", "spear", "axe", "hammer", "bow", "gun", "staff", "shield", "armor", "hat", "glasses", "tie", "gloves", "gauntlet", "bra", "panties", "boxers", "socks", "ring", "potion",
-  "food", "herb", "key", "book", "paper", "pen", "brush", "card", "ticket", "medal", "charm", "gem", "rock", "ingot", "coin", "bag", "phone", "laptop", "camera", "misc"];
+  "food", "herb", "key", "book", "paper", "pen", "brush", "card", "ticket", "medal", "emblem", "charm", "gem", "rock", "ingot", "coin", "bag", "phone", "laptop", "camera", "misc"];
 const SKILL_ICON_ORDER = ["fire", "ice", "bolt", "heal", "dark", "wind", "burst", "badge"];
 function iconPickerHtml(listKey, i, current, isCustom) {
   const order = listKey === "inventory" ? [...ITEM_ICON_ORDER, ...SKILL_ICON_ORDER] : [...SKILL_ICON_ORDER, ...ITEM_ICON_ORDER];
