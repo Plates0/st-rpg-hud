@@ -522,7 +522,7 @@ let lastPipeError = {
 const UI_SETTINGS_KEY = "rpgHud:uiSettings";
 // Bump on every release. Shown at the foot of the SAO settings menu and in the
 // console, so it's obvious when the browser is still serving a cached copy.
-const HUD_BUILD = "2026-11-15.8";
+const HUD_BUILD = "2026-11-17.2";
 console.log(`RPG HUD build ${HUD_BUILD}`);
 
 const defaultUiSettings = {
@@ -7105,9 +7105,9 @@ const LIST_ICONS = {
   dagger:  ico("M8.96 11.64Q13.6 7 20 4Q17 10.4 12.36 15.04z M7.9 11l5.1 5.1 M9.9 14.1 6.4 17.6", '<circle cx="5.1" cy="18.7" r="1.5"/>'),
   spear:   ico("M4 20 14.5 9.5 M14.5 9.5l1.6-5.2 4.6-1.6-1.6 4.6z"),
   axe:     ico("M4 20L12.3 11.7", '<path d="M11.44 10.44L14.62 7.26L16.74 8.38L20.28 10.8Q19.04 14.86 14.98 16.1L13.56 12.56z" fill="currentColor" fill-opacity=".15"/>'),
-  hammer:  ico("M4.5 19.5L11.9 12.1", '<path d="M8.39 8.53L11.21 5.71L17.22 11.72L14.4 14.54z" fill="currentColor" fill-opacity=".15"/>'),
-  bow:     ico("M5 3.5c8.3 0 15.5 7.2 15.5 15.5 M5 3.5 20.5 19 M3.5 9.5 9 4"),
-  gun:     ico("M3 8.5h16l1 2.5h-8.5l-1.3 2.5H7.6L6.6 19H3.5z M12 11v2"),
+  hammer:  icoRaw('<g transform="rotate(45 12 12)"><path d="M12 8.9V19.4"/><path d="M7.75 4.6h8.5v4.3h-8.5z" fill="currentColor" fill-opacity=".15"/></g>'),
+  bow:     icoRaw('<g transform="rotate(-45 12 12)"><path d="M7.4 2c.9-.2 1.4.3 1.6.9 3.6 2 6.2 5 6.2 9.1s-2.6 7.1-6.2 9.1c-.2.6-.7 1.1-1.6.9"/><path d="M8.1 2.6v18.8" stroke-width="1"/><path d="M4.2 12h15" stroke-width="1.3"/><path d="M17.3 10.3 20.2 12l-2.9 1.7z" fill="currentColor" stroke-width="1.1"/><path d="M6.4 12 4.6 10.2M6.4 12l-1.8 1.8" stroke-width="1.1"/></g>'),
+  gun:     icoRaw('<path d="M3.4 5.5h17c.3 0 .6.3.6.6v3.1c0 .3-.3.6-.6.6H9.3L7.9 18.3a.9.9 0 0 1-.9.7H4.4a.8.8 0 0 1-.8-1L5.4 9.8H3.4a.6.6 0 0 1-.6-.6V6.1c0-.3.3-.6.6-.6z"/><path d="M9 11.7c.3 1.5 1.2 2.3 2.6 2.3.8 0 1.4-.6 1.4-1.4V9.8" stroke-width="1.2"/><path d="M10.9 9.9c.1.8.4 1.4.9 1.8" stroke-width="1"/><path d="M4.8 6.4v2.5M6.2 6.4v2.5" stroke-width=".9"/>'),
   staff:   ico("M4.5 19.5L14.2 9.8", '<path d="M17 3.2l.9 2.4 2.4.9-2.4.9-.9 2.4-.9-2.4-2.4-.9 2.4-.9z" fill="currentColor" fill-opacity=".3"/>'),
   shield:  ico("M12 3l7 2.8v5.4c0 4.4-2.9 7.8-7 9.8-4.1-2-7-5.4-7-9.8V5.8z"),
   armor:   ico("M8 3.5h8l4 3.7-3 3V20.5H7V10.2l-3-3z M10 3.5c0 1.4.9 2.4 2 2.4s2-1 2-2.4"),
